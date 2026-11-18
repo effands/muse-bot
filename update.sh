@@ -71,8 +71,15 @@ except Exception:
 PYEOF
 }
 
-PULL_OUT=$(git pull 2>&1)
-PULL_RC=$?
+# 🔒 BACKUP PRA-UPDATE: snapshot sebelum git pull (backup_core.py, stdlib).
+# Gagal backup TIDAK menghentikan update — pesan OK/SKIP/GAGAL tercetak
+# di update.log. Bila panel sudah membuat backup <10 menit lalu (hook
+# update_panel_api), backup_core langsung skip (dedupe).
+if [ -f backup_core.py ]; then
+  python3 backup_core.py backup --trigger pre_update 2>&1 | tail -2
+fi
+
+PULL_OUT=$(git pull 2>&1)PULL_RC=$?
 if [ $PULL_RC -ne 0 ]; then
   write_status "failed" "$PULL_OUT"
   notify_tg "❌ *Update panel gagal, Bos* 😅

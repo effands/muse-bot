@@ -2155,6 +2155,32 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         </div>
       </div>
 
+      <!-- ════════ BACKUP OTOMATIS — snapshot DB+config+galeri, terenkripsi ════════ -->
+      <div class="card" style="margin-bottom:16px;margin-top:16px">
+        <div class="card-head">
+          <span class="card-title">💾 BACKUP OTOMATIS</span>
+          <span class="pill p-muted" id="bak-pill" style="font-size:11px">—</span>
+        </div>
+        <div class="card-body">
+          <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:14px">Backup berisi <b style="color:var(--text)">channels_db + tasks_db + config (PIN, token Telegram, kredensial channel) + file state + galeri</b>, diarsipkan terenkripsi (AES-256) di folder <code>backups/</code> di VPS. Backup <b style="color:var(--text)">tidak pernah dikirim ke Telegram</b> — hanya status. Unduh hanya dari sini (login).</div>
+          <div id="bak-last" style="font-size:13px;margin-bottom:10px;color:var(--muted)">Memuat status backup…</div>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:12px">
+            <label style="font-size:13px"><input type="checkbox" id="bak-enabled"> Jadwal harian aktif</label>
+            <label style="font-size:13px">Jam (WIB) <input type="number" id="bak-hour" min="0" max="23" value="3" style="width:64px"></label>
+            <button class="btn" onclick="backupSaveSettings()">💾 Simpan Jadwal</button>
+            <button class="btn btn-p" onclick="backupNow()">⬇️ Backup Sekarang</button>
+          </div>
+          <div id="bak-list" style="font-size:13px"></div>
+          <div style="margin-top:12px;font-size:13px">
+            <span style="color:var(--muted)">Kunci backup (AES-256): </span><span id="bak-key-masked" style="font-family:var(--font-m)">…</span>
+            <button class="btn btn-g btn-sm" onclick="backupShowKey()">🔑 Tampilkan &amp; Salin Kunci</button>
+            <input type="password" id="bak-key-full" readonly style="display:none;width:100%;margin-top:6px" onclick="this.select()">
+            <div style="font-size:11px;color:var(--muted);margin-top:4px">Simpan kunci ini di tempat aman (mis. password manager). Tanpa kunci ini, backup terenkripsi TIDAK bisa dibuka bila VPS hilang. Restore memakai kunci yang tersimpan di VPS — kolom kunci di form restore hanya bila kunci VPS hilang.</div>
+          </div>
+          <details class="data-note" style="margin:10px 0 0"><summary>Penjelasan</summary><div>Backup harian jalan otomatis tiap hari jam yang kamu atur (default 03:00 WIB, saat sepi) + snapshot otomatis sebelum setiap Update panel + manual dari sini atau Telegram (<code>/backup</code>). Retensi: 7 backup harian terakhir + 4 mingguan — yang lebih lama dihapus otomatis. Bila total galeri di atas 2 GB, file video di-skip (gambar + audio + manifest tetap ikut) dan dicatat di daftar. <b>Catatan jujur:</b> backup tersimpan di disk VPS yang sama — melindungi dari data rusak/terhapus &amp; update gagal, BUKAN dari VPS hilang total. Unduh salinannya berkala ke komputermu untuk perlindungan penuh. Restore menimpa config (PIN + token ikut kembali), lalu restart panel + operator — ketik YA di form konfirmasi karena tidak bisa dibatalkan.</div></details>
+        </div>
+      </div>
+
 
 
     </div>
@@ -2206,6 +2232,27 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
     <div style="display:flex;justify-content:flex-end;gap:8px">
       <button type="button" class="btn" onclick="closeUpdConfirm()">Batal</button>
       <button type="button" class="btn btn-p" onclick="closeUpdConfirm();doUpdate()">Ya, Update</button>
+    </div>
+  </div>
+</div>
+
+<!-- ♻️ MODAL RESTORE BACKUP — konfirmasi eksplisit ketik YA (tanpa YA = ditolak) -->
+<div id="bak-restore-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closeBakRestore()">
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);max-width:480px;width:100%;padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.35)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div class="card-title" style="font-size:15px">♻️ RESTORE BACKUP</div>
+      <button type="button" class="btn btn-g btn-sm" onclick="closeBakRestore()" title="Tutup">✕</button>
+    </div>
+    <div style="font-size:13px;line-height:1.6;margin-bottom:12px">Restore <b id="bak-restore-name" style="font-family:var(--font-m)"></b> akan <b>MENIMPA</b> config (PIN panel, token Telegram, kredensial channel), database channel, antrean, dan galeri dengan isi backup ini. File lama disalin dulu ke <code>backups/rollback-*.tar.gz</code>. Panel + operator lalu restart — login lagi setelahnya.</div>
+    <label style="font-size:13px;display:block;margin-bottom:8px">Ketik <b>YA</b> untuk konfirmasi:
+      <input type="text" id="bak-restore-ya" placeholder="YA" autocomplete="off" style="width:90px;margin-left:6px">
+    </label>
+    <label style="font-size:13px;display:block;margin-bottom:16px">Kunci backup (opsional — kosongkan bila kunci masih tersimpan di VPS):
+      <input type="password" id="bak-restore-key" placeholder="(biasanya dikosongkan)" autocomplete="off" style="width:100%;margin-top:4px">
+    </label>
+    <div style="display:flex;justify-content:flex-end;gap:8px">
+      <button type="button" class="btn" onclick="closeBakRestore()">Batal</button>
+      <button type="button" class="btn btn-p" onclick="doBakRestore()">Ya, Restore</button>
     </div>
   </div>
 </div>
@@ -2493,7 +2540,7 @@ function go(id, el) {
 
   document.getElementById('tb-title').textContent = PAGE_META[id].t;
   document.getElementById('tb-sub').textContent = PAGE_META[id].s;
-  if (id === 'settings') { loadTgConfig(); checkApiStatus(); loadAppVersion(); loadPixabayKeys(); }
+  if (id === 'settings') { loadTgConfig(); checkApiStatus(); loadAppVersion(); loadPixabayKeys(); loadBackupStatus(); }
   if (id === 'dashboard') fetchAnalytics();
   if (id === 'calendar') loadCalendar();
   if (id === 'batch') {
@@ -3053,6 +3100,107 @@ function doUpdate() {
       if (btn) btn.disabled = false;
     }
   }).catch(() => { _updSetStatus('❌ Tidak bisa menghubungi panel.', 'var(--red)'); if (btn) btn.disabled = false; });
+}
+
+// ────────────────────────────────────────────────────────
+//  💾 BACKUP OTOMATIS — kartu Settings: status + daftar + restore
+//  Semua POST ke /api/* otomatis membawa X-CSRF-Token (wrapper di atas).
+// ────────────────────────────────────────────────────────
+let _bakPollTimer = null;
+function loadBackupStatus() {
+  fetch('/api/backup_status').then(r => r.json()).then(d => {
+    if (d.status !== 'success') return;
+    const last = d.last;
+    const pill = document.getElementById('bak-pill');
+    if (pill) pill.textContent = d.running ? '⏳ berjalan…' : (last ? '✅ ' + (last.created_at || '') : 'belum pernah');
+    const lastEl = document.getElementById('bak-last');
+    if (lastEl) {
+      if (!last) lastEl.innerHTML = 'Belum pernah backup. Klik <b>Backup Sekarang</b> untuk membuat yang pertama.';
+      else lastEl.innerHTML = 'Terakhir: <b>' + escapeHtml(last.filename || '?') + '</b> • ' + escapeHtml(last.created_at || '?') + ' • ' + escapeHtml(last.size_human || '?') + ' • ' + (last.files_count || '?') + ' file • ' + (last.encrypted ? 'terenkripsi ✅' : '⚠️ TANPA enkripsi') + (last.media_skipped ? ' • video galeri di-skip (&gt;2 GB)' : '') + (last.note ? ' • ' + escapeHtml(last.note) : '');
+    }
+    const en = document.getElementById('bak-enabled');
+    if (en) en.checked = !!d.enabled;
+    const hr = document.getElementById('bak-hour');
+    if (hr) hr.value = (d.hour == null ? 3 : d.hour);
+    const km = document.getElementById('bak-key-masked');
+    if (km) km.textContent = d.key_masked || '—';
+    renderBackupList(d.backups || []);
+    if (d.running && !_bakPollTimer) _bakPollTimer = setInterval(loadBackupStatus, 3000);
+    if (!d.running && _bakPollTimer) { clearInterval(_bakPollTimer); _bakPollTimer = null; }
+  }).catch(() => {});
+}
+function renderBackupList(backups) {
+  const box = document.getElementById('bak-list');
+  if (!box) return;
+  if (!backups.length) { box.innerHTML = '<div style="color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada backup.</div>'; return; }
+  let h = '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="color:var(--muted);text-align:left"><th style="padding:4px 6px">Backup</th><th style="padding:4px 6px">Waktu</th><th style="padding:4px 6px">Ukuran</th><th style="padding:4px 6px">Isi</th><th style="padding:4px 6px">Aksi</th></tr></thead><tbody>';
+  for (const b of backups) {
+    const trig = { manual: 'manual', daily: 'harian', pre_update: 'pra-update' }[b.trigger] || (b.trigger || '');
+    h += '<tr style="border-top:1px solid var(--border)"><td style="padding:6px;font-family:var(--font-m)">' + escapeHtml(b.filename || '?') + '</td><td style="padding:6px">' + escapeHtml(b.created_at || '?') + '</td><td style="padding:6px">' + escapeHtml(b.size_human || '?') + '</td><td style="padding:6px">' + escapeHtml(trig) + (b.encrypted ? ' • 🔒' : ' • ⚠️') + (b.media_skipped ? ' • video di-skip' : '') + '</td><td style="padding:6px;white-space:nowrap"><button class="btn btn-g btn-sm" onclick="backupDownload(\'' + escapeHtml(b.filename || '') + '\')">⬇️</button> <button class="btn btn-g btn-sm" onclick="openBakRestore(\'' + escapeHtml(b.filename || '') + '\')">♻️</button> <button class="btn btn-g btn-sm" onclick="backupDelete(\'' + escapeHtml(b.filename || '') + '\')">🗑️</button></td></tr>';
+  }
+  box.innerHTML = h + '</tbody></table>';
+}
+function backupNow() {
+  fetch('/api/backup_create', { method: 'POST' }).then(r => r.json()).then(d => {
+    toast(d.message || (d.status === 'success' ? 'Backup dimulai.' : 'Gagal memulai backup.'), d.status === 'success' ? 'success' : 'error');
+    if (d.status === 'success') { loadBackupStatus(); if (!_bakPollTimer) _bakPollTimer = setInterval(loadBackupStatus, 3000); }
+  }).catch(() => toast('Tidak bisa menghubungi panel.', 'error'));
+}
+function backupSaveSettings() {
+  const en = document.getElementById('bak-enabled');
+  const hr = document.getElementById('bak-hour');
+  fetch('/api/backup_settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: en ? en.checked : true, hour: hr ? parseInt(hr.value, 10) : 3 }) }).then(r => r.json()).then(d => {
+    toast(d.message || '', d.status === 'success' ? 'success' : 'error');
+    if (d.status === 'success') loadBackupStatus();
+  }).catch(() => toast('Tidak bisa menghubungi panel.', 'error'));
+}
+function backupDownload(name) {
+  window.open('/api/backup_download?name=' + encodeURIComponent(name) + '&csrf_token=' + encodeURIComponent(window.CSRF_TOKEN || ''), '_blank');
+}
+function backupDelete(name) {
+  if (!confirm('Hapus backup ' + name + '? File ini tidak bisa dikembalikan.')) return;
+  fetch('/api/backup_delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }).then(r => r.json()).then(d => {
+    toast(d.message || '', d.status === 'success' ? 'success' : 'error');
+    if (d.status === 'success') loadBackupStatus();
+  }).catch(() => toast('Tidak bisa menghubungi panel.', 'error'));
+}
+let _bakRestoreName = '';
+function openBakRestore(name) {
+  _bakRestoreName = name;
+  const n = document.getElementById('bak-restore-name');
+  if (n) n.textContent = name;
+  const ya = document.getElementById('bak-restore-ya');
+  if (ya) ya.value = '';
+  const k = document.getElementById('bak-restore-key');
+  if (k) k.value = '';
+  const m = document.getElementById('bak-restore-modal');
+  if (m) m.style.display = 'flex';
+}
+function closeBakRestore() {
+  const m = document.getElementById('bak-restore-modal');
+  if (m) m.style.display = 'none';
+}
+function doBakRestore() {
+  const ya = document.getElementById('bak-restore-ya');
+  if (!ya || ya.value.trim().toUpperCase() !== 'YA') { toast('Restore ditolak — ketik YA dulu di kolom konfirmasi.', 'error'); return; }
+  const k = document.getElementById('bak-restore-key');
+  closeBakRestore();
+  fetch('/api/backup_restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: _bakRestoreName, confirm: true, confirm_text: 'YA', key: k ? k.value : '' }) }).then(r => r.json()).then(d => {
+    toast(d.message || '', d.status === 'success' ? 'success' : 'error');
+    if (d.status === 'success') setTimeout(() => location.reload(), 3000);
+  }).catch(() => toast('Tidak bisa menghubungi panel.', 'error'));
+}
+function backupShowKey() {
+  fetch('/api/backup_key', { method: 'POST' }).then(r => r.json()).then(d => {
+    if (d.status !== 'success' || !d.key) { toast('Kunci backup tidak bisa diambil.', 'error'); return; }
+    const inp = document.getElementById('bak-key-full');
+    if (inp) { inp.style.display = 'block'; inp.value = d.key; inp.select(); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(d.key).then(() => toast('Kunci backup disalin ke clipboard — simpan di tempat aman.', 'success')).catch(() => toast('Kunci ditampilkan di kolom di bawah — salin manual.', 'info'));
+    } else {
+      toast('Kunci ditampilkan di kolom di bawah — salin manual (Ctrl+C).', 'info');
+    }
+  }).catch(() => toast('Tidak bisa menghubungi panel.', 'error'));
 }
 
 // ────────────────────────────────────────────────────────

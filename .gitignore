@@ -12,6 +12,8 @@ nodes.json.tmp
 nlu_audit.jsonl
 playlist_jobs.json
 playlist_jobs.json.tmp
+backups/
+backup_key.txt
 
 # Keamanan File Rahasia & Konfigurasi Lokal
 config.json

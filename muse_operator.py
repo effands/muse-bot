@@ -4337,6 +4337,7 @@ _BOT_COMMANDS = [
     ('pixabaykey', 'Tambah API key Pixabay', 'atur', '<key>'),
     ('pixabaykeys', 'Daftar API key Pixabay (masked)', 'atur', ''),
     ('pixabaydel', 'Hapus API key Pixabay', 'atur', '<4-karakter-terakhir|nomor>'),
+    ('backup', 'Backup sekarang + status backup terakhir', 'atur', ''),
 ]
 _BOT_COMMAND_SECTIONS = [
     ('pantau', '📊 Pantau:'),
@@ -4543,6 +4544,42 @@ def handle_user_command(token, chat_id, text):
             lines.append("━━━━━━━━━━━━━━━━━━━━━━")
             lines.append("Riset & buat playlist baru lewat panel (menu Musik Playlist).")
             send_message(token, chat_id, "\n".join(lines))
+            return
+
+        # --- 💾 BACKUP OTOMATIS: /backup (buat + status) ---
+        # Backup TIDAK PERNAH dikirim ke Telegram (berisi token) — hanya status.
+        if first_word in ("/backup",):
+            ok, msg, _d = _operator_post('/api/operator/backup_create', {}, timeout=10)
+            if not ok:
+                ok2, _m2, st = _operator_post('/api/operator/backup_status', {}, timeout=10)
+                if ok2:
+                    last = (st or {}).get('last') or {}
+                    lines = ["💾 *Backup Otomatis*", "━━━━━━━━━━━━━━━━━━━━━━"]
+                    if last:
+                        lines.append(f"Terakhir: `{_tg_escape(last.get('filename', '?'))}`")
+                        lines.append(f"{_tg_escape(last.get('created_at', '?'))} • {_tg_escape(last.get('size_human', '?'))} • {'terenkripsi ✅' if last.get('encrypted') else '⚠️ TANPA enkripsi'}")
+                    else:
+                        lines.append("Belum pernah backup.")
+                    lines.append(f"Jadwal harian: {'aktif' if (st or {}).get('enabled') else 'nonaktif'} jam {(st or {}).get('hour', 3):02d}:00 WIB.")
+                    lines.append(f"Catatan: {_tg_escape(msg)}")
+                    send_message(token, chat_id, "\n".join(lines))
+                else:
+                    send_message(token, chat_id, f"💾 *Backup*\n{_tg_escape(msg)}")
+                return
+            # Backup jalan di latar — polling status sampai ~20 detik.
+            done = None
+            for _ in range(10):
+                time.sleep(2)
+                ok2, _m2, st = _operator_post('/api/operator/backup_status', {}, timeout=10)
+                if ok2 and not (st or {}).get('running'):
+                    done = (st or {}).get('last') or {}
+                    break
+            if done:
+                send_message(token, chat_id,
+                             f"💾 *Backup selesai, Bos* 😎\n\n`{_tg_escape(done.get('filename', '?'))}` ({_tg_escape(done.get('size_human', '?'))}, {done.get('files_count', '?')} file, {'terenkripsi ✅' if done.get('encrypted') else '⚠️ TANPA enkripsi'})\nIsi: DB + config + galeri{' (video di-skip: galeri >2 GB)' if done.get('media_skipped') else ''}.")
+            else:
+                send_message(token, chat_id,
+                             "💾 *Backup sedang dibuat, Bos* ⏳\n\nKetik /backup lagi sebentar lagi buat lihat hasilnya.")
             return
 
         # --- 🔑 API KEY PIXABAY: /pixabaykey, /pixabaykeys, /pixabaydel ---

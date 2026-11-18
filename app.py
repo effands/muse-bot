@@ -335,7 +335,8 @@ _OPERATOR_ENDPOINTS = {'operator_retry_task', 'operator_approve_task',
                       'operator_create_long', 'operator_extend_schedule',
                       'operator_set_autopilot', 'operator_set_paused',
                       'operator_pixabay_key_add', 'operator_pixabay_key_list',
-                      'operator_pixabay_key_del'}
+                      'operator_pixabay_key_del', 'operator_backup_create',
+                      'operator_backup_status'}
 _CSRF_EXEMPT_ENDPOINTS = {'login', 'setup', 'static'} | _OPERATOR_ENDPOINTS
 
 @app.before_request
@@ -7029,6 +7030,19 @@ def update_panel_api():
     if not os.path.exists(UPDATE_SCRIPT):
         return jsonify({"status": "error",
                         "message": "File update.sh tidak ditemukan di server."}), 500
+    # 💾 BACKUP PRA-UPDATE: snapshot dulu sebelum git pull. Bila backup
+    # gagal, update TETAP jalan — tapi peringatan ditulis ke status.
+    # (update.sh juga mencoba backup lagi, tapi dedupe 10 menit di
+    # backup_core membuat yang kedua langsung skip.)
+    _pre_bak_note = ''
+    try:
+        _pre_meta, _pre_err = _do_backup_now('pre_update')
+        if _pre_err:
+            _pre_bak_note = f"\n⚠️ Backup pra-update GAGAL ({_pre_err}) — update tetap jalan tanpa snapshot baru."
+        elif _pre_meta and not _pre_meta.get('skipped'):
+            _pre_bak_note = f"\n💾 Backup pra-update: {_pre_meta['filename']} ({_pre_meta['size_human']})."
+    except Exception as _e:
+        _pre_bak_note = f"\n⚠️ Backup pra-update GAGAL ({_e}) — update tetap jalan tanpa snapshot baru."
     now = _wib_now().strftime('%Y-%m-%d %H:%M')
     _write_update_status({"status": "running", "started_at": now,
                           "version": _app_version(), "commit": _git_short_hash(),
@@ -7046,7 +7060,230 @@ def update_panel_api():
                               "output": f"Gagal menjalankan updater: {e}"})
         return jsonify({"status": "error", "message": "Gagal menjalankan updater."}), 500
     return jsonify({"status": "success",
-                    "message": "Update dimulai — panel akan restart sendiri. Pantau status di kartu ini."})
+                    "message": "Update dimulai — panel akan restart sendiri. Pantau status di kartu ini." + (_pre_bak_note if _pre_bak_note else "")})
+
+
+# ============================================================
+#  💾 BACKUP OTOMATIS (v1.2.8)
+#  Mesin di backup_core.py (stdlib murni): arsip tar.gz terenkripsi
+#  AES-256-CBC + PBKDF2 via openssl, retensi 7 harian + 4 mingguan,
+#  manifest + hash SHA256 per file, snapshot pengaman saat restore.
+#  Backup TIDAK PERNAH dikirim ke Telegram (berisi refresh token
+#  Google + token Telegram + PIN hash) — Telegram hanya status /
+#  notifikasi. Download hanya lewat panel (login + CSRF).
+# ============================================================
+import backup_core as _backup_core
+
+_BACKUP_RUNNING = {'active': False}   # guard: satu backup dalam satu waktu
+
+
+def _backup_settings():
+    cfg = load_bot_config()
+    try:
+        hour = int(cfg.get('backup_hour', 3) or 3)
+    except Exception:
+        hour = 3
+    return {'enabled': cfg.get('backup_enabled', True) is not False,
+            'hour': hour if 0 <= hour <= 23 else 3}
+
+
+def _backup_status_dict():
+    st = _backup_settings()
+    metas = _backup_core.list_backups()
+    return {'enabled': st['enabled'], 'hour': st['hour'],
+            'running': bool(_BACKUP_RUNNING.get('active')),
+            'openssl': bool(shutil.which('openssl')),
+            'key_masked': _mask_token(_backup_core.read_key()),
+            'backups': metas,
+            'last': metas[0] if metas else None}
+
+
+def _do_backup_now(trigger):
+    """Jalankan backup sinkron dengan guard. Dipakai endpoint manual,
+    scheduler harian, dan hook pre-update. Mengembalikan (meta, error)."""
+    if _BACKUP_RUNNING.get('active'):
+        return None, 'Backup lain sedang berjalan. Coba lagi sebentar lagi.'
+    _BACKUP_RUNNING['active'] = True
+    try:
+        meta = _backup_core.create_backup(trigger=trigger)
+        return meta, None
+    except _backup_core.BackupBusy as e:
+        return None, str(e)
+    except _backup_core.BackupError as e:
+        return None, str(e)
+    except Exception as e:
+        return None, f'Gagal membuat backup: {e}'
+    finally:
+        _BACKUP_RUNNING['active'] = False
+
+
+def _backup_create_thread():
+    """Backup manual di latar (panel / Telegram) + notifikasi hasilnya."""
+    meta, err = _do_backup_now('manual')
+    if meta and not meta.get('skipped'):
+        send_tg_message(f"💾 *Backup selesai, Bos* 😎\n\n`{meta['filename']}` ({meta['size_human']}, {meta['files_count']} file, {'terenkripsi ✅' if meta['encrypted'] else '⚠️ TANPA enkripsi'})\nIsi: DB + config + galeri{' (video di-skip: galeri >2 GB)' if meta.get('media_skipped') else ''}.")
+    elif err:
+        send_tg_message(f"❌ *Backup GAGAL, Bos* 😅\n\nAlasan: {err}")
+
+
+def _backup_daily_loop():
+    """Scheduler harian: tiap 60 detik cek jam WIB. Bila jam == backup_hour
+    dan belum ada backup hari ini -> buat + notifikasi Telegram."""
+    while True:
+        time.sleep(60)
+        try:
+            st = _backup_settings()
+            if not st['enabled']:
+                continue
+            now = _wib_now()
+            if now.hour != st['hour']:
+                continue
+            metas = _backup_core.list_backups()
+            today = now.strftime('%Y-%m-%d')
+            done_today = any((m.get('created_at') or '').startswith(today)
+                             and m.get('trigger') in ('daily', 'manual') for m in metas)
+            if done_today:
+                continue
+            meta, err = _do_backup_now('daily')
+            if meta and not meta.get('skipped'):
+                send_tg_message(f"💾 *Backup harian selesai, Bos* 😎\n\n`{meta['filename']}` ({meta['size_human']}, {meta['files_count']} file, {'terenkripsi ✅' if meta['encrypted'] else '⚠️ TANPA enkripsi'})\nIsi: DB + config + galeri{' (video di-skip: galeri >2 GB)' if meta.get('media_skipped') else ''}.")
+            elif err:
+                send_tg_message(f"❌ *Backup harian GAGAL, Bos* 😅\n\nAlasan: {err}\n\nData panel belum tercadangkan hari ini — coba /backup dari Telegram.")
+        except Exception as e:
+            print(f"[backup] loop harian gagal: {e}", flush=True)
+
+
+@app.route('/api/backup_status')
+def backup_status_api():
+    return jsonify({"status": "success", **_backup_status_dict()})
+
+
+@app.route('/api/backup_create', methods=['POST'])
+def backup_create_api():
+    if _BACKUP_RUNNING.get('active'):
+        return jsonify({"status": "error",
+                        "message": "Backup lain sedang berjalan. Coba lagi sebentar lagi."}), 409
+    threading.Thread(target=_backup_create_thread, daemon=True).start()
+    return jsonify({"status": "success",
+                    "message": "Backup sedang dibuat di latar. Pantau di kartu ini."})
+
+
+@app.route('/api/backup_download')
+def backup_download_api():
+    # GET + login (check_security) + token CSRF via query — download tidak
+    # bisa membawa header, jadi token dikirim sebagai parameter URL.
+    sent = request.args.get('csrf_token') or ''
+    expected = session.get('csrf_token') or ''
+    if not expected or not hmac.compare_digest(str(sent), str(expected)):
+        return jsonify({"status": "error",
+                        "message": "Token CSRF tidak valid. Muat ulang halaman lalu coba lagi."}), 403
+    name = request.args.get('name') or ''
+    try:
+        path = _backup_core._backup_path(name)
+    except _backup_core.BackupError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+    if not os.path.isfile(path):
+        return jsonify({"status": "error", "message": "Backup tidak ditemukan."}), 404
+    return send_file(path, as_attachment=True, download_name=name)
+
+
+@app.route('/api/backup_restore', methods=['POST'])
+def backup_restore_api():
+    data = request.get_json(silent=True) or {}
+    name = (data.get('name') or '').strip()
+    # Konfirmasi eksplisit: confirm=true DAN ketik "YA". Tanpa itu -> DITOLAK.
+    if data.get('confirm') is not True or (data.get('confirm_text') or '').strip().upper() != 'YA':
+        return jsonify({"status": "error",
+                        "message": "Restore ditolak — ketik YA di kolom konfirmasi dulu."}), 400
+    if _any_task_rendering():
+        return jsonify({"status": "error",
+                        "message": "Ada video sedang dirender/di-upload. Restore ditolak — coba lagi setelah selesai."}), 409
+    st = _read_update_status()
+    if st.get('status') == 'running' and not _update_running_is_stale(st):
+        return jsonify({"status": "error",
+                        "message": "Update sedang berjalan. Restore ditolak — coba lagi setelah update selesai."}), 409
+    key = (data.get('key') or '').strip() or None
+    try:
+        restored = _backup_core.restore_backup(name, key=key, confirm=True)
+    except _backup_core.BackupError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Restore gagal: {e}"}), 500
+    # Restart di latar (proses web mati saat restart — pola sama seperti update).
+    try:
+        logf = open(os.path.join(BASE_DIR, 'update.log'), 'ab')
+        subprocess.Popen(['nohup', 'bash', '-c', 'sleep 2; bash ziqva.sh restart'],
+                         cwd=BASE_DIR, stdin=subprocess.DEVNULL,
+                         stdout=logf, stderr=subprocess.STDOUT,
+                         start_new_session=True, close_fds=True)
+        logf.close()
+    except Exception:
+        pass
+    try:
+        send_tg_message(f"♻️ *Restore backup selesai, Bos* 😎\n\n`{name}` — {len(restored)} file dipulihkan. Panel restart dan kembali online sebentar lagi. Login lagi dengan PIN yang ada di backup.")
+    except Exception:
+        pass
+    return jsonify({"status": "success",
+                    "message": f"Restore selesai ({len(restored)} file). Panel akan restart — login lagi setelahnya."})
+
+
+@app.route('/api/backup_delete', methods=['POST'])
+def backup_delete_api():
+    data = request.get_json(silent=True) or {}
+    try:
+        _backup_core.delete_backup((data.get('name') or '').strip())
+    except _backup_core.BackupError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+    return jsonify({"status": "success", "message": "Backup dihapus."})
+
+
+@app.route('/api/backup_settings', methods=['POST'])
+def backup_settings_api():
+    data = request.get_json(silent=True) or {}
+    try:
+        hour = int(data.get('hour', 3))
+    except Exception:
+        return jsonify({"status": "error", "message": "Jam tidak valid (0-23)."}), 400
+    if not 0 <= hour <= 23:
+        return jsonify({"status": "error", "message": "Jam harus 0-23."}), 400
+    cfg = load_bot_config()
+    cfg['backup_enabled'] = bool(data.get('enabled', True))
+    cfg['backup_hour'] = hour
+    _save_bot_config(cfg)
+    return jsonify({"status": "success",
+                    "message": f"Jadwal backup disimpan ({'aktif' if cfg['backup_enabled'] else 'nonaktif'}, jam {hour:02d}:00 WIB)."})
+
+
+@app.route('/api/backup_key', methods=['POST'])
+def backup_key_api():
+    """Kunci backup lengkap — HANYA untuk pemilik yang sudah login panel
+    dan mengklik tombol 'Tampilkan kunci'. Tidak pernah di-log."""
+    key = _backup_core.read_key()
+    if not key:
+        key = _backup_core.get_or_create_key()
+    return jsonify({"status": "success", "key": key})
+
+
+# --- Endpoint operator: backup (auth HMAC operator_key) ---
+@app.route('/api/operator/backup_create', methods=['POST'])
+def operator_backup_create():
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    if _BACKUP_RUNNING.get('active'):
+        return jsonify({"status": "error", "message": "Backup lain sedang berjalan."}), 409
+    threading.Thread(target=_backup_create_thread, daemon=True).start()
+    return jsonify({"status": "success", "message": "Backup sedang dibuat di latar."})
+
+
+@app.route('/api/operator/backup_status', methods=['POST'])
+def operator_backup_status():
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    return jsonify({"status": "success", **_backup_status_dict()})
 
 
 @app.route('/api/check_secret')
@@ -9612,6 +9849,9 @@ def auto_shorts_scheduler_loop():
 
 
 threading.Thread(target=auto_shorts_scheduler_loop, daemon=True).start()
+
+# 💾 BACKUP OTOMATIS: scheduler harian (cek tiap 60 detik, jam WIB).
+threading.Thread(target=_backup_daily_loop, daemon=True).start()
 
 # --- Endpoint Telegram Settings ---
 @app.route('/api/save_telegram', methods=['POST'])

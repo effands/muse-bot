@@ -80,7 +80,31 @@ def load_bot_config():
     return {}
 
 bot_config = load_bot_config()
-app.secret_key = bot_config.get('secret_key', secrets.token_hex(24))
+
+# --- Sesi login yang stabil di semua browser ---
+# Penyebab login berputar-putar: kalau config.json tidak punya secret_key,
+# secret_key di-generate acak di setiap start proses, sehingga cookie sesi
+# yang ditandatangani sebelum restart/reload tidak lagi valid dan pengguna
+# dilempar kembali ke halaman login tanpa pesan error. Karena itu secret_key
+# harus menetap di config.json (dibuat sekali, disimpan, dipakai selamanya).
+# /setup tetap yang membuat config.json pertama kali; di sini kita hanya
+# melengkapi secret_key yang hilang, tanpa mengubah PIN atau kunci lain.
+if is_configured() and not bot_config.get('secret_key'):
+    bot_config['secret_key'] = secrets.token_hex(32)
+    try:
+        with open(CONFIG_FILE, 'w') as _f:
+            json.dump(bot_config, _f, indent=4)
+    except Exception:
+        pass
+app.secret_key = bot_config.get('secret_key', secrets.token_hex(32))
+# Cookie sesi eksplisit: situs ini HTTP biasa di IP, jadi Secure harus False
+# (cookie Secure tidak akan dikirim lewat http). SameSite=Lax agar cookie
+# tetap terkirim saat navigasi top-level dari browser lain, dan sesi dibuat
+# permanen 7 hari agar login tidak hilang saat browser ditutup.
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SECURE'] = False
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
 
 @app.before_request
 def check_security():
@@ -100,7 +124,7 @@ def setup():
         else:
             new_secret = secrets.token_hex(24)
             with open(CONFIG_FILE, 'w') as f: json.dump({"admin_pin": pin, "secret_key": new_secret}, f, indent=4)
-            app.secret_key = new_secret; session['logged_in'] = True
+            app.secret_key = new_secret; session.permanent = True; session['logged_in'] = True
             return redirect(url_for('hub'))
     return render_template('setup.html', error=error)
 
@@ -110,7 +134,7 @@ def login():
     error = None
     if request.method == 'POST':
         if request.form.get('password') == load_bot_config().get('admin_pin'):
-            session['logged_in'] = True; return redirect(url_for('hub'))
+            session.permanent = True; session['logged_in'] = True; return redirect(url_for('hub'))
         else: error = 'Akses Ditolak! PIN Salah.'
     return render_template('login.html', error=error)
 
@@ -2657,8 +2681,45 @@ def stop_channel(yt_id):
 
 @app.route('/api/check_secret')
 def check_secret():
-    try: return jsonify({"exists": os.path.exists(CLIENT_SECRETS_FILE)})
-    except: return jsonify({"exists": False})
+    # Mengembalikan info file yang terupload agar Settings bisa menampilkannya
+    # (nama file, client_id, tipe client, ukuran, waktu upload). client_secret
+    # TIDAK PERNAH dikembalikan ke browser.
+    if not os.path.exists(CLIENT_SECRETS_FILE):
+        return jsonify({"exists": False})
+    try:
+        size = os.path.getsize(CLIENT_SECRETS_FILE)
+        modified = datetime.fromtimestamp(os.path.getmtime(CLIENT_SECRETS_FILE), tz=timezone.utc).isoformat()
+        with open(CLIENT_SECRETS_FILE, 'r') as f:
+            secret_data = json.load(f)
+        client_type = None
+        client_config = {}
+        for _key in ('installed', 'web'):
+            if isinstance(secret_data.get(_key), dict):
+                client_type = _key
+                client_config = secret_data[_key]
+                break
+        return jsonify({
+            "exists": True,
+            "filename": "client_secret.json",
+            "client_id": client_config.get('client_id'),
+            "client_type": client_type or 'other',
+            "project_id": client_config.get('project_id'),
+            "size_bytes": size,
+            "modified_iso": modified,
+        })
+    except Exception:
+        return jsonify({"exists": True, "parse_error": True})
+
+@app.route('/api/delete_secret', methods=['POST'])
+def delete_secret():
+    # Hapus file client_secret.json yang terupload (CRUD: delete).
+    try:
+        if not os.path.exists(CLIENT_SECRETS_FILE):
+            return jsonify({"status": "error", "message": "Tidak ada API key yang tersimpan."})
+        os.remove(CLIENT_SECRETS_FILE)
+        return jsonify({"status": "success", "message": "API key dihapus!"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Gagal menghapus API key: {str(e)}"})
 
 @app.route('/api/upload_secret', methods=['POST'])
 def upload_secret():
@@ -2687,7 +2748,7 @@ def device_login():
     <html><head><title>Aktivasi YouTube</title>
     <style>
         body {{ font-family: 'Segoe UI', Arial; text-align: center; background: #eef2f6; color: #1e293b; padding-top: 10vh; }}
-        .box {{ background: #ffffff; width: 550px; margin: auto; padding: 40px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; }}
+        .box {{ background: #ffffff; width: 550px; max-width: calc(100vw - 32px); margin: auto; padding: 40px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; }}
         .step {{ text-align: left; margin-bottom: 25px; font-size: 14px; color: #64748b; font-weight:600; }}
         .input-group {{ display: flex; margin-top: 10px; }}
         .input-group input {{ flex: 1; padding: 15px; font-size: 16px; font-weight: bold; background: #f8fafc; color: #10b981; border: 1px solid #e2e8f0; border-radius: 8px 0 0 8px; text-align: center; outline:none; }}
@@ -2967,6 +3028,20 @@ def get_telegram():
         "token": bot_config.get('tg_token', ''), 
         "chat_id": bot_config.get('tg_chat_id', '')
     })
+
+@app.route('/api/delete_telegram', methods=['POST'])
+def delete_telegram():
+    # Hapus konfigurasi Telegram yang tersimpan (CRUD: delete), kunci lain
+    # di config.json (admin_pin, secret_key, dsb.) tetap dipertahankan.
+    try:
+        bot_config = load_bot_config()
+        bot_config['tg_token'] = ''
+        bot_config['tg_chat_id'] = ''
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(bot_config, f, indent=4)
+        return jsonify({"status": "success", "message": "Konfigurasi Telegram dihapus!"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Gagal menghapus konfigurasi Telegram: {str(e)}"})
 
 @app.route('/api/hub_status')
 def get_hub_status():

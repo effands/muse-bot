@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Ziqva Muse Bot — Cloud Production</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Clash+Display:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 /* ═══════════════════════════════════════════
    ZIQVA MUSE BOT — DUAL THEME ENGINE (NEON DARK & CRISP LIGHT)
@@ -17,26 +16,27 @@
   --card2:       #101e3b;
   --border:      #1c2e4f;
   --border2:     #253d69;
-  --accent:      #00e5ff;
-  --accent-dim:  rgba(0, 229, 255, 0.15);
-  --accent2:     #ff3366;
-  --accent3:     #a855f7;
-  --green:       #10b981;
-  --yellow:      #fbbf24;
+  --accent:      #38bdf8;
+  --accent-dim:  rgba(56, 189, 248, 0.12);
+  --accent2:     #f43f5e;
+  --accent3:     #8b5cf6;
+  --green:       #22c55e;
+  --yellow:      #f59e0b;
   --orange:      #f97316;
-  --text:        #ffffff;
-  --text2:       #e2e8f0;
+  --text:        #f1f5f9;
+  --text2:       #cbd5e1;
   --muted:       #94a3b8;
-  --font-d:      'Clash Display', sans-serif;
-  --font-m:      'DM Mono', monospace;
+  --font-d:      'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-m:      ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, 'Liberation Mono', monospace;
   --r:           10px;
-  --r2:          14px;
-  --shadow-card: 0 8px 30px rgba(0, 0, 0, 0.5);
-  --glow-accent: 0 0 18px rgba(0, 229, 255, 0.6);
-  --glow-btn:    0 0 20px rgba(0, 229, 255, 0.65);
-  --glow-purple: 0 0 20px rgba(168, 85, 247, 0.65);
-  --glow-green:  0 0 20px rgba(16, 185, 129, 0.65);
-  --glow-danger: 0 0 20px rgba(255, 51, 102, 0.65);
+  --r2:          12px;
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.35);
+  --shadow-btn:  0 1px 2px rgba(0, 0, 0, 0.35);
+  --glow-accent: 0 1px 3px rgba(0, 0, 0, 0.35);
+  --glow-btn:    0 1px 2px rgba(0, 0, 0, 0.35);
+  --glow-purple: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --glow-green:  0 1px 2px rgba(0, 0, 0, 0.35);
+  --glow-danger: 0 1px 2px rgba(0, 0, 0, 0.35);
 }
 
 /* ══════════ LIGHT THEME (CLEAN SAAS WHITE) ══════════ */
@@ -48,10 +48,10 @@
   --border:      #e2e8f0;
   --border2:     #cbd5e1;
   --accent:      #0284c7;
-  --accent-dim:  rgba(2, 132, 199, 0.12);
+  --accent-dim:  rgba(2, 132, 199, 0.10);
   --accent2:     #e11d48;
   --accent3:     #7c3aed;
-  --green:       #059669;
+  --green:       #16a34a;
   --yellow:      #d97706;
   --orange:      #ea580c;
   --text:        #0f172a;
@@ -794,6 +794,130 @@ input[type=color] { padding:0; height:36px; width:100%; border:1px solid var(--b
 
 @media (min-width: 901px) { 
   .bottom-nav { display: none; }
+}
+
+/* ══════════ PROFESSIONAL DESIGN SYSTEM (2026-11-18) ══════════
+   Satu font stack sistem (tanpa font eksternal), satu skala tipe
+   12/13/14/16/20/24, satu palet terkendali, tanpa glow neon.
+   Blok ini menimpa aturan lama di atas; struktur & id tidak berubah. */
+:root {
+  --font-d: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-m: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+}
+html, body { max-width: 100%; overflow-x: hidden; }
+body { font-size: 14px; line-height: 1.5; }
+body::before { display: none; }
+.main, .content { min-width: 0; }
+.topbar { background: var(--surface); backdrop-filter: none; flex-wrap: wrap; }
+
+/* Tipografi: skala konsisten, hapus text-shadow/glow */
+.tb-title { font-size: 20px; font-weight: 700; letter-spacing: 0; }
+.tb-sub { font-size: 12px; }
+.sh-title { font-size: 20px; font-weight: 700; }
+.sh-sub { font-size: 12px; }
+.card-title { font-size: 13px; font-weight: 700; letter-spacing: .04em; }
+.card-sub { font-size: 12px; }
+.stat-val { font-size: 24px; text-shadow: none; }
+.stat-lbl { font-size: 11px; }
+.stat-note { font-size: 11px; }
+.logo-name { font-size: 16px; text-shadow: none; }
+.logo-ver { font-size: 11px; }
+.nav-section { font-size: 11px; }
+.nav-item { font-size: 13px; }
+.nav-badge { font-size: 11px; }
+.ch-mini-name { font-size: 12px; }
+.ch-status-txt { font-size: 11px; }
+.sm-lbl { font-size: 10px; }
+.sm-val { font-size: 13px; }
+.gitem-name { font-size: 12px; }
+.gitem-meta { font-size: 11px; }
+.title-item { font-size: 13px; }
+.title-item-num { font-size: 11px; }
+.sched-title { font-size: 13px; }
+.sched-meta, .task-meta { font-size: 11px; }
+.task-name { font-size: 14px; }
+.fl { font-size: 12px; }
+.fl small { font-size: 11px; }
+.pill { font-size: 11px; padding: 4px 10px; }
+.bnav-item { font-size: 11px; }
+.bnav-badge { font-size: 10px; }
+
+/* Tombol: datar, satu aksen, tanpa gradien/glow */
+.btn { font-size: 13px; padding: 9px 16px; border-radius: 8px; box-shadow: none; }
+.btn-p { background: var(--accent); color: #ffffff; font-weight: 700; box-shadow: none; }
+.btn-p:hover { filter: brightness(1.08); transform: none; box-shadow: none; }
+.btn-g { background: transparent; color: var(--text2); border: 1px solid var(--border2); box-shadow: none; }
+.btn-g:hover { border-color: var(--accent); color: var(--accent); box-shadow: none; }
+.btn-danger { background: transparent; color: var(--accent2); border: 1px solid var(--accent2); box-shadow: none; }
+.btn-danger:hover { background: var(--accent2); color: #ffffff; box-shadow: none; }
+.btn-purple { background: var(--accent3); color: #ffffff; box-shadow: none; }
+.btn-purple:hover { filter: brightness(1.08); transform: none; box-shadow: none; }
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+.btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.btn-row .btn { margin-top: 0 !important; }
+.stop-btn, .cancel-btn { font-size: 12px; }
+
+/* Kartu & input: radius & bayangan tenang */
+.card { border-radius: 12px; box-shadow: var(--shadow-card); }
+.card:hover { border-color: var(--border2) !important; }
+.card-body { padding: 16px 18px; }
+.stat { box-shadow: var(--shadow-card); }
+.stat:hover { transform: none; border-color: var(--border2) !important; box-shadow: var(--shadow-card); }
+.stat::after { display: none; }
+.content input[type=text], .content input[type=number], .content input[type=datetime-local],
+.content input[type=password], .content select, .content textarea {
+  font-family: var(--font-d); font-size: 13px; padding: 10px 12px;
+}
+.content input:focus, .content select:focus, .content textarea:focus {
+  border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim);
+}
+input[type=file] { font-family: var(--font-d); font-size: 13px; }
+.meta-line { font-size: 12px; color: var(--muted); margin-top: 12px; line-height: 1.6; word-break: break-word; }
+.section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.section-title { font-size: 16px; font-weight: 700; }
+#secret-info, #tg-status { overflow-wrap: anywhere; }
+#tv-box { background: var(--accent-dim); border: 1px solid var(--border2); }
+#tv-box input { font-size: 13px; }
+
+/* Pills & status: satu aksen, tanpa emoji berlebih di teks badge */
+.p-cyan { background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent); }
+.p-green { background: rgba(34, 197, 94, 0.12); color: var(--green); border: 1px solid rgba(34, 197, 94, 0.4); }
+.p-red { background: rgba(244, 63, 94, 0.12); color: var(--accent2); border: 1px solid rgba(244, 63, 94, 0.4); }
+.p-yellow { background: rgba(245, 158, 11, 0.12); color: var(--yellow); border: 1px solid rgba(245, 158, 11, 0.4); }
+.p-muted { background: var(--card2); color: var(--muted); border: 1px solid var(--border2); }
+.nav-badge { background: rgba(244, 63, 94, 0.12); color: var(--accent2); border: 1px solid rgba(244, 63, 94, 0.4); }
+.nav-badge.b-green { background: rgba(34, 197, 94, 0.12); color: var(--green); border-color: rgba(34, 197, 94, 0.4); }
+.nav-badge.b-blue { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
+
+/* Glow lama dimatikan */
+:root .card-title, :root .sh-title, :root .tb-title { text-shadow: none; }
+:root .stat-val { text-shadow: none; }
+:root .logo-name { text-shadow: none; }
+:root .btn-p, :root .btn-p:hover, :root .btn-purple, :root .btn-purple:hover,
+:root .btn-danger, :root .btn-danger:hover { box-shadow: none; }
+.step.active .step-num { box-shadow: none; }
+.task-row.q-waiting { box-shadow: none; }
+.ch-mini-av, .ch-con-av { background: var(--accent3); }
+.gitem-thumb { background: var(--card2); }
+[data-theme="light"] .btn-p { background: var(--accent); color: #ffffff; }
+
+/* Responsif 360px: kartu & form menumpuk, tanpa overflow horizontal */
+@media (max-width: 520px) {
+  .content { padding: 12px; }
+  .card-body { padding: 14px; }
+  .topbar { padding: 10px 12px; }
+  .tb-title { font-size: 18px; }
+  .sh-title { font-size: 18px; }
+  .btn-row .btn { flex: 1 1 auto; justify-content: center; }
+  .section-head { flex-direction: column; align-items: flex-start; }
+  .task-row { flex-wrap: wrap; }
+  .task-row .stop-btn { margin-left: auto; }
+  .toast { min-width: 0; max-width: calc(100vw - 32px); }
+  .sys-monitor { display: none; }
+  .gallery-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+}
+@media (max-width: 900px) {
+  .card-head { flex-direction: column; align-items: flex-start; gap: 8px; }
 }
 </style>
 </head>
@@ -1565,7 +1689,12 @@ input[type=color] { padding:0; height:36px; width:100%; border:1px solid var(--b
                 <input type="text" id="tg-chatid" placeholder="Contoh: 987654321">
             </div>
           </div>
-          <button class="btn btn-p" style="margin-top:10px" onclick="saveTgConfig()">💾 Simpan & Test Pesan</button>
+          <div id="tg-status" class="meta-line">Belum ada konfigurasi tersimpan.</div>
+          <div class="btn-row">
+            <button class="btn btn-p" onclick="saveTgConfig()">Simpan &amp; Test Pesan</button>
+            <button class="btn btn-g" onclick="editTgConfig()">Edit</button>
+            <button class="btn btn-danger" onclick="deleteTgConfig()">Hapus</button>
+          </div>
         </div>
       </div>
 
@@ -1577,19 +1706,22 @@ input[type=color] { padding:0; height:36px; width:100%; border:1px solid var(--b
         <div class="card-body">
           <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:14px">Upload <b style="color:var(--text)">client_secret.json</b> (Tipe: TVs and Limited Input Devices) untuk menghubungkan channel.</div>
           <form id="api-form" style="display:flex;gap:10px;flex-wrap:wrap">
-            <input type="file" name="secret_file" accept=".json" required style="flex:1;min-width:200px">
-            <button type="button" class="btn btn-p" onclick="uploadSecret()">UPLOAD API KEY</button>
+            <input type="file" id="secret-file-input" name="secret_file" accept=".json" required style="flex:1;min-width:200px">
+            <button type="button" class="btn btn-p" onclick="uploadSecret()">Upload API Key</button>
           </form>
+          <div id="secret-info" class="meta-line">Memeriksa file API…</div>
+          <div class="btn-row">
+            <button class="btn btn-danger" onclick="deleteSecret()">Hapus API Key</button>
+            <button class="btn btn-g" onclick="focusSecretFile()">Ganti File</button>
+          </div>
         </div>
       </div>
 
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-  <div style="font-size:14px;font-weight:700">◉ Connected Channels</div>
-  
-  <!-- Bungkus grup tombol agar berjejer di kanan -->
-  <div style="display:flex; gap:8px; align-items:center;">
-    <button class="btn btn-p" style="background-color: #2563eb; border-color: #2563eb;" onclick="exportChannels()">📤 Export</button>
-    <button class="btn btn-p" style="background-color: #d97706; border-color: #d97706;" onclick="document.getElementById('importFile').click()">📥 Import</button>
+      <div class="section-head">
+  <div class="section-title">Connected Channels</div>
+  <div class="btn-row">
+    <button class="btn btn-p" onclick="exportChannels()">Export</button>
+    <button class="btn btn-g" onclick="document.getElementById('importFile').click()">Import</button>
     <input type="file" id="importFile" accept=".json" style="display: none;" onchange="importChannels(event)">
     
     <button class="btn btn-p" onclick="generateTVLink()">＋ Tautkan Channel Baru</button>
@@ -1651,11 +1783,42 @@ let currentGalleryType = 'audio';
 let currentGalleryCh = '';
 let currentTitleCh = '';
 
+function updateTgStatus(token, chat_id) {
+    const el = document.getElementById('tg-status');
+    if (!el) return;
+    if (token || chat_id) {
+        const masked = token ? '••••' + token.slice(-4) : '—';
+        el.textContent = 'Tersimpan — Token: ' + masked + ' · Chat ID: ' + (chat_id || '—');
+    } else {
+        el.textContent = 'Belum ada konfigurasi tersimpan.';
+    }
+}
+
 function loadTgConfig() {
     fetch('/api/get_telegram').then(r => r.json()).then(d => {
-        if(d.token) document.getElementById('tg-token').value = d.token;
-        if(d.chat_id) document.getElementById('tg-chatid').value = d.chat_id;
+        const tokenEl = document.getElementById('tg-token');
+        const chatEl = document.getElementById('tg-chatid');
+        if (d.token) tokenEl.value = d.token; else tokenEl.value = '';
+        if (d.chat_id) chatEl.value = d.chat_id; else chatEl.value = '';
+        updateTgStatus(d.token || '', d.chat_id || '');
     }).catch(()=>{});
+}
+
+function editTgConfig() {
+    const el = document.getElementById('tg-token');
+    if (el) { el.focus(); el.select(); }
+}
+
+function deleteTgConfig() {
+    if (!confirm('Hapus konfigurasi Telegram yang tersimpan?')) return;
+    fetch('/api/delete_telegram', { method: 'POST' }).then(r => r.json()).then(d => {
+        if (d.status === 'success') {
+            document.getElementById('tg-token').value = '';
+            document.getElementById('tg-chatid').value = '';
+            updateTgStatus('', '');
+        }
+        toast(d.message || 'Konfigurasi Telegram dihapus.', d.status === 'success' ? 'success' : 'error');
+    }).catch(() => toast('Gagal menghapus konfigurasi Telegram', 'error'));
 }
 
 function saveTgConfig() {
@@ -1668,6 +1831,7 @@ function saveTgConfig() {
         body: JSON.stringify({token: token, chat_id: chat_id})
     }).then(r => r.json()).then(d => {
         toast(d.message, 'success');
+        loadTgConfig();
     }).catch(() => toast('Gagal menyimpan konfigurasi Telegram', 'error'));
 }
 
@@ -1817,6 +1981,7 @@ function go(id, el) {
 
   document.getElementById('tb-title').textContent = PAGE_META[id].t;
   document.getElementById('tb-sub').textContent = PAGE_META[id].s;
+  if (id === 'settings') { loadTgConfig(); checkApiStatus(); }
   if (id === 'dashboard') fetchAnalytics();
   if (id === 'batch') {
     refreshBatchDropdowns();
@@ -3733,7 +3898,7 @@ function drawChart(title, labels, d1, d2, type) {
   const ctx = document.getElementById('dashChart').getContext('2d'); if (chartInstance) chartInstance.destroy();
   const isLight = document.documentElement.getAttribute('data-theme') === 'light';
   Chart.defaults.color = isLight ? '#64748b' : '#94a3b8'; 
-  Chart.defaults.font.family = 'DM Mono';
+  Chart.defaults.font.family = "ui-monospace, 'SF Mono', Menlo, Consolas, monospace";
   const titleColor = isLight ? '#0f172a' : '#ffffff';
   const gridColor = isLight ? '#e2e8f0' : '#1c2e4f';
   const dts = type === 'bar' ? [
@@ -3762,11 +3927,38 @@ function drawChart(title, labels, d1, d2, type) {
 // ────────────────────────────────────────────────────────
 //  SETTINGS
 // ────────────────────────────────────────────────────────
+function renderSecretInfo(d) {
+  const el = document.getElementById('secret-info');
+  if (!el) return;
+  if (!d.exists) { el.textContent = 'Belum ada file client_secret.json yang terupload.'; return; }
+  if (d.parse_error) { el.textContent = 'File client_secret.json ada, tetapi isinya tidak bisa dibaca. Upload ulang file JSON yang benar.'; return; }
+  const kb = d.size_bytes != null ? (d.size_bytes / 1024).toFixed(1) + ' KB' : '—';
+  const when = d.modified_iso ? new Date(d.modified_iso).toLocaleString('id-ID') : '—';
+  el.textContent = 'Terupload: client_secret.json · Client ID: ' + (d.client_id || '—')
+    + ' · Tipe: ' + (d.client_type || '—')
+    + (d.project_id ? ' · Project: ' + d.project_id : '')
+    + ' · Ukuran: ' + kb + ' · Diunggah: ' + when;
+}
+
 function checkApiStatus() {
   fetch('/api/check_secret?t=' + Date.now()).then(r => r.json()).then(d => {
     const b = document.getElementById('api-badge');
-    if (d.exists) { b.textContent = '🟢 API AKTIF'; b.className = 'pill p-green'; } else { b.textContent = '🔴 BELUM ADA API'; b.className = 'pill p-red'; }
+    if (d.exists) { b.textContent = 'API AKTIF'; b.className = 'pill p-green'; } else { b.textContent = 'BELUM ADA API'; b.className = 'pill p-red'; }
+    renderSecretInfo(d);
   }).catch(() => {});
+}
+
+function deleteSecret() {
+  if (!confirm('Hapus file client_secret.json yang terupload? Channel yang sudah terhubung tidak ikut terhapus, tapi tautan channel baru tidak bisa dibuat sampai file diupload ulang.')) return;
+  fetch('/api/delete_secret', { method: 'POST' }).then(r => r.json()).then(d => {
+    toast(d.message || 'API key dihapus.', d.status === 'success' ? 'success' : 'error');
+    checkApiStatus();
+  }).catch(() => toast('Gagal menghapus API key', 'error'));
+}
+
+function focusSecretFile() {
+  const el = document.getElementById('secret-file-input');
+  if (el) el.click();
 }
 
 function uploadSecret() {
@@ -3924,9 +4116,10 @@ function stopAudioPreview() {
 //  CORE SYSTEM INIT
 // ────────────────────────────────────────────────────────
 function init() {
-  loadChannels(); 
-  updateCenterLogo(); 
-  fetchAnalytics(); 
+  loadChannels();
+  updateCenterLogo();
+  fetchAnalytics();
+  loadTgConfig();
   checkApiStatus();
   fetch('/api/get_presets').then(r => r.json()).then(d => {
       if (d && typeof d === 'object' && !Array.isArray(d)) { visPresets = d; } else { visPresets = {}; }

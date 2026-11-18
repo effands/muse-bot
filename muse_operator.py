@@ -179,7 +179,7 @@ def build_status_report():
     panel_ok = check_panel_online()
 
     lines = [
-        "📊 *STATUS ZIQVA MUSE BOT*",
+        "📊 *Laporan buat Bos* 😎",
         f"_{_wib_now().strftime('%d %b %Y, %H:%M')} WIB_",
         "━━━━━━━━━━━━━━━━━━━━━━",
         f"🖥️ *Panel Web (8000):* {'🟢 Online' if panel_ok else '🔴 Mati/tidak menjawab'}",
@@ -190,7 +190,7 @@ def build_status_report():
     ]
     # --- Channel + kuota ---
     if not channels:
-        lines.append("📺 *Channel:* Belum ada channel terhubung.")
+        lines.append("📺 *Channel:* Belum ada yang terhubung nih Bos 😅")
         lines.append("Tautkan dulu dari panel (/factory → Connect), baru kuota & antrean bisa dipantau.")
     else:
         total_left = 0
@@ -224,6 +224,11 @@ def build_status_report():
         f"❌ *Gagal hari ini:* `{fail_today}`",
         f"📁 *Riwayat:* `{len(history)} task`",
     ]
+    # Penutup berbasis data: jangan klaim aman kalau ada yang gagal/mati/pending.
+    if fail_today > 0 or not panel_ok or pending:
+        lines.append("Bos, ada yang perlu dicek/diputuskan, lihat di atas ya 👀")
+    else:
+        lines.append("Aman Bos, saya yang urus 💪")
     return "\n".join(lines)
 
 def build_daily_report():
@@ -235,8 +240,12 @@ def build_daily_report():
     yday = _wib_yesterday_str()
     ok, fail, ok_titles, fail_titles = _count_history_for_date(history, yday)
 
+    # Sapaan pagi 1x sehari (persona asisten pribadi) — di depan laporan,
+    # info penting tetap di bawahnya, tidak tertunda.
     lines = [
-        "🌅 *LAPORAN HARIAN ZIQVA MUSE BOT*",
+        "Pagi Bos! ☀️ Gimana kabarnya hari ini, sehat kan? 😊",
+        "",
+        "🌅 *LAPORAN HARIAN BUAT BOS* ☀️",
         f"Rekap {_wib_now().strftime('%d %b %Y')} (hasil kemarin, {yday})",
         "━━━━━━━━━━━━━━━━━━━━━━",
         f"✅ *Upload sukses kemarin:* `{ok}`",
@@ -265,12 +274,18 @@ def build_daily_report():
             if stock is None:
                 lines.append(f"• *{name}*: belum ada jadwal")
             elif stock < 0:
-                lines.append(f"• *{name}*: ⚠️ stok HABIS — buat batch baru!")
+                lines.append(f"• *{name}*: ⚠️ stok HABIS — Bos, buat batch baru ya!")
             elif stock <= 1:
-                lines.append(f"• *{name}*: ⚠️ sisa ~{max(0, int(stock))} hari — segera buat batch baru")
+                lines.append(f"• *{name}*: ⚠️ sisa ~{max(0, int(stock))} hari — Bos, segera buat batch baru ya!")
             else:
                 lines.append(f"• *{name}*: sisa ~{int(stock)} hari")
-    lines.append("\nKetik /status kapan saja untuk cek kondisi terkini.")
+    if fail > 0:
+        lines.append("\nYang gagal saya coba lagi ya Bos 💪")
+    elif ok > 0:
+        lines.append("\nSemua mulus Bos, saya lanjutkan 💪 Yang udah tayang jangan lupa ditonton ya, jangan lupa istirahat juga 😌")
+    else:
+        lines.append("\nKemarin lagi sepi Bos, nggak ada yang tayang 😌")
+    lines.append("Bos, ketik /status kapan aja kalau mau cek kondisi terkini 😎")
     return "\n".join(lines)
 
 # ==========================================
@@ -322,12 +337,12 @@ def build_schedule_report(days=7):
         return _parse_schedule_dt(t.get('time') or (t.get('blueprint') or {}).get('publish_date') or '')
 
     lines = [
-        "🗓️ *JADWAL PUBLISH 7 HARI KE DEPAN*",
+        "🗓️ *Jadwal Bos 7 hari ke depan* 👀",
         f"_{now.strftime('%d %b %Y, %H:%M')} WIB_",
         "━━━━━━━━━━━━━━━━━━━━━━",
     ]
     if not channels:
-        lines.append("📺 Belum ada channel terhubung.")
+        lines.append("📺 Belum ada channel terhubung nih Bos 😅")
         lines.append("Tautkan dulu dari panel, baru jadwal bisa ditampilkan.")
         return "\n".join(lines)
 
@@ -358,7 +373,7 @@ def build_schedule_report(days=7):
             for dt, t in over[:3]:
                 lines.append(f"  • {dt.strftime('%d %b %H:%M')} — {(t.get('title') or '?')[:40]}")
         if not items and not over:
-            lines.append("  _Tidak ada jadwal 7 hari ke depan._")
+            lines.append("  _Nggak ada jadwal 7 hari ke depan Bos 😌_")
         by_day = {}
         for dt, t in items:
             by_day.setdefault(dt.strftime('%Y-%m-%d'), []).append((dt, t))
@@ -380,7 +395,7 @@ def build_schedule_report(days=7):
             lines.append(f"  • `{dt.strftime('%d %b %H:%M')}` {(t.get('title') or '?')[:40]} — {label}")
         lines.append("")
     lines.append(f"Total: `{total} task` dalam 7 hari ke depan (termasuk yang terlambat).")
-    lines.append("Ketik /status untuk cek kuota & antrean terkini.")
+    lines.append("Bos, ketik /status buat cek kuota & antrean terkini 😎")
     return "\n".join(lines)
 
 def get_main_keyboard():
@@ -486,21 +501,21 @@ def handle_callback_query(token, chat_id, callback_query):
         try:
             task_id = int(data.split(':', 1)[1])
         except Exception:
-            answer_callback(token, cq_id, "Data tombol tidak valid.")
+            answer_callback(token, cq_id, "Eh, data tombolnya nggak valid nih 😅")
             return
         if data in _cb_in_flight:
-            answer_callback(token, cq_id, "⏳ Retry task ini masih diproses, tunggu sebentar.")
+            answer_callback(token, cq_id, "Sabar Bos, retry-nya masih saya proses 😅")
             return
         _cb_in_flight.add(data)
         try:
-            answer_callback(token, cq_id, "🔁 Mengirim retry ke panel...")
+            answer_callback(token, cq_id, "Siap Bos, saya kirim retry-nya... 🔁")
             ok, info = request_retry(task_id)
             if ok:
                 send_message(token, chat_id,
-                             f"✅ *Retry berhasil*\nTask #{task_id} kembali ke antrean render.\n_{info}_")
+                             f"✅ *Berhasil Bos, retry jalan!* 💪\nTask #{task_id} udah masuk antrean render lagi.\n_{info}_")
             else:
                 send_message(token, chat_id,
-                             f"⚠️ *Retry gagal*\nTask #{task_id}: {info}")
+                             f"⚠️ *Yah, retry-nya gagal Bos* 😅\nTask #{task_id}: {info}")
         finally:
             _cb_in_flight.discard(data)
         return
@@ -510,14 +525,14 @@ def handle_callback_query(token, chat_id, callback_query):
         try:
             task_id = int(_raw_id)
         except Exception:
-            answer_callback(token, cq_id, "Data tombol tidak valid.")
+            answer_callback(token, cq_id, "Eh, data tombolnya nggak valid nih 😅")
             return
         if data in _cb_in_flight:
-            answer_callback(token, cq_id, "⏳ Keputusan ini masih diproses, tunggu sebentar.")
+            answer_callback(token, cq_id, "Sabar Bos, keputusannya masih saya proses 😅")
             return
         _cb_in_flight.add(data)
         try:
-            word = "Menyetujui" if action == 'approve' else "Menolak"
+            word = "Siap Bos, saya setujui" if action == 'approve' else "Siap Bos, saya tolak"
             answer_callback(token, cq_id, f"{word} task...")
             ok, info = request_approval('approve_task' if action == 'approve' else 'reject_task',
                                         task_id=task_id)
@@ -525,10 +540,10 @@ def handle_callback_query(token, chat_id, callback_query):
                 icon = "✅" if action == 'approve' else "❌"
                 verb = "disetujui dan masuk antrean render" if action == 'approve' else "ditolak dan tidak akan dieksekusi"
                 send_message(token, chat_id,
-                             f"{icon} *Task #{task_id} {verb}.*\n_{info}_")
+                             f"{icon} *Sip Bos, task #{task_id} {verb}.*\n_{info}_")
             else:
                 send_message(token, chat_id,
-                             f"⚠️ *Keputusan gagal*\nTask #{task_id}: {info}")
+                             f"⚠️ *Yah gagal Bos* 😅\nTask #{task_id}: {info}")
         finally:
             _cb_in_flight.discard(data)
         return
@@ -536,25 +551,25 @@ def handle_callback_query(token, chat_id, callback_query):
     if data.startswith('approve_all:'):
         batch_id = data.split(':', 1)[1].strip()
         if not batch_id:
-            answer_callback(token, cq_id, "Data tombol tidak valid.")
+            answer_callback(token, cq_id, "Eh, data tombolnya nggak valid nih 😅")
             return
         if data in _cb_in_flight:
-            answer_callback(token, cq_id, "⏳ Batch ini masih diproses, tunggu sebentar.")
+            answer_callback(token, cq_id, "Sabar Bos, batch-nya masih saya proses 😅")
             return
         _cb_in_flight.add(data)
         try:
-            answer_callback(token, cq_id, "✅ Menyetujui semua task batch ini...")
+            answer_callback(token, cq_id, "Siap Bos, saya setujui semua... ✅")
             ok, info = request_approval('approve_batch', batch_id=batch_id)
             if ok:
                 send_message(token, chat_id,
-                             f"✅ *Batch disetujui*\n{info}")
+                             f"✅ *Sip Bos, batch-nya udah saya setujui semua!* 💪\n{info}")
             else:
                 send_message(token, chat_id,
-                             f"⚠️ *Approve batch gagal*\nBatch `{batch_id}`: {info}")
+                             f"⚠️ *Yah, approve batch-nya gagal Bos* 😅\nBatch `{batch_id}`: {info}")
         finally:
             _cb_in_flight.discard(data)
         return
-    answer_callback(token, cq_id, "Tombol tidak dikenal.")
+    answer_callback(token, cq_id, "Eh, tombol ini saya nggak kenal 😅")
 
 def get_system_telemetry():
     cpu = psutil.cpu_percent(interval=0.2)
@@ -634,8 +649,8 @@ def handle_user_command(token, chat_id, text):
         # 1. MENU / START
         if first_word in ["/start", "/help", "halo", "menu", "hai"]:
             msg = (
-                "🤖 *ZIQVA MUSE BOT — CLOUD OPERATOR*\n\n"
-                "Halo Bos! Ziqva Muse Bot siap menerima instruksi kerja. Sentuh salah satu tombol di bawah atau klik perintah berikut:\n\n"
+                "🤖 *ZIQVA MUSE BOT — CLOUD OPERATOR* 😎\n\n"
+                "Halo Bos! Saya siap kerja, tinggal perintah aja. Sentuh tombol di bawah atau klik perintah berikut:\n\n"
                 "👉 /status — Cek channel, antrean, kuota upload & kesehatan server\n"
                 "👉 /channel — Cek channel YouTube terdaftar\n"
                 "👉 /antrean — Cek daftar video yang sedang diproses\n"
@@ -658,12 +673,12 @@ def handle_user_command(token, chat_id, text):
             if not channels:
                 msg = (
                     "📺 *DAFTAR CHANNEL YOUTUBE*\n"
-                    "Belum ada channel terhubung di panel Ziqva Muse Bot.\n\n"
+                    "Bos, belum ada channel yang terhubung nih 😅\n\n"
                     "👉 Buka browser panel VPS di port 8000 (/factory)\n"
-                    "Lalu klik tombol *Connect* untuk menautkan channel YouTube pertama."
+                    "Lalu klik tombol *Connect* buat menautkan channel YouTube pertama."
                 )
             else:
-                msg = f"📺 *DAFTAR CHANNEL YOUTUBE ({len(channels)})*\n━━━━━━━━━━━━━━━━━━━━━━\n"
+                msg = f"📺 *Channel-nya Bos ({len(channels)})*\n━━━━━━━━━━━━━━━━━━━━━━\n"
                 for idx, ch in enumerate(channels, 1):
                     name = ch.get('channel_name', 'Tanpa Nama')
                     connected = "🟢 Terhubung" if ch.get('access_token') or ch.get('refresh_token') else "🔴 Putus"
@@ -676,9 +691,9 @@ def handle_user_command(token, chat_id, text):
             tasks_data = load_tasks()
             active = tasks_data.get('active', [])
             if not active:
-                msg = "📂 *ANTREAN RENDER KOSONG*\nSaat ini belum ada tugas render yang dijadwalkan di Ziqva Muse Bot."
+                msg = "📂 *Antrean lagi kosong Bos* 😌\nBelum ada tugas render yang dijadwalkan."
             else:
-                msg = f"📂 *ANTREAN TUGAS RENDER ({len(active)})*\n━━━━━━━━━━━━━━━━━━━━━━\n"
+                msg = f"📂 *Antrean Render Bos ({len(active)})*\n━━━━━━━━━━━━━━━━━━━━━━\n"
                 for idx, t in enumerate(active[:8], 1):
                     title = t.get('title', 'Video Kompilasi')
                     status = t.get('status', 'Menunggu')
@@ -707,12 +722,12 @@ def handle_user_command(token, chat_id, text):
             title_list = "\n\n".join([f"*{i+1}.* {t}" for i, t in enumerate(titles)])
             
             msg = (
-                f"💡 *BANK JUDUL VIRAL & SEO ({count} Judul)*\n"
+                f"💡 *Bos, ini {count} judul buat Bos* 😎\n"
                 f"🎯 *Target Global:* `{niche}`\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"{title_list}\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "📋 Salin judul di atas ke kolom *Bank Judul* channel Anda di panel!"
+                "📋 Salin aja judulnya ke kolom *Bank Judul* di panel ya Bos!"
             )
             send_message(token, chat_id, msg)
             return
@@ -721,7 +736,7 @@ def handle_user_command(token, chat_id, text):
         if "deskripsi" in clean_cmd or "description" in clean_cmd:
             niche = "Deep Sleep Music"
             msg = (
-                f"📝 *TEMPLATE DESKRIPSI SEO YOUTUBE*\n"
+                f"📝 *Template Deskripsi SEO buat Bos:*\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"Welcome to your ultimate sanctuary for relaxation and deep sleep. 🌙✨\n\n"
                 f"This {niche.lower()} compilation is carefully crafted to help ease insomnia, relieve mental fatigue, and release stress after a demanding day.\n\n"
@@ -738,7 +753,7 @@ def handle_user_command(token, chat_id, text):
         # 7. BLUEPRINT RESEP
         if "blueprint" in clean_cmd or "resep" in clean_cmd:
             msg = (
-                "📐 *STANDAR BLUEPRINT ZIQVA MUSE BOT*\n"
+                "📐 *Resep standar kita Bos:*\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
                 "• *Durasi:* Acak 60 – 80 menit (optimal untuk retensi dan algoritma)\n"
                 "• *Preset Render:* ultrafast (hemat CPU server VPS)\n"
@@ -752,16 +767,15 @@ def handle_user_command(token, chat_id, text):
 
         # DEFAULT FALLBACK
         msg = (
-            f"🤖 *Ziqva Muse Bot Operator*\n\n"
-            f"Saya menerima pesan: \"{raw_cmd}\"\n\n"
-            "Silakan sentuh tombol di bawah atau ketik:\n"
+            f"🤖 *Eh Bos, pesan \"{raw_cmd}\" saya terima tapi saya nggak ngerti maksudnya* 😅\n\n"
+            "Coba sentuh tombol di bawah atau ketik:\n"
             "👉 /status | /channel | /antrean | /jadwal | /judul"
         )
         send_message(token, chat_id, msg)
 
     except Exception as e:
         print(f"Error di handle_user_command: {e}", flush=True)
-        send_message(token, chat_id, f"⚠️ Maaf bos, ada kendala: `{e}`")
+        send_message(token, chat_id, f"⚠️ *Yah Bos, ada kendala nih* 😅: `{e}`")
 
 def watchdog_background_loop(token, chat_id):
     print("🛡️ [Ziqva Watchdog] Lapis 1 pengawas aktif...", flush=True)
@@ -775,10 +789,10 @@ def watchdog_background_loop(token, chat_id):
             now = time.time()
             if failed and (now - last_alert_time > 3600):
                 msg = (
-                    "🚨 *PERINGATAN ZIQVA MUSE BOT*\n\n"
-                    f"Ditemukan `{len(failed)}` tugas render yang mengalami kendala!\n"
-                    f"Contoh error: `{failed[0].get('title', 'Unknown')}` — {failed[0].get('status', '')}\n\n"
-                    "Silakan periksa panel web Ziqva Muse Bot Anda di port 8000."
+                    "🚨 *Bos, ada kendala nih* 😅\n\n"
+                    f"`{len(failed)}` tugas render bermasalah!\n"
+                    f"Contoh: `{failed[0].get('title', 'Unknown')}` — {failed[0].get('status', '')}\n\n"
+                    "Coba cek panel ya Bos, saya juga lagi pantau 👀"
                 )
                 send_message(token, chat_id, msg)
                 last_alert_time = now
@@ -804,21 +818,21 @@ def watchdog_background_loop(token, chat_id):
                         if not _alerted_today(state, key):
                             send_message(
                                 token, chat_id,
-                                f"⛔ *STOK JADWAL HABIS*\n\n"
+                                f"⛔ *Bos, stok jadwal {name} HABIS* 😅\n\n"
                                 f"Channel: *{name}*\n"
                                 f"Jadwal terakhir: `{last_sched}` (sudah lewat)\n\n"
-                                "Channel ini berhenti sampai batch baru dibuat. "
-                                "Buat batch baru dari panel (/factory → Batch Creator).")
+                                "Channel ini berhenti dulu sampai batch baru dibuat — "
+                                "buatin batch baru ya Bos, dari panel (/factory → Batch Creator) 🙏")
                             _mark_alerted(state, key)
                     elif stock <= 2:
                         key = f"stock_low:{yt_id}"
                         if not _alerted_today(state, key):
                             send_message(
                                 token, chat_id,
-                                f"⚠️ *STOK JADWAL MENIPIS*\n\n"
+                                f"⚠️ *Bos, stok {name} menipis nih* 😌\n\n"
                                 f"Channel: *{name}*\n"
                                 f"Jadwal terakhir: `{last_sched}` (sisa ~{int(stock)} hari)\n\n"
-                                "Segera buat batch baru supaya channel tidak kehabisan video.")
+                                "Buatin batch baru ya Bos, biar channel-nya nggak kehabisan video 🙏")
                             _mark_alerted(state, key)
             except Exception as e:
                 print(f"Watchdog stock-alert exception: {e}", flush=True)
@@ -874,8 +888,8 @@ def main():
 
     # Kirim salam & pasang keyboard menu interaktif
     welcome_msg = (
-        "🟢 *MUSE AI OPERATOR SIAP!*\n\n"
-        "Sistem sudah diperbarui. Sekarang semua tombol di bawah sudah aktif merespons seketika saat disentuh! 🚀"
+        "🟢 *Bos, saya siap!* 😎\n\n"
+        "Sistem udah diperbarui, semua tombol di bawah udah bisa dipencet dan langsung saya respon! 💪"
     )
     send_message(token, owner_chat_id, welcome_msg, reply_markup=get_main_keyboard())
 

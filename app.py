@@ -259,7 +259,7 @@ def startup_sanitizer():
     except Exception:
         pass
     if notifs:
-        send_tg_message("🛡️ *Ziqva Muse Bot Startup Sanitizer*\n" + "\n".join(notifs) + "\n\n✅ Aplikasi siap, antrean dilanjutkan otomatis.")
+        send_tg_message("🧹 *Bos, saya udah beres-beres pas start nih* 😎\n" + "\n".join(notifs) + "\n\n✅ Aplikasi siap, antrean saya lanjutkan otomatis 💪")
 
 def queue_watchdog_worker():
     """🔥 BARU: Watchdog antrean — task stuck 'Rendering...' > 30 menit otomatis digagalkan
@@ -301,7 +301,7 @@ def queue_watchdog_worker():
                     if d['id'] == sid:
                         move_to_history(sid, f"Gagal ❌ (Stuck >1 jam, otomatis dilanjutkan)")
                         break
-            send_tg_message(f"⚠️ *Watchdog*: Task #{sid} stuck >1 jam (tidak ada kemajuan).\nOtomatis digagalkan & antrean dilanjutkan ke task berikutnya.")
+            send_tg_message(f"⚠️ *Bos, ada task yang macet nih* 😅\nTask #{sid} stuck lebih dari 1 jam, nggak ada kemajuan. Saya gagalkan saja ya biar antrean jalan terus 💪")
 
 threading.Thread(target=queue_watchdog_worker, daemon=True).start()
 
@@ -453,6 +453,22 @@ load_cooldowns()
 # 🔥 BARU v1.4: batas upload harian per channel — 6 video/hari, lanjut otomatis besok.
 # Counter disimpan di channels_db.json per channel → tahan restart.
 MAX_UPLOADS_PER_CHANNEL_PER_DAY = 6
+
+# 🔥 FASE 5: QC gate pra-upload + self-healing + bersih disk (audit F9a/F8)
+QC_MIN_FILE_BYTES = 100_000          # file render < 100 KB dianggap gagal
+QC_DURATION_TOLERANCE_SEC = 120.0    # toleransi durasi vs target (atau 5%)
+QC_SILENCE_MAX_DB = -50.0            # mean_volume di bawah ini = audio hening
+QC_AUDIO_PROBE_TIMEOUT = 180         # detik untuk volumedetect (decode audio)
+DISK_MIN_FREE_BYTES = 5 * 1024 ** 3  # 5 GB ambang aman sebelum render
+DISK_BYTES_PER_SEC = 500_000         # perkiraan ukuran hasil render (500 KB/detik)
+UPLOAD_MAX_ATTEMPTS = 3              # 1 percobaan + maks 2x retry (Fase 5)
+UPLOAD_RETRY_BACKOFF_BASE = 10       # detik; jeda 10 lalu 20 (eksponensial x2)
+FAIL_STREAK_AUTO_PAUSE = 3           # gagal beruntun → jeda channel otomatis
+# Aturan umur bersih-bersih disk (lihat cleanup_old_files):
+CLEANUP_TEMP_MAX_AGE = 6 * 3600      # temp render > 6 jam
+CLEANUP_FINAL_MAX_AGE = 24 * 3600    # final render > 1 hari & task tidak aktif
+CLEANUP_CLIP_MAX_AGE = 7 * 24 * 3600      # output clipper > 7 hari & job tidak aktif
+CLEANUP_DOWNLOAD_MAX_AGE = 7 * 24 * 3600  # download sumber clipper > 7 hari
 
 def _wib_now():
     return datetime.now(ZoneInfo("Asia/Jakarta"))
@@ -1727,6 +1743,11 @@ def background_worker():
             os.path.join(BASE_DIR, f"static/final_{task_id}.mp4"),
         ]
         try:
+            # 🔥 FASE 5 + audit F9a (REVISI): cek disk sebelum render — kalau
+            # menipis, bersih-bersih dulu otomatis; baru tolak kalau masih kurang.
+            disk_err = _ensure_disk_for_render(task)
+            if disk_err:
+                raise Exception(disk_err)
             # Pasang antrean resource gate di sini
             acquire_resource("Factory Worker")
             if stop_flags.get(task_id): 
@@ -2036,190 +2057,224 @@ def background_worker():
             if _channel_paused(yt_id):
                 raise _PausedAbort()
 
+            # 🔥 FASE 5: QC gate pra-upload — periksa hasil render SEBELUM
+            # di-upload. Gagal QC → _QCFailure → riwayat "Gagal QC" + notif
+            # Telegram + tombol Retry (retry = render ulang dari awal).
+            with db_lock:
+                for d in active_tasks:
+                    if d['id'] == task_id:
+                        d['status'] = "Memeriksa Kualitas Video (QC)... 🔍"
+                        d['updated_at'] = time.time()
+            save_tasks_db()
+            qc_failures = run_qc_checks(task, final_video, yt_id)
+            if qc_failures:
+                raise _QCFailure(" | ".join(qc_failures))
+
             if channel_data:
                 creds_list = channel_data.get('creds_list', [channel_data.get('creds_json')])
                 upload_berhasil = False
                 pesan_error = "Token API Tidak Ditemukan/Kosong!" 
                 
-                for index_kunci, cred_str in enumerate(creds_list):
-                    if not cred_str: continue
-                    try:
-                        creds = Credentials.from_authorized_user_info(json.loads(cred_str))
-                        if creds.expired and creds.refresh_token: 
-                            creds.refresh(Request())
+                # 🔥 FASE 5 + audit F8: retry upload dengan backoff eksponensial.
+                # 1 percobaan + maks 2x retry (jeda 10 dtk lalu 20 dtk), TANPA
+                # render ulang — file final_video dipakai lagi tiap percobaan.
+                # Hanya error SEMENTARA yang di-retry; permanen langsung berhenti.
+                for upload_attempt in range(1, UPLOAD_MAX_ATTEMPTS + 1):
+                    if upload_attempt > 1:
+                        with db_lock:
+                            for d in active_tasks:
+                                if d['id'] == task_id:
+                                    d['status'] = f"Upload Gagal Sementara, Auto-Retry {upload_attempt}/{UPLOAD_MAX_ATTEMPTS}... 🔌"
+                                    d['updated_at'] = time.time()
+                        save_tasks_db()
+                    for index_kunci, cred_str in enumerate(creds_list):
+                        if not cred_str: continue
+                        try:
+                            creds = Credentials.from_authorized_user_info(json.loads(cred_str))
+                            if creds.expired and creds.refresh_token: 
+                                creds.refresh(Request())
                             
-                        youtube = build('youtube', 'v3', credentials=creds)
-                        try: sch_obj = datetime.strptime(task['publish_date'], "%Y-%m-%d %H:%M")
-                        except: raise Exception("Format tanggal salah")
+                            youtube = build('youtube', 'v3', credentials=creds)
+                            try: sch_obj = datetime.strptime(task['publish_date'], "%Y-%m-%d %H:%M")
+                            except: raise Exception("Format tanggal salah")
                         
-                        raw_tags = task.get('tags', '')
-                        clean_tags = raw_tags.replace('#', '').replace('<', '').replace('>', '').replace('"', '')
-                        temp_tags = [t.strip() for t in clean_tags.split(',') if t.strip()]
+                            raw_tags = task.get('tags', '')
+                            clean_tags = raw_tags.replace('#', '').replace('<', '').replace('>', '').replace('"', '')
+                            temp_tags = [t.strip() for t in clean_tags.split(',') if t.strip()]
                         
-                        tags_list = []
-                        char_count = 0
-                        for t in temp_tags:
-                            if char_count + len(t) <= 400:
-                                tags_list.append(t)
-                                char_count += len(t) + 1
+                            tags_list = []
+                            char_count = 0
+                            for t in temp_tags:
+                                if char_count + len(t) <= 400:
+                                    tags_list.append(t)
+                                    char_count += len(t) + 1
                         
-                        if not tags_list: tags_list = ['wavepush']
+                            if not tags_list: tags_list = ['wavepush']
                         
-                        body = {
-                            'snippet': {'title': task['title'], 'description': task.get('description', ''), 'tags': tags_list, 'categoryId': '10'},
-                            'status': {'privacyStatus': task.get('privacy', 'public')}
-                        }
-                        if sch_obj > datetime.now():
-                            wib = ZoneInfo("Asia/Jakarta")
-                            sch_aware = sch_obj.replace(tzinfo=wib)
-                            sch_utc = sch_aware.astimezone(timezone.utc)
-                            body['status']['publishAt'] = sch_utc.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-                            body['status']['privacyStatus'] = 'private'
+                            body = {
+                                'snippet': {'title': task['title'], 'description': task.get('description', ''), 'tags': tags_list, 'categoryId': '10'},
+                                'status': {'privacyStatus': task.get('privacy', 'public')}
+                            }
+                            if sch_obj > datetime.now():
+                                wib = ZoneInfo("Asia/Jakarta")
+                                sch_aware = sch_obj.replace(tzinfo=wib)
+                                sch_utc = sch_aware.astimezone(timezone.utc)
+                                body['status']['publishAt'] = sch_utc.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                                body['status']['privacyStatus'] = 'private'
                             
-                        media = MediaFileUpload(final_video, chunksize=1024*1024*5, resumable=True)
-                        req = youtube.videos().insert(part=','.join(body.keys()), body=body, media_body=media)
-                        resp = None
+                            media = MediaFileUpload(final_video, chunksize=1024*1024*5, resumable=True)
+                            req = youtube.videos().insert(part=','.join(body.keys()), body=body, media_body=media)
+                            resp = None
                         
-                        max_retries = 5
-                        retry_count = 0
+                            max_retries = 5
+                            retry_count = 0
                         
-                        while resp is None:
-                            if stop_flags.get(task_id): raise Exception("Dibatalkan")
-                            try:
-                                status, resp = req.next_chunk()
-                                if status:
-                                    with db_lock:
-                                        for d in active_tasks:
-                                            if d['id'] == task_id:
-                                                d['status'] = f"Mengunggah (Key {index_kunci+1})... {int(status.progress()*100)}% 🚀"
-                                                d['updated_at'] = time.time()
-                                    save_tasks_db()
-                                retry_count = 0 
-                            except HttpError as e:
-                                if e.resp.status < 500:
-                                    raise e
-                                else:
+                            while resp is None:
+                                if stop_flags.get(task_id): raise Exception("Dibatalkan")
+                                try:
+                                    status, resp = req.next_chunk()
+                                    if status:
+                                        with db_lock:
+                                            for d in active_tasks:
+                                                if d['id'] == task_id:
+                                                    d['status'] = f"Mengunggah (Key {index_kunci+1})... {int(status.progress()*100)}% 🚀"
+                                                    d['updated_at'] = time.time()
+                                        save_tasks_db()
+                                    retry_count = 0 
+                                except HttpError as e:
+                                    if e.resp.status < 500:
+                                        raise e
+                                    else:
+                                        retry_count += 1
+                                        if retry_count > max_retries: 
+                                            raise Exception("Server YouTube Down/Timeout setelah 5x percobaan.")
+                                        with db_lock:
+                                            for d in active_tasks:
+                                                if d['id'] == task_id: d['status'] = f"Koneksi Sinyal Lemah, Auto-Retry ({retry_count}/{max_retries})... 🔌"
+                                        save_tasks_db()
+                                        time.sleep(10)
+                                except Exception as e:
                                     retry_count += 1
                                     if retry_count > max_retries: 
-                                        raise Exception("Server YouTube Down/Timeout setelah 5x percobaan.")
+                                        raise Exception("Koneksi VPS Putus setelah dicoba 5x berturut-turut.")
                                     with db_lock:
                                         for d in active_tasks:
-                                            if d['id'] == task_id: d['status'] = f"Koneksi Sinyal Lemah, Auto-Retry ({retry_count}/{max_retries})... 🔌"
+                                            if d['id'] == task_id: d['status'] = f"Koneksi VPS Putus, Auto-Retry ({retry_count}/{max_retries})... 🔌"
                                     save_tasks_db()
                                     time.sleep(10)
-                            except Exception as e:
-                                retry_count += 1
-                                if retry_count > max_retries: 
-                                    raise Exception("Koneksi VPS Putus setelah dicoba 5x berturut-turut.")
-                                with db_lock:
-                                    for d in active_tasks:
-                                        if d['id'] == task_id: d['status'] = f"Koneksi VPS Putus, Auto-Retry ({retry_count}/{max_retries})... 🔌"
-                                save_tasks_db()
-                                time.sleep(10)
                         
-                        video_id = resp.get('id')
-                        # 🔥 FASE 4: simpan video_id di task supaya statistik per
-                        # video bisa diambil (sebelumnya hanya ada di link status).
-                        try:
-                            with db_lock:
-                                for d in active_tasks:
-                                    if d['id'] == task_id:
-                                        d['video_id'] = video_id
-                                        d['video_url'] = f"https://youtu.be/{video_id}"
-                            save_tasks_db()
-                        except Exception:
-                            pass
-
-                        thumb_path = get_and_consume_thumbnail(yt_id)
-                        if thumb_path and os.path.exists(thumb_path):
+                            video_id = resp.get('id')
+                            # 🔥 FASE 4: simpan video_id di task supaya statistik per
+                            # video bisa diambil (sebelumnya hanya ada di link status).
                             try:
                                 with db_lock:
                                     for d in active_tasks:
-                                        if d['id'] == task_id: d['status'] = "Memasang Thumbnail... 🖼️"
+                                        if d['id'] == task_id:
+                                            d['video_id'] = video_id
+                                            d['video_url'] = f"https://youtu.be/{video_id}"
                                 save_tasks_db()
-                                youtube.thumbnails().set(videoId=video_id, media_body=MediaFileUpload(thumb_path)).execute()
+                            except Exception:
+                                pass
+
+                            thumb_path = get_and_consume_thumbnail(yt_id)
+                            if thumb_path and os.path.exists(thumb_path):
+                                try:
+                                    with db_lock:
+                                        for d in active_tasks:
+                                            if d['id'] == task_id: d['status'] = "Memasang Thumbnail... 🖼️"
+                                    save_tasks_db()
+                                    youtube.thumbnails().set(videoId=video_id, media_body=MediaFileUpload(thumb_path)).execute()
+                                    with db_lock:
+                                        for d in active_tasks:
+                                            if d['id'] == task_id: d['thumb_status'] = "Terpasang ✓"
+                                    # 🔥 UPDATE: file TIDAK dihapus lagi — thumbnail dipilih acak tiap video,
+                                    # jadi file bisa dipakai ulang oleh video berikutnya
+                                except Exception as thumb_err:
+                                    # 🔥 BARU: error thumbnail kini tercatat di Task Monitor, tidak lagi diam
+                                    with db_lock:
+                                        for d in active_tasks:
+                                            if d['id'] == task_id: d['thumb_status'] = f"Gagal: {str(thumb_err)[:80]}"
+                                    save_tasks_db()
+                            else:
+                                # Kalau folder kosong / tidak ada gambar yang bisa dibuka, catat status
                                 with db_lock:
                                     for d in active_tasks:
-                                        if d['id'] == task_id: d['thumb_status'] = "Terpasang ✓"
-                                # 🔥 UPDATE: file TIDAK dihapus lagi — thumbnail dipilih acak tiap video,
-                                # jadi file bisa dipakai ulang oleh video berikutnya
-                            except Exception as thumb_err:
-                                # 🔥 BARU: error thumbnail kini tercatat di Task Monitor, tidak lagi diam
-                                with db_lock:
-                                    for d in active_tasks:
-                                        if d['id'] == task_id: d['thumb_status'] = f"Gagal: {str(thumb_err)[:80]}"
+                                        if d['id'] == task_id: d['thumb_status'] = "Tidak ada thumbnail valid"
                                 save_tasks_db()
-                        else:
-                            # Kalau folder kosong / tidak ada gambar yang bisa dibuka, catat status
-                            with db_lock:
-                                for d in active_tasks:
-                                    if d['id'] == task_id: d['thumb_status'] = "Tidak ada thumbnail valid"
-                            save_tasks_db()
                                 
-                        try:
-                            if task.get('playlist_id'):
-                                youtube.playlistItems().insert(part='snippet', body={'snippet': {'playlistId': task['playlist_id'], 'resourceId': {'kind': 'youtube#video', 'videoId': video_id}}}).execute()
-                        except: pass
-                        move_to_history(task_id, f"Tayang! ✅ <a href='https://youtu.be/{video_id}' target='_blank'>[Lihat]</a>")
-                        notify_event("✅", task['title'], f"Tayang di YouTube {ch_name}\nJadwal tayang: {task['publish_date']}")
-                        upload_berhasil = True
-                        # 🔥 BARU v1.4: batas 6 upload/hari/channel → cooldown sampai tengah malam WIB,
-                        # besok lanjut otomatis. Task antre tetap aman menunggu.
-                        try:
-                            cnt, capped = track_daily_upload(yt_id)
-                            if capped:
-                                channel_cooldowns[yt_id] = _next_midnight_wib_ts()
+                            try:
+                                if task.get('playlist_id'):
+                                    youtube.playlistItems().insert(part='snippet', body={'snippet': {'playlistId': task['playlist_id'], 'resourceId': {'kind': 'youtube#video', 'videoId': video_id}}}).execute()
+                            except: pass
+                            move_to_history(task_id, f"Tayang! ✅ <a href='https://youtu.be/{video_id}' target='_blank'>[Lihat]</a>")
+                            notify_event("✅", task['title'], f"udah tayang di YouTube {ch_name} 😎\nJadwal tayang: {task['publish_date']}")
+                            upload_berhasil = True
+                            # 🔥 FASE 5: 1 sukses → reset hitungan gagal beruntun.
+                            _record_channel_success(yt_id)
+                            # 🔥 BARU v1.4: batas 6 upload/hari/channel → cooldown sampai tengah malam WIB,
+                            # besok lanjut otomatis. Task antre tetap aman menunggu.
+                            try:
+                                cnt, capped = track_daily_upload(yt_id)
+                                if capped:
+                                    channel_cooldowns[yt_id] = _next_midnight_wib_ts()
+                                    try: persist_cooldown(yt_id)
+                                    except Exception: pass
+                                    notify_event("⏸️", f"Cooldown harian {ch_name}",
+                                                 f"Udah {cnt} video tayang hari ini (batas {MAX_UPLOADS_PER_CHANNEL_PER_DAY}/hari) 😌 Saya jeda dulu, besok lanjut otomatis.")
+                                elif cnt == MAX_UPLOADS_PER_CHANNEL_PER_DAY - 1:
+                                    # 🔥 FASE 1 MONITORING: peringatan kuota menipis — hanya
+                                    # sekali, tepat saat counter menjadi 5/6 (tinggal 1 video).
+                                    notify_event("⚠️", f"Kuota hampir habis {ch_name}",
+                                                 f"Udah {cnt}/{MAX_UPLOADS_PER_CHANNEL_PER_DAY} video hari ini, sisa 1 lagi 😌 Saya irit-irit dulu ya, reset tengah malam WIB.")
+                            except Exception:
+                                pass
+                            break
+                        
+                        except HttpError as e:
+                            try:
+                                err_info = json.loads(e.content.decode('utf-8'))
+                                reason = err_info['error']['errors'][0]['reason']
+                            except:
+                                reason = str(e)
+                            
+                            if "quotaExceeded" in reason:
+                                pesan_error = f"Limit Kuota Harian API Habis!"
+                                continue 
+                            elif "uploadLimitExceeded" in reason:
+                                pesan_error = "Limit Upload Harian Channel Tercapai!"
+                                # 🔥 FIX: cooldown s.d. reset kuota (14:00/15:00 WIB), bukan 24 jam mentah
+                                channel_cooldowns[yt_id] = get_quota_reset_ts()
                                 try: persist_cooldown(yt_id)
                                 except Exception: pass
-                                notify_event("⏸️", f"Cooldown harian {ch_name}",
-                                             f"Sudah {cnt} video terupload hari ini (batas {MAX_UPLOADS_PER_CHANNEL_PER_DAY}/hari). Lanjut otomatis besok.")
-                            elif cnt == MAX_UPLOADS_PER_CHANNEL_PER_DAY - 1:
-                                # 🔥 FASE 1 MONITORING: peringatan kuota menipis — hanya
-                                # sekali, tepat saat counter menjadi 5/6 (tinggal 1 video).
-                                notify_event("⚠️", f"Kuota hampir habis {ch_name}",
-                                             f"Sudah {cnt}/{MAX_UPLOADS_PER_CHANNEL_PER_DAY} video terupload hari ini. Sisa kuota tinggal 1 video, reset tengah malam WIB.")
-                        except Exception:
-                            pass
-                        break
+                                break
+                            elif "rateLimitExceeded" in reason:
+                                pesan_error = "Rate Limit (Terlalu Cepat) - Auto Cooldown 30 Menit"
+                                channel_cooldowns[yt_id] = time.time() + 1800
+                                try: persist_cooldown(yt_id)
+                                except Exception: pass
+                                break
+                            else:
+                                pesan_error = f"Ditolak YT: {reason}"
+                                break
+                        except Exception as e:
+                            err_str = str(e).lower()
+                            if "invalid_grant" in err_str or "expired" in err_str or "revoked" in err_str:
+                                # 🔥 FIX: token dicabut/kedaluwarsa TIDAK sembuh dengan menunggu —
+                                # jangan pasang cooldown 24 jam, cukup minta taut ulang.
+                                pesan_error = "Sesi Kedaluwarsa (Tautkan Ulang!)"
+                            elif "timeout" in err_str or "connection" in err_str or "broken" in err_str:
+                                pesan_error = "Koneksi VPS Putus/Timeout"
+                            else:
+                                pesan_error = f"Error: {str(e)[:40]}"
+                            break
                         
-                    except HttpError as e:
-                        try:
-                            err_info = json.loads(e.content.decode('utf-8'))
-                            reason = err_info['error']['errors'][0]['reason']
-                        except:
-                            reason = str(e)
-                            
-                        if "quotaExceeded" in reason:
-                            pesan_error = f"Limit Kuota Harian API Habis!"
-                            continue 
-                        elif "uploadLimitExceeded" in reason:
-                            pesan_error = "Limit Upload Harian Channel Tercapai!"
-                            # 🔥 FIX: cooldown s.d. reset kuota (14:00/15:00 WIB), bukan 24 jam mentah
-                            channel_cooldowns[yt_id] = get_quota_reset_ts()
-                            try: persist_cooldown(yt_id)
-                            except Exception: pass
-                            break
-                        elif "rateLimitExceeded" in reason:
-                            pesan_error = "Rate Limit (Terlalu Cepat) - Auto Cooldown 30 Menit"
-                            channel_cooldowns[yt_id] = time.time() + 1800
-                            try: persist_cooldown(yt_id)
-                            except Exception: pass
-                            break
-                        else:
-                            pesan_error = f"Ditolak YT: {reason}"
-                            break
-                    except Exception as e:
-                        err_str = str(e).lower()
-                        if "invalid_grant" in err_str or "expired" in err_str or "revoked" in err_str:
-                            # 🔥 FIX: token dicabut/kedaluwarsa TIDAK sembuh dengan menunggu —
-                            # jangan pasang cooldown 24 jam, cukup minta taut ulang.
-                            pesan_error = "Sesi Kedaluwarsa (Tautkan Ulang!)"
-                        elif "timeout" in err_str or "connection" in err_str or "broken" in err_str:
-                            pesan_error = "Koneksi VPS Putus/Timeout"
-                        else:
-                            pesan_error = f"Error: {str(e)[:40]}"
+                    if upload_berhasil:
                         break
-                        
+                    # Gagal pada percobaan ini — hanya error sementara yang
+                    # di-retry (backoff eksponensial); permanen langsung berhenti.
+                    if not _upload_error_transient(pesan_error) or upload_attempt >= UPLOAD_MAX_ATTEMPTS:
+                        break
+                    time.sleep(UPLOAD_RETRY_BACKOFF_BASE * (2 ** (upload_attempt - 1)))
                 if not upload_berhasil:
                     if "API Habis" in pesan_error:
                         # 🔥 FIX: cooldown s.d. reset kuota (14:00/15:00 WIB), bukan 24 jam mentah
@@ -2229,8 +2284,24 @@ def background_worker():
                     raise Exception(pesan_error)
             else:
                 move_to_history(task_id, f"Render Selesai ✅ <a href='/static/final_{task_id}.mp4' target='_blank'>[Download]</a>")
-                notify_event("✅", task['title'], f"Render selesai, di-upload ke YouTube {ch_name}")
-        
+                notify_event("✅", task['title'], f"Render beres, Bos! Saya upload ke YouTube {ch_name} ya 😎")
+                # 🔥 FASE 5: render sukses juga mereset hitungan gagal beruntun.
+                _record_channel_success(yt_id)
+
+        except _QCFailure as e:
+            # 🔥 FASE 5: gagal QC — JANGAN upload. Task ke riwayat dengan alasan
+            # yang jelas + notif Telegram + tombol Retry (retry = render ulang).
+            reason = str(e)[:200]
+            move_to_history(task_id, f"Gagal QC 🛑 ({reason[:100]})")
+            _record_channel_failure(yt_id, task['title'], f"QC: {reason}")
+            if not stop_flags.get(task_id):
+                retry_markup = {"inline_keyboard": [[
+                    {"text": "🔁 Coba Lagi", "callback_data": f"retry:{task_id}"}
+                ]]}
+                notify_event("🛑", task['title'],
+                             f"Bos, video ini nggak lolos QC saya 😅\nAlasan: {reason[:120]}\nSaya tahan dulu biar nggak tayang yang jelek-jelek — pencet Coba Lagi kalau mau saya render ulang 💪",
+                             reply_markup=retry_markup)
+
         except _PausedAbort:
             # 🔥 FASE 3: dibatalkan karena channel dijeda — BUKAN gagal.
             # Task tetap di antrean aktif berstatus Dijeda (tidak masuk riwayat,
@@ -2252,6 +2323,11 @@ def background_worker():
                 queue_put(task)
             else:
                 move_to_history(task_id, f"Gagal ❌ ({err_msg})")
+                # 🔥 FASE 5: catat kegagalan beruntun untuk auto-pause channel.
+                # Pembatalan manual (stop flag / "Dibatalkan") BUKAN kegagalan
+                # channel — jangan dihitung.
+                if not stop_flags.get(task_id) and "Dibatalkan" not in err_msg:
+                    _record_channel_failure(yt_id, task['title'], err_msg)
                 # 🔥 FIX: kalau digagalkan watchdog (stop flag), JANGAN kirim
                 # notif gagal lagi — watchdog sudah mengirim notifikasinya sendiri.
                 if not stop_flags.get(task_id):
@@ -2262,7 +2338,7 @@ def background_worker():
                         {"text": "🔁 Coba Lagi", "callback_data": f"retry:{task_id}"}
                     ]]}
                     notify_event("❌", task['title'],
-                                 f"Gagal upload di channel {ch_name}\nPenyebab: {err_msg[:120]}",
+                                 f"Bos, ada yang gagal nih 😅 Video ini gagal di channel {ch_name} — penyebab: {err_msg[:120]}. Tenang, saya pantau terus — tinggal pencet Coba Lagi ya 💪",
                                  reply_markup=retry_markup)
         finally:
             # Lepas antrean agar Clipper bisa jalan
@@ -2590,8 +2666,8 @@ def recover_failed_tasks():
     for r in recovered:
         pass
     if recovered:
-        send_tg_message("🔄 *Task dipulihkan*\n" + "\n".join("• " + r for r in recovered[:10]) +
-                        ("\n…dst" if len(recovered) > 10 else "") + "\nTask kembali ke antrean render.")
+        send_tg_message("🔄 *Bos, saya pulihkan task yang sempat macet nih* 💪\n" + "\n".join("• " + r for r in recovered[:10]) +
+                        ("\n…dst" if len(recovered) > 10 else "") + "\nUdah masuk antrean render lagi, saya lanjutkan.")
     return jsonify({"status": "success", "recovered": len(recovered),
                     "titles": recovered})
 
@@ -2627,6 +2703,366 @@ def _channel_paused(yt_id):
         if c.get('yt_id') == yt_id:
             return bool(c.get('paused', False))
     return False
+
+
+# ============================================================
+# 🔥 FASE 5: QC GATE PRA-UPLOAD + SELF-HEALING + BERSIH DISK
+# ============================================================
+
+class _QCFailure(Exception):
+    """Render selesai tapi tidak layak tayang — jangan upload."""
+    pass
+
+
+def _probe_video(path):
+    """Jalankan ffprobe, kembalikan dict JSON (format + streams) atau None
+    kalau probe gagal. Dipakai QC gate untuk durasi/resolusi/stream audio."""
+    try:
+        out = subprocess.run(
+            [get_ffprobe_path(), '-v', 'error',
+             '-show_entries', 'format=duration,size',
+             '-show_entries', 'stream=codec_type,codec_name,width,height',
+             '-of', 'json', path],
+            capture_output=True, text=True, timeout=60)
+        if out.returncode != 0:
+            return None
+        return json.loads(out.stdout or '{}')
+    except Exception:
+        return None
+
+
+def _audio_mean_volume_db(path):
+    """Mean volume (dB) seluruh audio via ffmpeg volumedetect.
+    -inf = hening total. None = tidak bisa diukur (mis. timeout) — pemanggil
+    memperlakukannya sebagai 'lewati cek hening', bukan gagal."""
+    try:
+        out = subprocess.run(
+            [get_ffmpeg_path(), '-i', path,
+             '-af', 'volumedetect', '-vn', '-sn', '-dn', '-f', 'null', '-'],
+            capture_output=True, text=True, timeout=QC_AUDIO_PROBE_TIMEOUT)
+        m = re.search(r'mean_volume:\s*(-?[\d.]+|-\s*inf)', out.stderr or '')
+        if not m:
+            return None
+        v = m.group(1).replace(' ', '')
+        if v == '-inf':
+            return float('-inf')
+        return float(v)
+    except Exception:
+        return None
+
+
+def run_qc_checks(task, video_path, yt_id):
+    """QC gate pra-upload. Kembalikan list alasan gagal (kosong = LOLOS).
+    (a) file ada & ukuran wajar; (b) durasi ≈ target; (c) ada stream audio
+    & tidak hening; (d) judul/deskripsi tidak kosong & judul belum tayang
+    di channel yang sama. Dijalankan SETELAH render, SEBELUM upload."""
+    failures = []
+    title = (task.get('title') or '').strip()
+    # --- (d) metadata (tidak butuh file) ---
+    if not title:
+        failures.append("judul kosong")
+    else:
+        norm = ' '.join(title.lower().split())
+        for h in history_tasks:
+            if h.get('yt_id') != yt_id:
+                continue
+            if 'Tayang' not in h.get('status', ''):
+                continue
+            if ' '.join((h.get('title') or '').lower().split()) == norm:
+                failures.append(f"judul sudah tayang di channel ini ('{title[:40]}')")
+                break
+    if not (task.get('description') or '').strip():
+        failures.append("deskripsi kosong")
+    # --- (a) file hasil render ---
+    if not video_path or not os.path.exists(video_path):
+        failures.append("file video hasil render tidak ditemukan")
+        return failures
+    try:
+        size = os.path.getsize(video_path)
+    except Exception:
+        size = 0
+    if size <= 0:
+        failures.append("ukuran file video 0 byte")
+        return failures
+    if size < QC_MIN_FILE_BYTES:
+        failures.append(f"ukuran file terlalu kecil ({size // 1024} KB)")
+    probe = _probe_video(video_path)
+    if probe is None:
+        # ffprobe sudah terbukti jalan saat render (dipakai di tiap probe
+        # durasi audio), jadi gagal di sini = file rusak, bukan alat rusak.
+        failures.append("tidak bisa memeriksa video (ffprobe gagal)")
+        return failures
+    streams = probe.get('streams') or []
+    vstreams = [s for s in streams if s.get('codec_type') == 'video']
+    astreams = [s for s in streams if s.get('codec_type') == 'audio']
+    if not vstreams:
+        failures.append("tidak ada stream video")
+    else:
+        try:
+            w = int(vstreams[0].get('width') or 0)
+        except Exception:
+            w = 0
+        if w and w < 640:
+            failures.append(f"resolusi terlalu kecil ({w}px)")
+    # --- (b) durasi vs target ---
+    try:
+        dur = float((probe.get('format') or {}).get('duration') or 0)
+    except Exception:
+        dur = 0.0
+    try:
+        target = float(task.get('target_duration_hours', 1)) * 3600
+    except Exception:
+        target = 0.0
+    if dur <= 0:
+        failures.append("durasi video tidak terbaca (0 detik)")
+    elif target > 0:
+        tol = max(QC_DURATION_TOLERANCE_SEC, 0.05 * target)
+        if abs(dur - target) > tol:
+            failures.append(
+                f"durasi {int(dur // 60)} mnt, target {int(target // 60)} mnt "
+                f"(selisih > {int(tol // 60)} mnt)")
+    # --- (c) audio ada & tidak hening ---
+    if not astreams:
+        failures.append("tidak ada stream audio")
+    else:
+        mean_db = _audio_mean_volume_db(video_path)
+        if mean_db is not None and (mean_db == float('-inf')
+                                    or mean_db < QC_SILENCE_MAX_DB):
+            failures.append(f"audio hening (mean volume {mean_db} dB)")
+    return failures
+
+
+# --- Klasifikasi error upload: sementara (boleh retry) vs permanen ---
+_UPLOAD_PERMANENT_MARKERS = (
+    "API Habis",              # quotaExceeded — habis hari ini, retry sia-sia
+    "Limit Upload",           # uploadLimitExceeded — batas channel tercapai
+    "Sesi Kedaluwarsa",       # token invalid/expired — butuh taut ulang
+    "Ditolak YT",             # penolakan YouTube (bukan 5xx)
+    "Token API Tidak Ditemukan",
+    "Rate Limit",             # sudah di-cooldown 30 menit oleh handler lama
+    "Format tanggal salah",   # data task salah — retry tidak menyembuhkan
+)
+
+
+def _upload_error_transient(pesan_error):
+    """True kalau error upload layak dicoba ulang (sementara: jaringan,
+    timeout, server YouTube 5xx). Permanen → False. Tidak dikenal → True
+    (tetap dibatasi maks percobaan, jadi tidak bisa loop tanpa henti)."""
+    err = pesan_error or ""
+    for m in _UPLOAD_PERMANENT_MARKERS:
+        if m in err:
+            return False
+    return True
+
+
+def _record_channel_failure(yt_id, title, reason):
+    """Tambah 1 ke fail_streak channel. Kalau mencapai 3x berturut-turut,
+    jeda channel OTOMATIS (mekanisme paused Fase 3 — gate worker sudah
+    menahan task channel dijeda) + alert Telegram. Dipanggil dari jalur
+    gagal worker (render/upload/QC/disk). BUKAN untuk pembatalan manual."""
+    if not yt_id:
+        return
+    try:
+        with db_lock:
+            target = next((c for c in database_channel
+                           if c.get('yt_id') == yt_id), None)
+            if target is None:
+                return
+            streak = int(target.get('fail_streak') or 0) + 1
+            target['fail_streak'] = streak
+            name = target.get('name', yt_id)
+            auto_paused = False
+            if streak >= FAIL_STREAK_AUTO_PAUSE and not target.get('paused'):
+                target['paused'] = True
+                target['auto_paused'] = True
+                auto_paused = True
+            save_channels(database_channel)
+    except Exception:
+        return
+    if auto_paused:
+        send_tg_message(
+            f"⏸️ *Bos, channel {name} saya jeda dulu ya* 😅\n"
+            f"Udah gagal {streak}x berturut-turut "
+            f"(terakhir: {(reason or '')[:80]}).\n"
+            f"Biar nggak makin parah, saya tahan dulu — cek penyebabnya, "
+            f"terus pencet Lanjutkan di panel ya 💪")
+
+
+def _record_channel_success(yt_id):
+    """Reset fail_streak saat 1 upload/render sukses — kegagalan lama
+    tidak lagi dihitung beruntun."""
+    if not yt_id:
+        return
+    try:
+        with db_lock:
+            target = next((c for c in database_channel
+                           if c.get('yt_id') == yt_id), None)
+            if target is None:
+                return
+            if target.get('fail_streak'):
+                target['fail_streak'] = 0
+                save_channels(database_channel)
+    except Exception:
+        pass
+
+
+def cleanup_old_files():
+    """Hapus file lama yang AMAN dihapus. Kembalikan (jumlah_file, byte).
+    TIDAK PERNAH menyentuh: galeri pengguna (uploads/<yt_id>/...),
+    config/database (config.json, channels_db.json, tasks_db.json,
+    client_secret.json), file task yang sedang aktif, atau file statis
+    panel (logo, font). Aturan umur:
+      - temp render (uploads/temp_*, loop_*) ............ > 6 jam & task tidak aktif
+      - final render (static/final_*.mp4) .............. > 1 hari & task tidak aktif
+      - output clipper (static/clip_*.mp4) ............. > 7 hari & job clipper tidak aktif
+      - download sumber clipper (downloads/* media) .... > 7 hari
+    File temp/final task aktif tidak pernah dihapus — render yang sedang
+    berjalan selalu aman dari pembersih ini."""
+    now = time.time()
+    deleted = 0
+    freed = 0
+
+    def _try_delete(path, min_age):
+        nonlocal deleted, freed
+        try:
+            st = os.stat(path)
+        except Exception:
+            return
+        if now - st.st_mtime < min_age:
+            return
+        try:
+            freed += st.st_size
+            os.remove(path)
+            deleted += 1
+        except Exception:
+            pass
+
+    def _active_task_ids():
+        try:
+            with db_lock:
+                return {str(t.get('id')) for t in active_tasks}
+        except Exception:
+            return set()
+
+    def _task_id_from_name(name):
+        m = re.search(r'(\d+)\.[^.]+$', name)
+        return m.group(1) if m else None
+
+    # 1. Temp render di uploads/ — top-level SAJA, jangan subfolder galeri.
+    try:
+        active_ids = _active_task_ids()
+        for name in os.listdir(BASE_UPLOAD):
+            if not name.startswith(('temp_', 'loop_')):
+                continue
+            tid = _task_id_from_name(name)
+            if tid and tid in active_ids:
+                continue
+            _try_delete(os.path.join(BASE_UPLOAD, name), CLEANUP_TEMP_MAX_AGE)
+    except Exception:
+        pass
+    # 2. Final render di static/ — hanya kalau task-nya tidak aktif.
+    try:
+        active_ids = _active_task_ids()
+        static_dir = os.path.join(BASE_DIR, 'static')
+        for name in os.listdir(static_dir):
+            if not (name.startswith('final_') and name.endswith('.mp4')):
+                continue
+            tid = name[len('final_'):-len('.mp4')]
+            if tid in active_ids:
+                continue
+            _try_delete(os.path.join(static_dir, name), CLEANUP_FINAL_MAX_AGE)
+    except Exception:
+        pass
+    # 3. Output clipper di static/clip_*.mp4 — job selesai/gagal & > 7 hari.
+    try:
+        try:
+            from clipper.queue_worker import read_db as _clipper_read_db
+            jobs = _clipper_read_db()
+        except Exception:
+            jobs = []
+        active_clip = {str(j.get('id')) for j in jobs
+                       if str(j.get('status', '')).lower()
+                       not in ('done', 'error', 'failed', 'cancelled')}
+        static_dir = os.path.join(BASE_DIR, 'static')
+        for name in os.listdir(static_dir):
+            if not (name.startswith('clip_') and name.endswith('.mp4')):
+                continue
+            jid = name[len('clip_'):-len('.mp4')]
+            if jid in active_clip:
+                continue
+            _try_delete(os.path.join(static_dir, name), CLEANUP_CLIP_MAX_AGE)
+    except Exception:
+        pass
+    # 4. Download sumber clipper di downloads/ — file media > 7 hari.
+    # (Sumber bisa di-download ulang dari tautan YouTube, jadi aman.)
+    try:
+        dl_dir = os.path.join(BASE_DIR, 'downloads')
+        for name in os.listdir(dl_dir):
+            if not name.lower().endswith(
+                    ('.mp4', '.webm', '.mkv', '.mp3', '.m4a', '.opus', '.wav')):
+                continue
+            _try_delete(os.path.join(dl_dir, name), CLEANUP_DOWNLOAD_MAX_AGE)
+    except Exception:
+        pass
+    return deleted, freed
+
+
+def _ensure_disk_for_render(task):
+    """Audit F9a (REVISI): cek disk sebelum render. Kalau di bawah ambang,
+    BERSIHKAN dulu file lama yang aman (cleanup_old_files), lalu cek ulang.
+    Kembalikan None kalau ruang cukup (render lanjut seperti biasa);
+    kalau masih kurang, kembalikan pesan error 'Disk Penuh' — sengaja TANPA
+    kata Limit/Cooldown/Habis supaya handler umum tidak mengantre ulang
+    task ini (disk penuh tidak sembuh sendiri). Pesan menyebut berapa yang
+    berhasil dibersihkan dan berapa yang masih kurang."""
+    try:
+        target_hours = float(task.get('target_duration_hours', 1))
+    except Exception:
+        target_hours = 1.0
+    need = max(DISK_MIN_FREE_BYTES,
+               int(target_hours * 3600 * DISK_BYTES_PER_SEC))
+    try:
+        free = shutil.disk_usage(BASE_DIR).free
+    except Exception:
+        return None  # tidak bisa memeriksa → jangan blokir render
+    if free >= need:
+        return None
+    cleaned_n, cleaned_b = cleanup_old_files()
+    try:
+        free = shutil.disk_usage(BASE_DIR).free
+    except Exception:
+        return None
+    if free >= need:
+        print(f"🧹 [Fase 5] Disk menipis, bersih-bersih {cleaned_n} file "
+              f"({cleaned_b / 1024 ** 2:.0f} MB) — ruang cukup, render lanjut.",
+              flush=True)
+        return None
+    return (f"Disk Penuh — sisa {free / 1024 ** 3:.1f} GB, "
+            f"butuh ≥ {need / 1024 ** 3:.1f} GB untuk render {target_hours:g} jam. "
+            f"Saya udah bersih-bersih {cleaned_n} file ({cleaned_b / 1024 ** 2:.0f} MB) "
+            f"tapi masih kurang {(need - free) / 1024 ** 3:.1f} GB 😅 "
+            f"Hapus file lama / tambah disk dulu ya Bos, terus pencet Retry 💪")
+
+
+def disk_cleanup_loop():
+    """Pembersih berkala ringan (Fase 5): sekali sehari hapus file lama yang
+    aman (aturan sama seperti cleanup_old_files) supaya disk tidak penuh
+    diam-diam. Gagal silent; jalan di thread daemon."""
+    last_run = 0.0
+    while True:
+        try:
+            time.sleep(3600)
+            if time.time() - last_run >= 24 * 3600:
+                n, b = cleanup_old_files()
+                last_run = time.time()
+                if n:
+                    print(f"🧹 [Fase 5] Pembersih harian: {n} file lama dihapus "
+                          f"({b / 1024 ** 2:.0f} MB dibebaskan).", flush=True)
+        except Exception:
+            time.sleep(3600)
+
+
+threading.Thread(target=disk_cleanup_loop, daemon=True).start()
 
 def _blueprint_in_queue(task_id):
     """True kalau blueprint task ini masih ada di render_queue.
@@ -2776,8 +3212,8 @@ def _operator_approval_endpoint(decision):
     ok, msg, title = _apply_approval(data.get('task_id'), decision)
     if not ok:
         return jsonify({"status": "error", "message": msg}), 400
-    word = "disetujui ✅" if decision == 'approved' else "ditolak ❌"
-    send_tg_message(f"{'✅' if decision == 'approved' else '❌'} *Approval: task {word}*\n`{title}`\n_{msg}_")
+    word = "disetujui" if decision == 'approved' else "ditolak"
+    send_tg_message(f"{'✅' if decision == 'approved' else '❌'} *Sip Bos, task {word}* 😎\n`{title}`\n_{msg}_")
     return jsonify({"status": "success", "message": msg, "title": title})
 
 @app.route('/api/operator/approve_task', methods=['POST'])
@@ -2814,7 +3250,7 @@ def operator_approve_batch():
         count, titles = _apply_approve_batch(batch_id)
         if count == 0:
             return jsonify({"status": "error", "message": "Tidak ada task pending di batch ini (mungkin sudah diputuskan)."}), 400
-        send_tg_message(f"✅ *Approval batch:* `{count} task` disetujui dan masuk antrean render.\n_" + "; ".join(titles[:5]) + ("…" if len(titles) > 5 else "") + "_")
+        send_tg_message(f"✅ *Sip Bos, {count} task udah saya setujui semua!* 💪\nUdah masuk antrean render, saya kerjakan satu-satu.\n_" + "; ".join(titles[:5]) + ("…" if len(titles) > 5 else "") + "_")
         return jsonify({"status": "success", "message": f"{count} task disetujui dan masuk antrean.", "count": count})
     except Exception as e:
         return jsonify({"status": "error", "message": f"Gagal approve batch: {e}"}), 500
@@ -2896,7 +3332,7 @@ def operator_retry_task():
             except Exception as e:
                 return jsonify({"status": "error", "message": f"Gagal masuk antrean: {e}"}), 500
         title = target.get('title', '?')[:60]
-        send_tg_message(f"🔁 *Retry dari Telegram*\nTask `{title}` kembali ke antrean render.")
+        send_tg_message(f"🔁 *Siap Bos, retry jalan!* 💪\nTask `{title}` udah masuk antrean render lagi.")
         return jsonify({"status": "success", "message": "Task kembali ke antrean render.", "title": title})
     except Exception as e:
         return jsonify({"status": "error", "message": f"Gagal retry: {e}"}), 500
@@ -3310,17 +3746,22 @@ def set_channel_paused():
         if target is None:
             return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
         target['paused'] = paused
+        if not paused:
+            # 🔥 FASE 5: lanjut manual → reset hitungan gagal beruntun supaya
+            # channel tidak langsung dijeda lagi di kegagalan berikutnya.
+            target['fail_streak'] = 0
+            target.pop('auto_paused', None)
         name = target.get('name', yt_id)
         try:
             save_channels(database_channel)
         except Exception as e:
             return jsonify({"status": "error", "message": f"Gagal menyimpan: {e}"}), 500
     if paused:
-        send_tg_message(f"⏸️ *Channel dijeda:* {name}\nTask terjadwal channel ini ditahan — tidak dieksekusi/di-upload sampai dilanjutkan.")
+        send_tg_message(f"⏸️ *Siap Bos, channel {name} saya jeda dulu.* 😌\nTask-nya saya tahan semua, nggak ada yang jalan sampai Bos lanjutkan lagi.")
         return jsonify({"status": "success", "paused": True, "resumed_count": 0,
                         "message": f"Channel {name} dijeda. Task terjadwal ditahan."})
     resumed = _resume_channel_tasks(yt_id)
-    send_tg_message(f"▶️ *Channel dilanjutkan:* {name}\n{resumed} task terjadwal masuk antrean render.")
+    send_tg_message(f"▶️ *Siap Bos, channel {name} jalan lagi!* 💪\n{resumed} task udah masuk antrean render.")
     return jsonify({"status": "success", "paused": False, "resumed_count": resumed,
                     "message": f"Channel {name} dilanjutkan. {resumed} task masuk antrean."})
 
@@ -3487,13 +3928,15 @@ def _send_approval_previews(batch_id, channel_name, previews):
         desc = (pv.get('description') or '').strip()
         desc_txt = _tg_escape(desc[:200]) + ("…" if len(desc) > 200 else "") if desc else "_tidak ada deskripsi_"
         text = (
-            f"📋 *Preview Batch — Butuh Approval* ({idx + 1}/{total})\n"
+            f"📋 *Bos, batch baru nih, dicek dulu ya* 👀 ({idx + 1}/{total})\n"
             f"📺 Channel: *{_tg_escape(channel_name)}*\n"
             f"🎬 Judul: *{_tg_escape(pv.get('title', '?'))}*\n"
             f"🗓️ Jadwal publish: `{_tg_escape(pv.get('publish_date', '-'))}`\n"
             f"⏱️ Durasi target: `{pv.get('duration', '-')} jam` • 🔒 `{_tg_escape(pv.get('privacy', 'public'))}`\n"
             f"📝 Deskripsi: {desc_txt}"
         )
+        if idx == 0:
+            text += "\n\n_Kalau oke tinggal pencet Setujui, saya yang eksekusi 💪_"
         markup = {"inline_keyboard": [
             [{"text": "✅ Setujui", "callback_data": f"approve:{pv['id']}"},
              {"text": "❌ Tolak", "callback_data": f"reject:{pv['id']}"}],
@@ -3698,7 +4141,7 @@ def scheduled_task_activator():
                         pass
         if activated:
             save_tasks_db()
-            msg = "⏳ *Task terjadwal diaktifkan:*\n" + "\n".join("• " + a for a in activated)
+            msg = "⏳ *Bos, jadwalnya tiba nih!* 😎\n" + "\n".join("• " + a for a in activated)
             send_tg_message(msg)
 
 threading.Thread(target=scheduled_task_activator, daemon=True).start()
@@ -3816,8 +4259,15 @@ active_tasks = [t for t in tasks_to_keep if "Dibatalkan" not in t['status']]
 save_tasks_db()
     
 startup_sanitizer()
-send_tg_message("🚀 *Ziqva Muse Bot aktif kembali*\nTask dilanjutkan otomatis. "
-                f"Antrean: {len(active_tasks)} | Riwayat: {len(history_tasks)}")
+# 🔥 FASE 5: bersih-bersih file lama saat start (aturan umur di cleanup_old_files).
+try:
+    _n, _b = cleanup_old_files()
+    if _n:
+        print(f"🧹 [Fase 5] Startup: {_n} file lama dibersihkan ({_b / 1024 ** 2:.0f} MB).", flush=True)
+except Exception:
+    pass
+send_tg_message("🚀 *Bos, saya balik lagi!* 😎\n"
+                f"Antrean: {len(active_tasks)} task | Riwayat: {len(history_tasks)} task — saya lanjutkan semua 💪")
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8000, debug=False, use_reloader=False, threaded=True)

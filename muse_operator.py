@@ -278,6 +278,15 @@ def _panel_version():
     return "—"
 
 
+def _autopilot_of(channel_data):
+    """Mode autopilot channel: 'auto' atau 'approval' (default — sama
+    seperti _autopilot_of di app.py; operator tidak mengimpor app)."""
+    if not channel_data:
+        return 'approval'
+    mode = str(channel_data.get('autopilot') or 'approval').lower()
+    return mode if mode in ('auto', 'approval') else 'approval'
+
+
 def build_status_report():
     """Ringkasan /status: channel + kuota, antrean, upload hari ini, service."""
     stats = get_system_telemetry()
@@ -330,7 +339,8 @@ def build_status_report():
             cd_txt = " ⏸️ cooldown" if cd and cd > time.time() else ""
             # 🔥 FASE 3: tandai channel yang sedang dijeda.
             pause_txt = " ⏸️ Dijeda" if ch.get('paused') else ""
-            lines.append(f"• *{_tg_escape(name)}* — {conn}{cd_txt}{pause_txt}")
+            mode_txt = ' 🤖 Full-Auto' if _autopilot_of(ch) == 'auto' else ' 👀 Approval'
+            lines.append(f"• *{_tg_escape(name)}* — {conn}{cd_txt}{pause_txt}{mode_txt}")
             lines.append(f"  Upload hari ini: `{used}/{MAX_UPLOADS_PER_DAY}` (sisa `{left}`) • Stok: {stock_txt}")
         lines.append(f"📈 *Total sisa kuota hari ini:* `{total_left} video`")
     lines += [
@@ -1703,6 +1713,48 @@ def request_create_long(payload):
     except Exception as e:
         return False, f"Tidak bisa menghubungi panel: {e}", {}
 
+def _operator_post(endpoint, payload, timeout=25):
+    """POST generik ke endpoint operator panel (pola sama seperti
+    request_create_shorts: operator_key dibaca fresh dari config.json,
+    TIDAK pernah dikirim ke chat)."""
+    config = load_config()
+    key = config.get('operator_key', '')
+    if not key:
+        return False, "Kunci operator belum siap (panel mungkin baru restart). Coba lagi sebentar lagi.", {}
+    body = dict(payload or {})
+    body["key"] = key
+    try:
+        res = requests.post(
+            PANEL_URL + endpoint,
+            json=body,
+            timeout=timeout
+        )
+        data = res.json()
+        if res.status_code == 200 and data.get('status') == 'success':
+            return True, data.get('message', 'Berhasil.'), data
+        return False, data.get('message', f"Panel menjawab HTTP {res.status_code}."), data
+    except Exception as e:
+        return False, f"Tidak bisa menghubungi panel: {e}", {}
+
+
+def request_extend_schedule(yt_id, days, start=None):
+    """Perpanjang jadwal channel lewat /api/operator/extend_schedule."""
+    payload = {"yt_id": yt_id, "days": days}
+    if start:
+        payload["start"] = start
+    return _operator_post('/api/operator/extend_schedule', payload)
+
+
+def request_set_autopilot(yt_id, mode):
+    """Ubah mode autopilot channel lewat /api/operator/set_autopilot."""
+    return _operator_post('/api/operator/set_autopilot', {"yt_id": yt_id, "mode": mode})
+
+
+def request_set_paused(yt_id, paused):
+    """Jeda / lanjutkan channel lewat /api/operator/set_paused."""
+    return _operator_post('/api/operator/set_paused', {"yt_id": yt_id, "paused": paused})
+
+
 def handle_callback_query(token, chat_id, callback_query):
     """Proses tombol inline (Fase 1: 🔁 Coba Lagi; Fase 2: ✅/❌ approval).
     Hanya owner yang sampai ke sini — pengecekan owner dilakukan di loop utama."""
@@ -1834,6 +1886,97 @@ def handle_callback_query(token, chat_id, callback_query):
         finally:
             _cb_in_flight.discard(data)
         return
+    # --- 🧠 NLU: jawaban tombol klarifikasi (channel / niche / mode /
+    # Short-vs-Long / Ya-Bukan). ---
+    if data.startswith('nlu:'):
+        pending = _load_nlu_pending(chat_id)
+        if not pending:
+            answer_callback(token, cq_id,
+                            "Klarifikasinya sudah hangus / selesai — ketik lagi perintahnya ya Bos 😌")
+            return
+        if data == 'nlu:yes':
+            pending['confirmed'] = True
+            _nlu_audit_log('', {"intent": pending.get('intent'), "confidence": None,
+                                "slots": pending.get('slots') or {}}, 'confirmed')
+            _save_nlu_pending(chat_id, pending)
+            answer_callback(token, cq_id, "Siap, saya jalankan!")
+            _nlu_advance(token, chat_id, pending)
+            return
+        if data == 'nlu:no':
+            _clear_nlu_pending(chat_id)
+            answer_callback(token, cq_id, "Dibatalkan.")
+            send_message(token, chat_id,
+                         "Siap Bos, dibatalkan 😌 — coba ketik lagi perintahnya dengan bahasa yang lain ya.")
+            return
+        if data.startswith('nlu:ch:'):
+            arg = data[len('nlu:ch:'):]
+            cands = pending.get('candidates') or [c.get('yt_id') for c in load_channels()]
+            if arg == 'all':
+                pending.setdefault('slots', {})['channels'] = list(cands)
+            else:
+                try:
+                    idx = int(arg)
+                    if 0 <= idx < len(cands):
+                        # Bila diminta N channel, tombol ditekan satu per
+                        # satu (akumulasi, tanpa duplikat); bila tidak, satu
+                        # pilihan menggantikan yang lama.
+                        cur = pending.setdefault('slots', {}).get('channels') or []
+                        if pending.get('slots', {}).get('channel_count'):
+                            if cands[idx] not in cur:
+                                cur.append(cands[idx])
+                            pending['slots']['channels'] = cur
+                        else:
+                            pending['slots']['channels'] = [cands[idx]]
+                    else:
+                        answer_callback(token, cq_id, "Pilihan tidak dikenal.")
+                        return
+                except ValueError:
+                    answer_callback(token, cq_id, "Pilihan tidak dikenal.")
+                    return
+            answer_callback(token, cq_id, "Siap!")
+            _save_nlu_pending(chat_id, pending)
+            _nlu_advance(token, chat_id, pending)
+            return
+        if data.startswith('nlu:niche:'):
+            niche = data[len('nlu:niche:'):]
+            if niche in _NICHES:
+                pending.setdefault('slots', {})['niche'] = niche
+                pending['slots'].pop('unknown_niche', None)
+                answer_callback(token, cq_id, f"Tema {_NICHES[niche]}.")
+                _save_nlu_pending(chat_id, pending)
+                _nlu_advance(token, chat_id, pending)
+                return
+            answer_callback(token, cq_id, "Tema tidak dikenal.")
+            return
+        if data.startswith('nlu:mode:'):
+            mode = data[len('nlu:mode:'):]
+            if mode in ('auto', 'approval'):
+                pending.setdefault('slots', {})['mode'] = mode
+                answer_callback(token, cq_id,
+                                "Full-Auto." if mode == 'auto' else "Approval.")
+                _save_nlu_pending(chat_id, pending)
+                _nlu_advance(token, chat_id, pending)
+                return
+            answer_callback(token, cq_id, "Mode tidak dikenal.")
+            return
+        if data.startswith('nlu:kind:'):
+            kind = data[len('nlu:kind:'):]
+            if kind == 'short':
+                pending['intent'] = 'buat_short'
+                pending['slots'].pop('kind_ambiguous', None)
+            elif kind == 'long':
+                pending['intent'] = 'buat_long'
+                pending['slots'].pop('kind_ambiguous', None)
+            else:
+                answer_callback(token, cq_id, "Pilihan tidak dikenal.")
+                return
+            answer_callback(token, cq_id, "Siap!")
+            _save_nlu_pending(chat_id, pending)
+            _nlu_advance(token, chat_id, pending)
+            return
+        answer_callback(token, cq_id, "Tombol ini saya nggak kenal, Bos 😅")
+        return
+
     answer_callback(token, cq_id, "Eh, tombol ini saya nggak kenal 😅")
 
 def get_system_telemetry():
@@ -1869,6 +2012,21 @@ def generate_seo_titles(niche, count=10):
             "Release Stress & Anxiety Instantly • Gentle Piano Melodies for Overthinkers",
             "Sleep Like a Baby • Soothing Piano & Soft White Noise for Deep Rest",
             "Midnight Rest: 80 Minutes of Pure Calming Soundscapes for Insomnia Relief"
+        ]
+    elif "anak" in niche_lower or "kids" in niche_lower or "balita" in niche_lower:
+        templates = [
+            "Lagu Anak Ceria 🎵 Belajar Berhitung 1-10 Sambil Bernyanyi (Edukatif & Menyenangkan)",
+            "Ayo Bernyanyi Bersama! Lagu Anak-Anak Ceria untuk Balita & PAUD",
+            "Belajar Huruf A-Z Sambil Bernyanyi 🎵 Lagu Anak Edukatif untuk Usia Dini",
+            "Lagu Anak: Warna-Warni Pelangi 🌈 Belajar Warna Sambil Bernyanyi",
+            "Gerak dan Lagu Anak Ceria 🕺 Senam Pagi Seru untuk Anak-Anak",
+            "Lagu Tidur Anak 🌙 Lullaby Lembut untuk Anak Tidur Nyenyak",
+            "Belajar Nama Hewan Sambil Bernyanyi 🐶 Lagu Anak Edukatif yang Seru",
+            "Lagu Anak Indonesia 🎵 Kompilasi Lagu Ceria untuk Anak Usia Dini",
+            "Ayo Belajar Berhitung! Lagu Angka 1-20 untuk Anak PAUD & TK",
+            "Lagu Anak: Hari-Hari Ceria ☀️ Lagu Semangat Pagi untuk Anak-Anak",
+            "Belajar Bentuk & Warna 🎨 Lagu Anak Edukatif yang Mudah Diingat",
+            "Lagu Anak Ceria: Sahabatku 🧒 Lagu Persahabatan untuk Anak-Anak",
         ]
     elif "piano" in niche_lower:
         templates = [
@@ -1965,12 +2123,15 @@ _NICHES = {
     'hujan': 'Hujan',
     'meditasi': 'Meditasi',
     'fokus': 'Fokus',
+    'anak': 'Anak-Anak',
 }
 
 
 def _parse_niche_arg(clean_cmd, parts, default='sleep'):
     """(kunci_niche, label) dari kata kunci di pesan. Urutan penting: yang
     spesifik dulu supaya 'fokus' tidak ketangkap cabang 'lofi'."""
+    if 'anak' in clean_cmd or 'kids' in clean_cmd or 'balita' in clean_cmd:
+        return 'anak', 'Anak-Anak'
     if 'piano' in clean_cmd:
         return 'piano', 'Piano'
     if 'hujan' in clean_cmd or 'rain' in clean_cmd:
@@ -2011,6 +2172,10 @@ _HASHTAG_BANK = {
     'fokus': ['#focus', '#focusmusic', '#deepfocus', '#studymusic', '#concentration',
               '#productivity', '#workmusic', '#studysession', '#deepwork', '#brainfood',
               '#instrumental', '#ambient', '#studymotivation', '#focusbeats', '#flowstate'],
+    'anak': ['#laguanak', '#anakkecil', '#laguanakindonesia', '#belajarberhitung',
+             '#laguceria', '#anakcerdas', '#dunianak', '#laguanakcerdas',
+             '#belajarhuruf', '#anakkreatif', '#lagubalita', '#anakhebat',
+             '#ceritabergambar', '#laguedukasi', '#kidsongs'],
 }
 
 
@@ -2089,6 +2254,23 @@ _SHORTS_IDEAS = {
          "naskah": ["0–4 dtk: teks hook + buku terbuka", "5–40 dtk: beat fokus, teks 'pomodoro: 25 menit, gas!'", "41–55 dtk: bel kecil, teks 'istirahat 5 menit'"],
          "cta": "Subscribe buat playlist belajar tiap minggu."},
     ],
+    'anak': [
+        {"hook": "Halo teman-teman! Ayo bernyanyi bersama!",
+         "naskah": ["0–4 dtk: teks hook + karakter ceria melambai", "5–40 dtk: lagu ceria, teks lirik besar, ajak tepuk tangan", "41–55 dtk: semua karakter melambai, teks 'sampai jumpa!'"],
+         "cta": "Subscribe ya!"},
+        {"hook": "Satu, dua, tiga — ayo berhitung!",
+         "naskah": ["0–4 dtk: teks hook + angka 1-2-3 muncul besar", "5–40 dtk: lagu berhitung, angka melompat satu-satu", "41–55 dtk: angka 10 besar, teks 'kamu hebat!'"],
+         "cta": "Ajak temanmu subscribe!"},
+        {"hook": "Tahu nggak warna pelangi ada berapa?",
+         "naskah": ["0–4 dtk: teks hook + pelangi muncul", "5–40 dtk: lagu warna, tiap warna muncul dengan benda contohnya", "41–55 dtk: pelangi lengkap, teks 'sebutkan warnanya!'"],
+         "cta": "Subscribe buat lagu belajar baru tiap minggu."},
+        {"hook": "Ayo bergerak! Ikuti gerakanku ya!",
+         "naskah": ["0–4 dtk: teks hook + karakter menari", "5–40 dtk: lagu gerak, teks 'lompat! putar! tepuk tangan!'", "41–55 dtk: gerakan pelan, teks 'istirahat dulu ya'"],
+         "cta": "Subscribe ya!"},
+        {"hook": "Hari ini kita belajar huruf A sampai E!",
+         "naskah": ["0–4 dtk: teks hook + huruf A besar", "5–40 dtk: lagu huruf, tiap huruf muncul dengan gambar (A = Apel)", "41–55 dtk: semua huruf berjajar, teks 'kamu sudah bisa!'"],
+         "cta": "Ajak temanmu subscribe!"},
+    ],
 }
 
 
@@ -2161,6 +2343,14 @@ _DESC_TEMPLATES = {
               "• Perfect for studying, coding, and writing\n\n"
               "Composition & Audio Engineering by Ziqva Muse Bot Cloud System.\n\n"
               "#focus #focusmusic #deepfocus #studymusic #concentration #productivity"),
+    'anak': ("Selamat datang di dunia lagu anak yang ceria! 🎵🌈\n\n"
+             "Kompilasi lagu anak ini dibuat khusus untuk balita, PAUD, dan TK — lirik mudah diingat, melodi ceria, dan pesan yang baik untuk anak-anak. Cocok untuk belajar sambil bermain di rumah maupun di sekolah.\n\n"
+             "🎧 Untuk Ayah & Bunda:\n"
+             "• Putar bersama anak dan ikut bernyanyi ya\n"
+             "• Ajak anak menirukan gerakan di lagu ini\n"
+             "• Cocok untuk waktu bermain, belajar, dan sebelum tidur\n\n"
+             "Lagu & Produksi oleh Ziqva Muse Bot Cloud System.\n\n"
+             "#laguanak #anakkecil #belajarberhitung #laguceria #anakcerdas #laguedukasi"),
 }
 
 
@@ -2707,6 +2897,1075 @@ def _confirm_make_create(token, chat_id, draft):
         return
     _send_make_created_message(token, chat_id, kind, d, resp)
 
+# ==========================================
+# 🧠 NLU BAHASA MANUSIA — perintah bebas tanpa LLM
+# Rule-based: pencocokan pola + slot di pesan Indonesia sehari-hari.
+# TIDAK ADA pemanggilan AI/LLM — semua penafsiran tercatat di
+# nlu_audit.jsonl supaya Bos bisa mengaudit & menulis revisi.
+# ==========================================
+NLU_AUDIT_FILE = os.path.join(BASE_DIR, 'nlu_audit.jsonl')
+_NLU_PENDING_TTL = 600  # 10 menit — klarifikasi yang tidak dijawab hangus
+
+_NLU_NICHE_WORDS = {
+    'anak': ('anak', 'kids', 'balita', 'bocah', 'paud', 'lagu anak'),
+    'sleep': ('tidur', 'sleep', 'insomnia', 'nyenyak', 'lullaby'),
+    'lofi': ('lofi', 'chill', 'study'),
+    'piano': ('piano',),
+    'hujan': ('hujan', 'rain'),
+    'meditasi': ('meditasi', 'meditation', 'zen'),
+    'fokus': ('fokus', 'focus', 'konsentrasi'),
+}
+_NLU_NICHE_ORDER = ('anak', 'piano', 'hujan', 'meditasi', 'fokus', 'lofi', 'sleep')
+
+# Bank konten pembuatan Short via NLU — kalimat polos (bukan beat bernomor
+# seperti _SHORTS_IDEAS). Isi hook/naskah/CTA niche lama sama dengan
+# AUTO_SHORTS_BANK di app.py supaya panel & Telegram konsisten.
+_NLU_SHORTS_BANK = {
+    'sleep': {
+        'titles': ['Musik Tidur Nyenyak 30 Detik', 'Tidur Nyenyak Malam Ini',
+                   'Piano Tidur yang Menenangkan', 'Hujan Rintik untuk Tidur'],
+        'hooks': ['Tidur nyenyak malam ini', 'Pejamkan mata, tenangkan pikiran',
+                  'Musik tidur untuk malam yang tenang', 'Saatnya istirahat yang nyenyak'],
+        'scripts': ['Musik lembut ini menemani tidurmu malam ini.',
+                    'Tarik napas dalam-dalam… hembuskan perlahan…',
+                    'Biarkan nada-nada tenang ini membawamu ke tidur yang nyenyak.',
+                    'Selamat beristirahat, sampai jumpa di pagi yang segar.'],
+        'ctas': ['Subscribe untuk musik tidur setiap malam', 'Subscribe'],
+    },
+    'lofi': {
+        'titles': ['Lofi Santai 30 Detik', 'Beat Lofi untuk Fokus',
+                   'Lofi Hujan yang Menenangkan', 'Santai Dulu, Dengerin Lofi Ini'],
+        'hooks': ['Lofi santai untuk harimu', 'Nada chill untuk fokus belajar',
+                  'Beat lembut untuk menemani kerja', 'Santai dulu, dengerin lofi ini'],
+        'scripts': ['Lofi lembut ini cocok untuk belajar, kerja, atau sekadar bersantai.',
+                    'Pasang headphone-mu dan nikmati alunannya.',
+                    'Satu lagu lofi untuk menemani harimu.',
+                    'Biarkan beat-nya mengalir pelan-pelan.'],
+        'ctas': ['Subscribe untuk lofi baru setiap hari', 'Subscribe'],
+    },
+    'piano': {
+        'titles': ['Piano Lembut 30 Detik', 'Melodi Piano yang Menenangkan',
+                   'Piano untuk Sore yang Tenang', 'Dengarkan Piano Ini Sejenak'],
+        'hooks': ['Piano lembut untuk hatimu', 'Melodi piano yang menenangkan',
+                  'Dengarkan piano ini sejenak', 'Nada piano untuk sore yang tenang'],
+        'scripts': ['Melodi piano ini menemani harimu yang tenang.',
+                    'Tutup mata sejenak dan dengarkan nadanya.',
+                    'Piano lembut untuk istirahat dan refleksi.',
+                    'Biarkan setiap nada menenangkan pikiranmu.'],
+        'ctas': ['Subscribe untuk piano baru setiap hari', 'Subscribe'],
+    },
+    'hujan': {
+        'titles': ['Suara Hujan 30 Detik', 'Hujan Rintik yang Menenangkan',
+                   'Suara Hujan untuk Relaksasi', 'Dengarkan Hujan Turun'],
+        'hooks': ['Suara hujan yang menenangkan', 'Dengarkan hujan turun pelan-pelan',
+                  'Hujan rintik untuk tidur nyenyak', 'Suara hujan untuk relaksasi'],
+        'scripts': ['Suara hujan ini membantu pikiranmu rileks.',
+                    'Bayangkan hujan turun di luar jendela…',
+                    'Rintik hujan untuk tidur yang lebih nyenyak.',
+                    'Biarkan suara hujan menenangkan harimu.'],
+        'ctas': ['Subscribe untuk suara hujan setiap hari', 'Subscribe'],
+    },
+    'meditasi': {
+        'titles': ['Meditasi Sejenak 30 Detik', 'Tarik Napas, Tenangkan Pikiran',
+                   'Hening Sejenak', 'Meditasi untuk Harimu'],
+        'hooks': ['Tarik napas… tenangkan pikiran', 'Meditasi sejenak untuk harimu',
+                  'Hening sejenak, dengarkan dirimu', 'Waktu untuk bermeditasi'],
+        'scripts': ['Tarik napas dalam… dan hembuskan perlahan.',
+                    'Fokus pada napasmu, lepaskan semua beban.',
+                    'Satu menit tenang untuk memulai harimu.',
+                    'Biarkan pikiranmu mengalir seperti air.'],
+        'ctas': ['Subscribe untuk meditasi harian', 'Subscribe'],
+    },
+    'fokus': {
+        'titles': ['Musik Fokus 30 Detik', 'Fokus Penuh untuk Kerjamu',
+                   'Musik Fokus untuk Produktivitas', 'Konsentrasi Penuh'],
+        'hooks': ['Fokus penuh untuk kerjamu', 'Musik fokus untuk produktivitas',
+                  'Konsentrasi penuh, tanpa distraksi', 'Musik untuk fokus belajar dan kerja'],
+        'scripts': ['Musik ini membantumu fokus tanpa distraksi.',
+                    'Pasang headphone dan mulai kerjamu.',
+                    'Fokus sebentar, istirahat sejenak, lalu lanjut lagi.',
+                    'Biarkan musik ini menemani jam fokusmu.'],
+        'ctas': ['Subscribe untuk musik fokus harian', 'Subscribe'],
+    },
+    'anak': {
+        'titles': ['Lagu Anak Ceria — Ayo Bernyanyi!', 'Belajar Berhitung 1-10 Sambil Bernyanyi',
+                   'Lagu Warna Pelangi untuk Anak', 'Gerak dan Lagu Anak Ceria'],
+        'hooks': ['Lagu ceria untuk anak-anak!', 'Ayo bernyanyi bersama!',
+                  'Belajar sambil bernyanyi, seru!', 'Lagu anak yang bikin semangat'],
+        'scripts': ['Ayo bernyanyi bersama, tepuk tangan yuk!',
+                    'Lagu ceria ini untuk menemani harimu yang seru.',
+                    'Belajar berhitung sambil bernyanyi, menyenangkan!',
+                    'Ikuti gerakannya, lompat dan bernyanyi bersama!'],
+        'ctas': ['Subscribe ya!', 'Ajak temanmu subscribe!'],
+    },
+}
+
+
+def _nlu_clean(text):
+    """Normalisasi seperti handle_user_command: huruf kecil, buang tanda
+    baca (tanda hubung ikut hilang: 'anak-anak' → 'anakanak')."""
+    return re.sub(r'[^\w\s/]', '', (text or '').strip().lower())
+
+
+def _nlu_audit_log(text, parsed, action, detail=''):
+    """Satu baris JSON per penafsiran — file audit untuk Bos."""
+    try:
+        rec = {"ts_wib": _wib_now().strftime('%Y-%m-%d %H:%M:%S'),
+               "text": text, "intent": parsed.get('intent'),
+               "confidence": parsed.get('confidence'),
+               "slots": parsed.get('slots') or {},
+               "action": action, "detail": detail}
+        with open(NLU_AUDIT_FILE, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception as e:
+        print(f"Gagal tulis nlu_audit: {e}", flush=True)
+
+
+def _nlu_norm_name(name):
+    return re.sub(r'[^a-z0-9 ]', '', (name or '').lower()).strip()
+
+
+def _nlu_match_channels(clean, channels):
+    """(matched, all_flag): cocokkan nama channel di teks. matched = channel
+    yang namanya (atau kata pertamanya, min 4 huruf) disebut. all_flag True
+    bila teks menyebut 'semua'/'ke-3'/'ketiga' channel."""
+    all_flag = ('semua channel' in clean or 'ketiga' in clean
+                or 'tiga channel' in clean
+                or bool(re.search(r'\bke\s*3\b', clean))
+                or ('semua' in clean and 'channel' in clean))
+    matched = []
+    for ch in channels or []:
+        nm = _nlu_norm_name(_channel_display_name(ch))
+        if not nm:
+            continue
+        if nm in clean:
+            matched.append(ch)
+            continue
+        first = nm.split()[0] if nm.split() else ''
+        # Kata generik 'channel' bukan nama — jangan sampai teks apa pun
+        # yang menyebut 'channel' cocok dengan channel bernama 'Channel ...'.
+        if first not in ('channel', 'chanel') and len(first) >= 4 \
+                and re.search(r'\b' + re.escape(first) + r'\b', clean):
+            matched.append(ch)
+    return matched, all_flag
+
+
+def _nlu_detect_niche(clean):
+    """(kunci_niche|None, kata_tema_tidak_dikenal|None)."""
+    for key in _NLU_NICHE_ORDER:
+        for w in _NLU_NICHE_WORDS[key]:
+            if w in clean:
+                return key, None
+    m = re.search(r'tema\s+([a-z]+)', clean)
+    if m:
+        return None, m.group(1)
+    return None, None
+
+
+def _nlu_extract_time(clean):
+    """'jam 7 malam' → '19:00'; 'jam 19:00' → '19:00'; 'jam 7' → '07:00'."""
+    m = re.search(r'jam\s+(\d{1,2})(?:[:.](\d{2}))?\s*(pagi|siang|sore|malam|petang)?', clean)
+    if not m:
+        return None
+    hour = int(m.group(1))
+    minute = int(m.group(2) or 0)
+    mer = m.group(3) or ''
+    if mer in ('sore', 'malam', 'petang') and hour < 12:
+        hour += 12
+    if mer == 'pagi' and hour == 12:
+        hour = 0
+    if hour > 23 or minute > 59:
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _nlu_extract_duration(clean):
+    """'30 detik' → 30 (dijepit ke 15/30/60); '1 menit' → 60."""
+    m = re.search(r'(\d+)\s*(detik|dtk|det)\b', clean)
+    if m:
+        v = int(m.group(1))
+        return 15 if v <= 20 else (30 if v <= 45 else 60)
+    m = re.search(r'(\d+)\s*menit\b', clean)
+    if m:
+        return 60 if int(m.group(1)) >= 1 else 30
+    return None
+
+
+def _nlu_extract_count(clean, intent):
+    """Jumlah dari angka + kata benda ('3 short', '2 video long')."""
+    if intent == 'buat_long':
+        m = re.search(r'(\d+)\s*(video|vid|long)\b', clean)
+    else:
+        m = re.search(r'(\d+)\s*(short|video|vid)\b', clean)
+    if m:
+        return max(1, min(7, int(m.group(1))))
+    m = re.search(r'\b(buat|bikin|buatkan)\s+(\d+)\b', clean)
+    if m:
+        return max(1, min(7, int(m.group(2))))
+    return None
+
+
+def _nlu_extract_cta(raw):
+    """Teks CTA dari perintah ('cta subscribe', 'ajakan cta untuk
+    subscribe', 'cta: Subscribe ya!'). Diambil dari teks ASLI (sebelum
+    dibersihkan) supaya kapitalisasi & tanda baca ikut kebawa."""
+    low = (raw or '').lower()
+    tail = ''
+    idx = low.find('cta')
+    if idx >= 0:
+        tail = raw[idx + 3:]
+    else:
+        m = re.search(r'ajakan\s+(.+)', low)
+        if m:
+            tail = raw[m.start(1):]
+    if not tail:
+        return None
+    tail = re.sub(r'^[\s:,\-"\']+', '', tail)
+    tail = re.sub(r'^(untuk|ajakan|ajak|yang|buat|supaya|agar|biar|nya)\s+', '', tail, flags=re.I)
+    tail = tail.strip().strip('"').strip("'")
+    words = tail.split()
+    if not words:
+        return None
+    if any(w.lower().startswith('subscrib') for w in words[:3]):
+        return 'Subscribe'
+    cta = ' '.join(words[:6])[:60].strip()
+    return cta[:1].upper() + cta[1:] if cta else None
+
+
+def _nlu_extract_days(clean):
+    """'30 hari' → 30; 'sebulan' → 30; 'seminggu' → 7; 'dua minggu' → 14."""
+    m = re.search(r'(\d+)\s*hari\b', clean)
+    if m:
+        return max(1, min(90, int(m.group(1))))
+    if 'sebulan' in clean or 'satu bulan' in clean or '1 bulan' in clean:
+        return 30
+    if 'tiga bulan' in clean or '3 bulan' in clean:
+        return 90
+    if 'dua minggu' in clean or '2 minggu' in clean:
+        return 14
+    if 'seminggu' in clean or 'satu minggu' in clean:
+        return 7
+    return None
+
+
+def _nlu_extract_mode(clean):
+    """'auto' dari kata kunci auto; 'approval' dari kata kunci approval.
+    'matikan autopilot' = matikan autopilotnya → approval (bukan auto);
+    dicek dulu sebelum 'autopilot' generik."""
+    if re.search(r'matikan autopilot|nonaktifkan autopilot|autopilot off|matikan otomatis', clean):
+        return 'approval'
+    if re.search(r'\bauto\b|otomatis|langsung tayang|tanpa approval|tanpa persetujuan|full.?auto|autopilot', clean):
+        return 'auto'
+    if re.search(r'approval|persetujuan|minta izin|manual|izin dulu', clean):
+        return 'approval'
+    return None
+
+
+def parse_natural_command(text, channels):
+    """Terjemahkan pesan bebas → {intent, confidence 0-100, slots}.
+    Intent: buat_short, buat_long, status, laporan, kuota, stok, statistik,
+    monetisasi, jadwal, gagal, channel_list, bantuan, jeda_channel,
+    lanjutkan_channel, perpanjang_jadwal, ubah_mode, hapus,
+    hentikan_antrean, tidak_dikenali."""
+    clean = _nlu_clean(text)
+    slots = {}
+    conf = 0
+    intent = 'tidak_dikenali'
+    matched, all_flag = _nlu_match_channels(clean, channels)
+    if all_flag:
+        slots['channels'] = 'all'
+    elif matched:
+        slots['channels'] = [c.get('yt_id') for c in matched]
+    if 'channel' in clean and not matched and not all_flag:
+        slots['channel_unknown'] = True
+    # Jumlah channel ("buatkan untuk 2 channel") — BUKAN angka tetap:
+    # hanya bila channel tidak disebut namanya dan bukan 'semua'/'ke-3'.
+    # 'ke-3 channel' / 'ketiga' sudah ditangkap all_flag di atas.
+    if not all_flag and not matched:
+        _mch = re.search(r'(\d+)\s*channel\b', clean)
+        if _mch:
+            slots['channel_count'] = max(1, min(10, int(_mch.group(1))))
+
+    # Permintaan konten (judul/deskripsi/hashtag/ide) tetap ditangani cabang
+    # lama — jangan sampai ketangkap intent buat_short.
+    if (re.search(r'\b(judul|deskripsi|hashtag|tagar)\b', clean)
+            or 'ide shorts' in clean or 'ideashorts' in clean) \
+            and not re.search(r'\b(buat|bikin|buatkan)\s+short\b', clean):
+        return {"intent": "tidak_dikenali", "confidence": 0, "slots": slots}
+
+    create_verb = bool(re.search(r'\b(buat|bikin|buatkan|tolong buat|tolong bikin)\b', clean))
+
+    # --- Destruktif: tidak pernah dieksekusi langsung (selalu konfirmasi). ---
+    if re.search(r'\b(hapus|delete|buang)\b', clean):
+        intent = 'hapus'
+        conf = 55
+        if 'channel' in clean:
+            slots['target'] = 'channel'
+        elif 'video' in clean:
+            slots['target'] = 'video'
+        elif 'antrean' in clean or 'antrian' in clean:
+            slots['target'] = 'antrean'
+        else:
+            slots['target'] = 'tidak_jelas'
+    elif ('hentikan antrean' in clean or 'stop antrean' in clean
+            or 'batalkan antrean' in clean or 'bersihkan antrean' in clean
+            or 'hentikan antrian' in clean):
+        intent = 'hentikan_antrean'
+        conf = 60
+    # --- Jeda / lanjutkan channel. ---
+    elif ('jeda' in clean or 'pause' in clean
+            or ('hentikan' in clean and 'antrean' not in clean and 'antrian' not in clean
+                and ('channel' in clean or matched))
+            or ('matikan' in clean and ('channel' in clean or matched))):
+        intent = 'jeda_channel'
+        conf = 60
+    elif ('lanjutkan' in clean or 'resume' in clean or 'jalan lagi' in clean
+            or 'nyalakan lagi' in clean or 'batalkan jeda' in clean
+            or 'aktifin lagi' in clean):
+        intent = 'lanjutkan_channel'
+        conf = 60
+    # --- Perpanjang jadwal. ---
+    elif 'perpanjang' in clean or 'tambah jadwal' in clean or 'tambah hari' in clean:
+        intent = 'perpanjang_jadwal'
+        conf = 60
+        d = _nlu_extract_days(clean)
+        if d:
+            slots['days'] = d
+    # --- Buat Short / Long. ---
+    elif create_verb and ('short' in clean or 'video pendek' in clean):
+        intent = 'buat_short'
+        conf = 50
+    elif create_verb and ('video long' in clean or 'video panjang' in clean
+                          or 'kompilasi' in clean or re.search(r'\blong\b', clean)):
+        intent = 'buat_long'
+        conf = 50
+    elif create_verb and 'video' in clean:
+        # "buatkan video" tanpa penanda short/long → tanyakan dulu.
+        intent = 'buat_short'
+        conf = 40
+        slots['kind_ambiguous'] = True
+    elif create_verb and (matched or all_flag or slots.get('channel_count')):
+        # "buatkan untuk 2 channel" / "buatkan untuk semua channel" —
+        # objek tidak disebut, default Short (konfirmasi akan menyatakan
+        # tafsiran ini, Bos bisa menolak bila maksudnya video long).
+        intent = 'buat_short'
+        conf = 45
+    elif ('short' in clean and (matched or all_flag or 'tema' in clean
+                                or 'semua' in clean)):
+        # Tanpa kata kerja tapi jelas ("short tema anak untuk semua channel").
+        intent = 'buat_short'
+        conf = 40
+    # --- Ubah mode channel. ---
+    elif ('mode' in clean or 'autopilot' in clean or 'approval' in clean
+            or 'persetujuan' in clean
+            or 'jadikan auto' in clean or 'jadi auto' in clean
+            or 'aktifkan otomatis' in clean or 'matikan otomatis' in clean):
+        intent = 'ubah_mode'
+        conf = 60
+    # --- Tambah channel (hanya bisa dari panel/browser — dijawab, bukan
+    # dieksekusi dari Telegram). ---
+    elif ('tambah channel' in clean or 'channel baru' in clean
+            or (create_verb and 'channel' in clean and not matched and not all_flag)):
+        intent = 'tambah_channel'
+        conf = 65
+    # --- Baca saja. ---
+    elif 'status' in clean:
+        intent = 'status'
+        conf = 70
+    elif 'laporan' in clean or 'report' in clean:
+        intent = 'laporan'
+        conf = 70
+    elif 'kuota' in clean:
+        intent = 'kuota'
+        conf = 70
+    elif 'stok' in clean:
+        intent = 'stok'
+        conf = 70
+    elif 'statistik' in clean or 'stats' in clean:
+        intent = 'statistik'
+        conf = 70
+    elif 'monetisasi' in clean or 'penghasilan' in clean or 'uang' in clean or 'rpm' in clean:
+        intent = 'monetisasi'
+        conf = 70
+    elif 'jadwal' in clean or 'schedule' in clean:
+        intent = 'jadwal'
+        conf = 70
+    elif 'gagal' in clean:
+        intent = 'gagal'
+        conf = 70
+    elif 'channel' in clean:
+        intent = 'channel_list'
+        conf = 60
+    elif 'bantuan' in clean or 'help' in clean or 'perintah apa' in clean:
+        intent = 'bantuan'
+        conf = 70
+
+    if intent == 'tidak_dikenali':
+        return {"intent": intent, "confidence": 0, "slots": slots}
+
+    # --- Slot tambahan sesuai intent. ---
+    niche, unknown_niche = _nlu_detect_niche(clean)
+    if intent in ('buat_short', 'buat_long'):
+        if niche:
+            slots['niche'] = niche
+            conf += 10
+        elif unknown_niche:
+            slots['unknown_niche'] = unknown_niche
+        cnt = _nlu_extract_count(clean, intent)
+        if cnt:
+            slots['count'] = cnt
+            conf += 10
+        dur = _nlu_extract_duration(clean)
+        if dur:
+            slots['duration_sec'] = dur
+            conf += 5
+        cta = _nlu_extract_cta(text)
+        if cta:
+            slots['cta'] = cta
+            conf += 5
+        tm = _nlu_extract_time(clean)
+        if tm:
+            slots['publish_time'] = tm
+            conf += 5
+        if slots.get('channels'):
+            conf += 15
+        if create_verb:
+            conf += 5
+    elif intent == 'perpanjang_jadwal':
+        if slots.get('channels'):
+            conf += 15
+    elif intent in ('jeda_channel', 'lanjutkan_channel', 'ubah_mode', 'hapus'):
+        if slots.get('channels'):
+            conf += 15
+        if intent == 'ubah_mode':
+            mode = _nlu_extract_mode(clean)
+            if mode:
+                slots['mode'] = mode
+                conf += 10
+    elif intent in ('status', 'laporan', 'kuota', 'stok', 'statistik',
+                    'monetisasi', 'jadwal', 'gagal', 'channel_list', 'bantuan'):
+        pass  # baca saja: skor dasar sudah cukup
+    return {"intent": intent, "confidence": min(95, conf), "slots": slots}
+
+
+# --- Klarifikasi tertunda (NLU): disimpan di monitor_state.json, TTL 10 mnt. ---
+def _load_nlu_pending(chat_id):
+    try:
+        state = load_monitor_state()
+        p = (state.get('nlu_pending') or {}).get(str(chat_id))
+        if not p:
+            return None
+        if time.time() - float(p.get('created_at', 0)) > _NLU_PENDING_TTL:
+            _clear_nlu_pending(chat_id)
+            return None
+        return p
+    except Exception:
+        return None
+
+
+def _save_nlu_pending(chat_id, pending):
+    try:
+        state = load_monitor_state()
+        state.setdefault('nlu_pending', {})[str(chat_id)] = pending
+        save_monitor_state(state)
+    except Exception as e:
+        print(f"Gagal simpan nlu_pending: {e}", flush=True)
+
+
+def _clear_nlu_pending(chat_id):
+    try:
+        state = load_monitor_state()
+        (state.get('nlu_pending') or {}).pop(str(chat_id), None)
+        save_monitor_state(state)
+    except Exception:
+        pass
+
+
+def _nlu_channel_names(yt_ids):
+    names = []
+    for c in load_channels():
+        if c.get('yt_id') in (yt_ids or []):
+            names.append(_channel_display_name(c))
+    return names
+
+
+def _nlu_describe(pending):
+    """Kalimat penafsiran: 'Maksud Bos: buatkan 1 Short tema Anak-Anak,
+    CTA Subscribe, durasi 30 detik, untuk Aruya 0089, Barang Unick,
+    Cozy Sax Relaxing.'"""
+    slots = pending.get('slots') or {}
+    intent = pending.get('intent')
+    names = _nlu_channel_names(slots.get('channels') or [])
+    if names:
+        ch = ', '.join(names)
+        if slots.get('channel_count') and len(names) < slots['channel_count']:
+            ch += f" ({len(names)} dari {slots['channel_count']})"
+    elif slots.get('channel_count'):
+        ch = f"{slots['channel_count']} channel (pilih dulu)"
+    else:
+        ch = 'semua channel'
+    if intent == 'buat_short':
+        niche = _NICHES.get(slots.get('niche') or 'sleep', 'Deep Sleep Music')
+        return (f"buatkan {slots.get('count') or 1} Short tema {niche}, "
+                f"CTA {slots.get('cta') or 'Subscribe'}, "
+                f"durasi {slots.get('duration_sec') or 30} detik"
+                + (f", jam tayang {slots['publish_time']}" if slots.get('publish_time') else '')
+                + f", untuk {ch}")
+    if intent == 'buat_long':
+        niche = _NICHES.get(slots.get('niche') or 'sleep', 'Deep Sleep Music')
+        return (f"buatkan {slots.get('count') or 1} video long tema {niche} untuk {ch}")
+    if intent == 'perpanjang_jadwal':
+        return f"perpanjang jadwal {slots.get('days') or 30} hari untuk {ch}"
+    if intent == 'ubah_mode':
+        mode = 'Full-Auto' if slots.get('mode') == 'auto' else 'Approval'
+        return f"ubah mode {ch} jadi {mode}"
+    if intent == 'jeda_channel':
+        return f"jeda channel {ch}"
+    if intent == 'lanjutkan_channel':
+        return f"lanjutkan channel {ch}"
+    if intent == 'hapus':
+        return f"hapus {slots.get('target') or 'sesuatu'} {ch}"
+    if intent == 'hentikan_antrean':
+        return "hentikan antrean"
+    return intent or 'sesuatu'
+
+
+def _nlu_ask_channel(token, chat_id, pending, multi=True):
+    """Tanya channel mana lewat tombol inline. Bila diminta N channel,
+    tombol ditekan satu per satu sampai N terkumpul (progres ditampilkan)."""
+    chans = load_channels()
+    rows = []
+    for i, c in enumerate(chans):
+        rows.append([{"text": _channel_display_name(c),
+                      "callback_data": f"nlu:ch:{i}"}])
+    if multi:
+        rows.append([{"text": "🌐 Semua channel", "callback_data": "nlu:ch:all"}])
+    slots = pending.get('slots') or {}
+    picked = slots.get('channels') or []
+    need = slots.get('channel_count') or 0
+    if need and picked:
+        head = (f"✅ Sudah dipilih: {', '.join(_nlu_channel_names(picked))} "
+                f"({len(picked)} dari {need}) — pilih {need - len(picked)} lagi ya Bos 🤔\n")
+    else:
+        head = "Siap Bos, channel yang mana? 🤔\n"
+    send_message(token, chat_id,
+                 head + f"({_nlu_describe(pending)})",
+                 reply_markup={"inline_keyboard": rows})
+
+
+def _nlu_ask_niche(token, chat_id, pending):
+    unknown = (pending.get('slots') or {}).get('unknown_niche')
+    rows = []
+    keys = list(_NICHES.keys())
+    for i in range(0, len(keys), 2):
+        row = [{"text": _NICHES[k], "callback_data": f"nlu:niche:{k}"} for k in keys[i:i + 2]]
+        rows.append(row)
+    head = (f"Tema '{unknown}' belum saya kenal Bos 😅 — yang saya tahu "
+            if unknown else "Tema yang mana Bos? 🤔\n")
+    send_message(token, chat_id,
+                 head + "Pilih salah satu ya:",
+                 reply_markup={"inline_keyboard": rows})
+
+
+def _nlu_ask_mode(token, chat_id, pending):
+    names = _nlu_channel_names((pending.get('slots') or {}).get('channels') or [])
+    who = ', '.join(names) if names else 'channel itu'
+    send_message(token, chat_id,
+                 f"Mode apa untuk {who} Bos? 🤔",
+                 reply_markup={"inline_keyboard": [[
+                     {"text": "🤖 Full-Auto (langsung tayang)", "callback_data": "nlu:mode:auto"},
+                     {"text": "👀 Approval (minta izin dulu)", "callback_data": "nlu:mode:approval"},
+                 ]]})
+
+
+def _nlu_ask_confirm(token, chat_id, pending):
+    """Konfirmasi penafsiran sebelum bertindak (wajib bila ragu / bila
+    aksinya berbahaya atau membuat konten)."""
+    pending['awaiting'] = 'confirm'
+    _save_nlu_pending(chat_id, pending)
+    extra = ''
+    if pending.get('intent') == 'ubah_mode' and (pending.get('slots') or {}).get('mode') == 'auto':
+        extra = ("\n⚠️ Beralih ke Full-Auto berarti video langsung tayang "
+                 "tanpa persetujuan Bos. Lanjut?")
+    elif pending.get('intent') == 'hapus':
+        extra = ("\n⚠️ Ini perintah destruktif — saya TIDAK akan menghapus "
+                 "apa-apa sendiri; setelah Bos setuju saya kasih langkah "
+                 "hapusnya di panel.")
+    elif pending.get('intent') == 'hentikan_antrean':
+        extra = "\n⚠️ Antrean yang dihentikan tidak bisa dibatalkan."
+    send_message(token, chat_id,
+                 f"Maksud Bos: {_nlu_describe(pending)}?{extra}",
+                 reply_markup={"inline_keyboard": [[
+                     {"text": "✅ Ya, benar", "callback_data": "nlu:yes"},
+                     {"text": "❌ Bukan, batal", "callback_data": "nlu:no"},
+                 ]]})
+
+
+def _nlu_advance(token, chat_id, pending):
+    """Majukan klarifikasi: tanya slot yang masih hilang, konfirmasi bila
+    perlu, atau eksekusi bila semua sudah lengkap."""
+    slots = pending.setdefault('slots', {})
+    intent = pending.get('intent')
+    chans = load_channels()
+    # --- Channel: isi dari 'all' / cek apakah sudah ada. ---
+    if intent in ('buat_short', 'buat_long', 'perpanjang_jadwal', 'ubah_mode',
+                  'jeda_channel', 'lanjutkan_channel', 'hapus', 'hentikan_antrean'):
+        if slots.get('channels') == 'all':
+            slots['channels'] = [c.get('yt_id') for c in chans]
+        if not slots.get('channels') and slots.get('channel_unknown'):
+            send_message(token, chat_id,
+                         "Saya nggak nemu channel yang Bos sebut 😅 — channel yang "
+                         "terdaftar: " + ", ".join(_channel_display_name(c) for c in chans)
+                         + ". Coba sebut namanya lagi ya Bos.")
+            _clear_nlu_pending(chat_id)
+            return
+        if intent == 'buat_long':
+            # Video long hanya 1 channel sekali proses (sesuai /buatlong):
+            # bila disebut lebih dari 1 channel, minta pilih satu saja.
+            slots.pop('channel_count', None)
+            if len(slots.get('channels') or []) > 1:
+                slots['channels'] = []
+            if not slots.get('channels'):
+                pending['awaiting'] = 'channel'
+                _save_nlu_pending(chat_id, pending)
+                _nlu_ask_channel(token, chat_id, pending, multi=False)
+                return
+        else:
+            need = slots.get('channel_count') or 1
+            have = len(slots.get('channels') or [])
+            if have < need:
+                pending['awaiting'] = 'channel'
+                _save_nlu_pending(chat_id, pending)
+                _nlu_ask_channel(token, chat_id, pending,
+                                 multi=(intent in ('buat_short', 'buat_long', 'perpanjang_jadwal',
+                                                  'jeda_channel', 'lanjutkan_channel', 'ubah_mode')
+                                        and not slots.get('channel_count')))
+                return
+    # --- Niche (buat short/long). ---
+    if intent in ('buat_short', 'buat_long'):
+        if not slots.get('niche'):
+            pending['awaiting'] = 'niche'
+            _save_nlu_pending(chat_id, pending)
+            _nlu_ask_niche(token, chat_id, pending)
+            return
+        if slots.get('kind_ambiguous'):
+            pending['awaiting'] = 'confirm'
+            _save_nlu_pending(chat_id, pending)
+            send_message(token, chat_id,
+                         f"Maksud Bos: buatkan Short atau video long? "
+                         f"({_nlu_describe(pending)})",
+                         reply_markup={"inline_keyboard": [[
+                             {"text": "🎬 Short", "callback_data": "nlu:kind:short"},
+                             {"text": "🎥 Video Long", "callback_data": "nlu:kind:long"},
+                         ]]})
+            return
+    # --- Mode (ubah mode). ---
+    if intent == 'ubah_mode' and not slots.get('mode'):
+        pending['awaiting'] = 'mode'
+        _save_nlu_pending(chat_id, pending)
+        _nlu_ask_mode(token, chat_id, pending)
+        return
+    # --- Hari (perpanjang): default 30 bila tidak disebut. ---
+    if intent == 'perpanjang_jadwal' and not slots.get('days'):
+        slots['days'] = 30
+    # --- Konfirmasi bila aksi membuat konten / berbahaya / matikan pengaman. ---
+    needs_confirm = (
+        intent in ('buat_short', 'buat_long', 'hapus', 'hentikan_antrean')
+        or (intent == 'ubah_mode' and slots.get('mode') == 'auto')
+    )
+    if needs_confirm and not pending.get('confirmed'):
+        _nlu_ask_confirm(token, chat_id, pending)
+        return
+    # --- Semua lengkap → eksekusi. ---
+    _clear_nlu_pending(chat_id)
+    _nlu_execute(token, chat_id, pending)
+
+
+def _nlu_publish_slot(publish_time, ch):
+    """Slot tayang: jam dari perintah (hari ini bila masih di depan, besok
+    bila sudah lewat), atau slot berikutnya dari _next_slot_for_channel."""
+    if publish_time:
+        try:
+            hh, mm = publish_time.split(':')
+            dt = _wib_now().replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+            if dt <= _wib_now():
+                dt = dt + timedelta(days=1)
+            return dt.strftime('%Y-%m-%d %H:%M')
+        except Exception:
+            pass
+    return _next_slot_for_channel(ch)
+
+
+def _execute_nlu_create_shorts(token, chat_id, pending):
+    slots = pending.get('slots') or {}
+    niche = slots.get('niche') or 'sleep'
+    bank = _NLU_SHORTS_BANK.get(niche) or _NLU_SHORTS_BANK['sleep']
+    count = slots.get('count') or 1
+    duration = slots.get('duration_sec') or 30
+    day_idx = _wib_now().timetuple().tm_yday
+    chans = [c for c in load_channels()
+             if c.get('yt_id') in (slots.get('channels') or [])]
+    lines = ["🎬 *Hasil Buat Short Bos:*"]
+    for ch in chans:
+        yt_id = ch.get('yt_id')
+        name = _channel_display_name(ch)
+        bgs = _gallery_files(yt_id, 'backgrounds', _BG_EXTS)
+        if not bgs:
+            lines.append(f"❌ *{name}* — galeri background kosong, upload background dulu di panel.")
+            continue
+        base_slot = _nlu_publish_slot(slots.get('publish_time'), ch)
+        made = 0
+        last_resp = {}
+        err = ''
+        for k in range(count):
+            idx = (day_idx + k) % len(bank['hooks'])
+            pub = base_slot
+            if k:
+                try:
+                    dt = datetime.strptime(base_slot, '%Y-%m-%d %H:%M') + timedelta(days=k)
+                    pub = dt.strftime('%Y-%m-%d %H:%M')
+                except Exception:
+                    pass
+            ok, info, resp = request_create_shorts({
+                "yt_id": yt_id, "title": bank['titles'][(day_idx + k) % len(bank['titles'])],
+                "hook": bank['hooks'][idx], "script": bank['scripts'][idx],
+                "cta": slots.get('cta') or bank['ctas'][(day_idx + k) % len(bank['ctas'])],
+                "duration_sec": duration, "publish_date": pub,
+                "text_color": "#FFFFFF", "bg_file": "", "bgm_file": "none",
+            })
+            if ok:
+                made += 1
+                last_resp = resp
+            else:
+                err = info
+                break
+        if made:
+            appr = (last_resp or {}).get('approval')
+            stat = 'menunggu approval Bos' if appr == 'pending' else 'masuk antrean'
+            lines.append(f"✅ *{name}* — {made} Short dibuat, {stat}.")
+        else:
+            lines.append(f"❌ *{name}* — {err or 'gagal dibuat'}.")
+    send_message(token, chat_id, "\n".join(lines))
+
+
+def _execute_nlu_create_long(token, chat_id, pending):
+    slots = pending.get('slots') or {}
+    chans = [c for c in load_channels()
+             if c.get('yt_id') in (slots.get('channels') or [])]
+    ch = chans[0] if chans else None
+    if ch is None:
+        send_message(token, chat_id, "Channelnya nggak ketemu Bos 😅 — coba sebut nama channelnya lagi.")
+        return
+    count = slots.get('count') or 1
+    start_date = _nlu_publish_slot(slots.get('publish_time'), ch)
+    ok, info, resp = request_create_long({
+        "yt_id": ch.get('yt_id'), "count": count, "titles": [],
+        "start_date": start_date, "interval_days": 1,
+    })
+    if not ok:
+        send_message(token, chat_id, f"⚠️ *Yah Bos, gagal dibuat* 😅\n{info}")
+        return
+    _send_make_created_message(token, chat_id, 'long',
+                               {'channel_name': _channel_display_name(ch), 'count': count},
+                               resp)
+
+
+def _execute_nlu_extend(token, chat_id, pending):
+    slots = pending.get('slots') or {}
+    days = slots.get('days') or 30
+    chans = [c for c in load_channels()
+             if c.get('yt_id') in (slots.get('channels') or [])]
+    lines = [f"📅 *Hasil Perpanjang Jadwal ({days} hari) Bos:*"]
+    for ch in chans:
+        name = _channel_display_name(ch)
+        ok, info, resp = request_extend_schedule(ch.get('yt_id'), days)
+        if not ok:
+            lines.append(f"❌ *{name}* — {info}")
+            continue
+        appr = resp.get('approval')
+        stat = 'menunggu approval Bos' if appr == 'pending' else 'masuk antrean'
+        try:
+            first = datetime.strptime(resp.get('first_date', ''), '%Y-%m-%d %H:%M').strftime('%d %b %Y')
+            last = datetime.strptime(resp.get('last_date', ''), '%Y-%m-%d %H:%M').strftime('%d %b %Y')
+            rng = f"{first} – {last}"
+        except Exception:
+            rng = '—'
+        lines.append(f"✅ *{name}* — {resp.get('count', days)} hari ({rng}), {stat}.")
+    send_message(token, chat_id, "\n".join(lines))
+
+
+def _execute_nlu_set_mode(token, chat_id, pending):
+    slots = pending.get('slots') or {}
+    mode = slots.get('mode')
+    chans = [c for c in load_channels()
+             if c.get('yt_id') in (slots.get('channels') or [])]
+    lines = []
+    for ch in chans:
+        name = _channel_display_name(ch)
+        ok, info, resp = request_set_autopilot(ch.get('yt_id'), mode)
+        if not ok:
+            lines.append(f"❌ *{name}* — {info}")
+            continue
+        if mode == 'auto':
+            lines.append(f"🤖 *{name}* — mode Full-Auto. Video baru langsung tayang tanpa persetujuan Bos.")
+        else:
+            lines.append(f"👀 *{name}* — mode Approval. Mulai sekarang video channel ini menunggu persetujuan Bos sebelum tayang.")
+    send_message(token, chat_id, "\n".join(lines) or "Channelnya nggak ketemu Bos 😅")
+
+
+def _execute_nlu_set_paused(token, chat_id, pending):
+    slots = pending.get('slots') or {}
+    paused = pending.get('intent') == 'jeda_channel'
+    chans = [c for c in load_channels()
+             if c.get('yt_id') in (slots.get('channels') or [])]
+    lines = []
+    for ch in chans:
+        name = _channel_display_name(ch)
+        ok, info, resp = request_set_paused(ch.get('yt_id'), paused)
+        if not ok:
+            lines.append(f"❌ *{name}* — {info}")
+            continue
+        if paused:
+            lines.append(f"⏸️ *{name}* dijeda — semua jadwal & antreannya berhenti sampai dilanjutkan.")
+        else:
+            lines.append(f"▶️ *{name}* jalan lagi — {resp.get('resumed_count', 0)} task masuk antrean render.")
+    send_message(token, chat_id, "\n".join(lines) or "Channelnya nggak ketemu Bos 😅")
+
+
+def _execute_nlu_destructive(token, chat_id, pending):
+    slots = pending.get('slots') or {}
+    target = slots.get('target') or 'tidak_jelas'
+    names = _nlu_channel_names(slots.get('channels') or [])
+    ch = ', '.join(names) if names else ''
+    if target == 'channel':
+        send_message(token, chat_id,
+                     f"Siap Bos, saya TIDAK hapus sendiri dari Telegram (terlalu berisiko). "
+                     f"Untuk hapus channel {ch or 'itu'}: buka panel → Settings → daftar channel → "
+                     f"Hapus. Saya tunggu di sini kalau Bos berubah pikiran 😌")
+    elif target == 'video':
+        send_message(token, chat_id,
+                     "Siap Bos, hapus video saya tidak lakukan dari Telegram — video yang sudah "
+                     "tayang hanya bisa dihapus dari YouTube Studio. Video yang masih di antrean "
+                     "bisa dibatalkan dari panel → Task Monitor.")
+    elif target == 'antrean':
+        send_message(token, chat_id,
+                     "Siap Bos, antrean tidak saya hentikan dari sini — buka panel → Task Monitor, "
+                     "batalkan task-nya satu per satu, atau jeda channelnya dari Telegram "
+                     "dengan perintah 'jeda channel <nama>'.")
+    else:
+        send_message(token, chat_id,
+                     "Siap Bos, hapus apa maksudnya? Sebut yang mau dihapus ya — channel, video, "
+                     "atau antrean. Saya tidak hapus apa-apa sebelum Bos konfirmasi 😌")
+
+
+def _nlu_execute(token, chat_id, pending):
+    kind = pending.get('intent')
+    if kind == 'buat_short':
+        _execute_nlu_create_shorts(token, chat_id, pending)
+    elif kind == 'buat_long':
+        _execute_nlu_create_long(token, chat_id, pending)
+    elif kind == 'perpanjang_jadwal':
+        _execute_nlu_extend(token, chat_id, pending)
+    elif kind == 'ubah_mode':
+        _execute_nlu_set_mode(token, chat_id, pending)
+    elif kind == 'jeda_channel' or kind == 'lanjutkan_channel':
+        _execute_nlu_set_paused(token, chat_id, pending)
+    elif kind in ('hapus', 'hentikan_antrean'):
+        _execute_nlu_destructive(token, chat_id, pending)
+
+
+def _nlu_run_readonly(token, chat_id, intent):
+    """Perintah baca saja dari NLU — memakai builder yang sama seperti
+    perintah baku."""
+    if intent == 'status':
+        send_message(token, chat_id, build_status_report())
+    elif intent == 'laporan':
+        kind = 'morning' if _wib_now().hour < 12 else 'evening'
+        report = build_daily_report(kind)
+        send_message(token, chat_id, report if report else "Belum ada data laporan hari ini, Bos.")
+    elif intent == 'kuota':
+        send_message(token, chat_id, build_quota_report())
+    elif intent == 'stok':
+        send_message(token, chat_id, build_stock_report())
+    elif intent == 'statistik':
+        send_message(token, chat_id, build_stats_report())
+    elif intent == 'monetisasi':
+        send_message(token, chat_id, build_monetization_report())
+    elif intent == 'jadwal':
+        send_message(token, chat_id, build_schedule_report())
+    elif intent == 'gagal':
+        send_message(token, chat_id, build_failed_report()[0])
+    elif intent == 'channel_list':
+        chans = load_channels()
+        if not chans:
+            send_message(token, chat_id, "Belum ada channel yang tertaut, Bos.")
+            return
+        lines = ["📺 *Channel yang tertaut:*"]
+        for c in chans:
+            name = _channel_display_name(c)
+            mode = 'Full-Auto' if _autopilot_of(c) == 'auto' else 'Approval'
+            paused = ' ⏸️ Dijeda' if c.get('paused') else ''
+            lines.append(f"• *{name}* — Mode: {mode}{paused}")
+        send_message(token, chat_id, "\n".join(lines))
+    elif intent == 'bantuan':
+        send_message(token, chat_id, build_help_message())
+    elif intent == 'tambah_channel':
+        send_message(token, chat_id,
+                     "Tambah channel hanya bisa dari panel/browser Bos — butuh login Google di browser 😌\n"
+                     "Caranya: buka panel → Settings → ➕ Tambah Channel, lalu ikuti device login seperti biasa.\n"
+                     "Saya tidak bisa menambahkan channel dari Telegram.")
+
+
+def _nlu_suggest(clean):
+    """Did-you-mean: perintah baku terdekat berdasarkan kata yang sama."""
+    _KW = {
+        '/status': ('status', 'server', 'cek', 'kabar', 'jalan'),
+        '/buatshort': ('short', 'pendek', 'buat', 'bikin', 'video'),
+        '/buatlong': ('long', 'panjang', 'kompilasi', 'video', 'buat', 'bikin'),
+        '/laporan': ('laporan', 'report', 'pagi', 'sore'),
+        '/kuota': ('kuota', 'limit', 'upload'),
+        '/stok': ('stok', 'sisa', 'jadwal'),
+        '/statistik': ('statistik', 'stats', 'views'),
+        '/monetisasi': ('monetisasi', 'penghasilan', 'uang', 'rpm'),
+        '/jadwal': ('jadwal', 'schedule', 'kalender'),
+        '/gagal': ('gagal', 'error', 'gagal'),
+        '/perpanjang': ('perpanjang', 'tambah', 'jadwal'),
+        '/mode': ('mode', 'auto', 'approval', 'autopilot'),
+        '/jeda': ('jeda', 'pause', 'berhenti'),
+        '/lanjutkan': ('lanjutkan', 'resume', 'jalan'),
+        '/judul': ('judul', 'title'),
+        '/ideashorts': ('ide', 'shorts', 'ideashorts'),
+        '/cta': ('cta', 'ajakan'),
+    }
+    words = set(clean.split())
+    scored = []
+    for cmd, kws in _KW.items():
+        score = len(words & set(kws))
+        if score:
+            scored.append((score, cmd))
+    scored.sort(reverse=True)
+    return [cmd for _s, cmd in scored[:2]]
+
+
+def _nlu_try_complete_pending(token, chat_id, raw_cmd, clean_cmd):
+    """Jawaban singkat atas klarifikasi yang sedang menunggu (nama channel /
+    angka / niche / mode / ya-tidak). Kembalikan True bila pending
+    diselesaikan atau dimajukan."""
+    pending = _load_nlu_pending(chat_id)
+    if not pending:
+        return False
+    awaiting = pending.get('awaiting')
+    slots = pending.setdefault('slots', {})
+    if awaiting == 'confirm':
+        words = set(clean_cmd.split())
+        if words & {'ya', 'iya', 'iyes', 'ok', 'oke', 'setuju', 'lanjut', 'benar'}:
+            pending['confirmed'] = True
+            _nlu_audit_log(raw_cmd, {"intent": pending.get('intent'), "confidence": None, "slots": slots},
+                           'confirmed')
+            _save_nlu_pending(chat_id, pending)
+            _nlu_advance(token, chat_id, pending)
+            return True
+        if words & {'tidak', 'nggak', 'gak', 'bukan', 'batal', 'ngga', 'salah'}:
+            _clear_nlu_pending(chat_id)
+            send_message(token, chat_id, "Siap Bos, dibatalkan 😌 — coba ketik lagi perintahnya dengan bahasa yang lain ya.")
+            return True
+        return False
+    if awaiting == 'channel':
+        chans = load_channels()
+        cands = pending.get('candidates') or [c.get('yt_id') for c in chans]
+        need = slots.get('channel_count') or 1
+        cur = list(slots.get('channels') or [])
+
+        def _accumulate(new_ids):
+            if need == 1:
+                # Satu channel saja: pilihan baru menggantikan yang lama.
+                slots['channels'] = list(new_ids)
+            else:
+                added = [y for y in new_ids if y not in cur]
+                cur.extend(added)
+                slots['channels'] = cur
+            _save_nlu_pending(chat_id, pending)
+            _nlu_advance(token, chat_id, pending)
+            return True
+
+        if clean_cmd in ('semua', 'semua channel'):
+            return _accumulate(list(cands))
+        m = re.match(r'^(\d+)$', clean_cmd)
+        if m:
+            idx = int(m.group(1)) - 1
+            if 0 <= idx < len(cands):
+                return _accumulate([cands[idx]])
+            return False
+        matched, all_flag = _nlu_match_channels(clean_cmd, chans)
+        if all_flag:
+            return _accumulate(list(cands))
+        if matched:
+            return _accumulate([c.get('yt_id') for c in matched])
+        # Bukan jawaban atas klarifikasi (mis. perintah baru "cek status")
+        # → biarkan di-parse ulang sebagai perintah segar. Hanya bila teks
+        # menyebut 'channel' tapi tidak cocok, beri petunjuk.
+        if 'channel' in clean_cmd:
+            send_message(token, chat_id,
+                         "Saya nggak nemu channel yang Bos sebut 😅 — yang terdaftar: "
+                         + ", ".join(_channel_display_name(c) for c in chans)
+                         + ". Coba sebut namanya lagi ya Bos.")
+            return True
+        return False
+    if awaiting == 'niche':
+        niche, _unk = _nlu_detect_niche(clean_cmd)
+        if niche:
+            slots['niche'] = niche
+            slots.pop('unknown_niche', None)
+            _save_nlu_pending(chat_id, pending)
+            _nlu_advance(token, chat_id, pending)
+            return True
+        return False
+    if awaiting == 'mode':
+        mode = _nlu_extract_mode(clean_cmd)
+        if mode:
+            slots['mode'] = mode
+            _save_nlu_pending(chat_id, pending)
+            _nlu_advance(token, chat_id, pending)
+            return True
+        return False
+    return False
+
+
+def _handle_nlu_message(token, chat_id, raw_cmd, clean_cmd):
+    """Terjemahkan pesan bebas. True = ditangani (dieksekusi / dikonfirmasi /
+    diklarifikasi); False = tidak dikenali (biarkan cabang lama)."""
+    if _nlu_try_complete_pending(token, chat_id, raw_cmd, clean_cmd):
+        return True
+    channels = load_channels()
+    parsed = parse_natural_command(raw_cmd, channels)
+    intent = parsed.get('intent')
+    if intent == 'tidak_dikenali':
+        _nlu_audit_log(raw_cmd, parsed, 'fallback')
+        return False
+    if intent in ('status', 'laporan', 'kuota', 'stok', 'statistik',
+                  'monetisasi', 'jadwal', 'gagal', 'channel_list', 'bantuan',
+                  'tambah_channel'):
+        _nlu_audit_log(raw_cmd, parsed, 'executed')
+        _nlu_run_readonly(token, chat_id, intent)
+        return True
+    if (parsed.get('confidence') or 0) < 60:
+        # Ragu — konfirmasi tafsiran dulu, jangan bertindak.
+        pending = {"intent": intent, "slots": parsed.get('slots') or {},
+                   "awaiting": None, "candidates": [c.get('yt_id') for c in channels],
+                   "created_at": time.time()}
+        _nlu_audit_log(raw_cmd, parsed, 'clarified')
+        _save_nlu_pending(chat_id, pending)
+        _nlu_advance(token, chat_id, pending)
+        return True
+    pending = {"intent": intent, "slots": parsed.get('slots') or {},
+               "awaiting": None, "candidates": [c.get('yt_id') for c in channels],
+               "created_at": time.time()}
+    _nlu_audit_log(raw_cmd, parsed, 'dispatched')
+    _save_nlu_pending(chat_id, pending)
+    _nlu_advance(token, chat_id, pending)
+    return True
+
+
 def handle_user_command(token, chat_id, text):
     try:
         raw_cmd = text.strip()
@@ -2783,7 +4042,15 @@ def handle_user_command(token, chat_id, text):
                 "👉 /buatlong — Buat batch video long 60–80 menit terpandu\n"
                 "👉 /buatlong 3 | 2026-11-20 19:00 | 1 — Sekali kirim (jumlah | tanggal | jeda hari)\n"
                 "👉 /batal — Batalkan draft yang sedang dibuat\n\n"
-                "Niche: sleep, lofi, piano, hujan, meditasi, fokus."
+                "*⚙️ Atur Channel:*\n"
+                "👉 /perpanjang [channel] [hari] — Tambah jadwal, mis. /perpanjang Aruya 0089 30 atau /perpanjang semua 30\n"
+                "👉 /mode [channel] [auto|approval] — Ganti mode, mis. /mode Aruya 0089 auto\n"
+                "👉 /jeda [channel] — Jeda channel (jadwal & antrean berhenti)\n"
+                "👉 /lanjutkan [channel] — Lanjutkan channel yang dijeda\n\n"
+                "Niche: sleep, lofi, piano, hujan, meditasi, fokus, anak.\n\n"
+                "💬 *Bicara bebas juga bisa Bos!* Ketik perintah sehari-hari, mis. "
+                "'buatkan short tema anak untuk semua channel' atau 'jeda channel Barang Unick' — "
+                "saya terjemahkan maksud Bos, dan kalau ragu saya konfirmasi dulu 😌"
             )
             send_message(token, chat_id, msg)
             return
@@ -2796,6 +4063,72 @@ def handle_user_command(token, chat_id, text):
         if first_word in ("/buatlong",) or clean_cmd in ("buat video long",):
             _start_make_long(token, chat_id, raw_cmd)
             return
+
+        # --- 📅 PERPANJANG / MODE / JEDA / LANJUTKAN (aksi, bukan baca saja).
+        # Memakai mesin pending + klarifikasi NLU yang sama (tanya channel /
+        # mode bila tidak disebut; konfirmasi bila beralih ke Full-Auto).
+        if first_word in ("/perpanjang",):
+            rest = raw_cmd[len('/perpanjang'):].strip()
+            clean_rest = _nlu_clean(rest)
+            matched, all_flag = _nlu_match_channels(clean_rest, load_channels())
+            days = _nlu_extract_days(clean_rest)
+            if not days:
+                _m = re.search(r'(\d+)\s*$', clean_rest)
+                if _m:
+                    days = max(1, min(90, int(_m.group(1))))
+            slots = {"days": days or 30}
+            if all_flag:
+                slots['channels'] = [c.get('yt_id') for c in load_channels()]
+            elif matched:
+                slots['channels'] = [c.get('yt_id') for c in matched]
+            pending = {"intent": "perpanjang_jadwal", "slots": slots, "awaiting": None,
+                       "candidates": [c.get('yt_id') for c in load_channels()],
+                       "created_at": time.time()}
+            _save_nlu_pending(chat_id, pending)
+            _nlu_advance(token, chat_id, pending)
+            return
+        if first_word in ("/mode",):
+            rest = raw_cmd[len('/mode'):].strip()
+            clean_rest = _nlu_clean(rest)
+            matched, all_flag = _nlu_match_channels(clean_rest, load_channels())
+            slots = {}
+            mode = _nlu_extract_mode(clean_rest)
+            if mode:
+                slots['mode'] = mode
+            if all_flag:
+                slots['channels'] = [c.get('yt_id') for c in load_channels()]
+            elif matched:
+                slots['channels'] = [c.get('yt_id') for c in matched]
+            pending = {"intent": "ubah_mode", "slots": slots, "awaiting": None,
+                       "candidates": [c.get('yt_id') for c in load_channels()],
+                       "created_at": time.time()}
+            _save_nlu_pending(chat_id, pending)
+            _nlu_advance(token, chat_id, pending)
+            return
+        if first_word in ("/jeda", "/lanjutkan"):
+            rest = raw_cmd[len(first_word):].strip()
+            clean_rest = _nlu_clean(rest)
+            matched, all_flag = _nlu_match_channels(clean_rest, load_channels())
+            slots = {}
+            if all_flag:
+                slots['channels'] = [c.get('yt_id') for c in load_channels()]
+            elif matched:
+                slots['channels'] = [c.get('yt_id') for c in matched]
+            pending = {"intent": "jeda_channel" if first_word == "/jeda" else "lanjutkan_channel",
+                       "slots": slots, "awaiting": None,
+                       "candidates": [c.get('yt_id') for c in load_channels()],
+                       "created_at": time.time()}
+            _save_nlu_pending(chat_id, pending)
+            _nlu_advance(token, chat_id, pending)
+            return
+
+        # --- 🧠 NLU BAHASA MANUSIA: pesan bebas (bukan perintah "/" dan
+        # bukan tombol keyboard) diterjemahkan dulu; bila dikenali →
+        # ditangani di sini. Bila tidak dikenali → jatuh ke cabang lama
+        # di bawah (kompatibilitas perintah lama tetap utuh).
+        if not first_word.startswith('/') and clean_cmd not in _MAIN_BUTTON_TEXTS:
+            if _handle_nlu_message(token, chat_id, raw_cmd, clean_cmd):
+                return
 
         # --- PERINTAH BARU (baca saja) — dicek dulu supaya tidak ketangkap
         # cabang lama: "server" ketangkap /status, "ide shorts" ketangkap /judul.
@@ -2950,11 +4283,18 @@ def handle_user_command(token, chat_id, text):
             send_message(token, chat_id, msg)
             return
 
-        # DEFAULT FALLBACK
+        # DEFAULT FALLBACK — did-you-mean (NLU sudah mencoba menerjemahkan
+        # dan tidak mengenali maksudnya; sarankan perintah terdekat).
+        sug = _nlu_suggest(clean_cmd)
+        if sug:
+            sug_txt = "Mungkin maksud Bos: " + " atau ".join(sug) + "?"
+        else:
+            sug_txt = "Coba sentuh tombol di bawah atau ketik /start buat lihat semua perintah ya Bos!"
         msg = (
             f"🤖 *Eh Bos, pesan \"{_tg_escape(raw_cmd)}\" saya terima tapi saya nggak ngerti maksudnya* 😅\n\n"
-            "Coba sentuh tombol di bawah atau ketik /start buat lihat semua perintah ya Bos!\n"
-            "Perintah cepat: /status /server /kuota /stok /statistik /monetisasi /judul /ideashorts /buatshort /buatlong"
+            f"{sug_txt}\n"
+            "Perintah cepat: /status /server /kuota /stok /statistik /monetisasi /judul /ideashorts /buatshort /buatlong /perpanjang /mode /jeda /lanjutkan\n"
+            "Atau bicara bebas saja, mis. 'buatkan short tema anak untuk semua channel' — saya terjemahkan maksud Bos 😌"
         )
         send_message(token, chat_id, msg)
 

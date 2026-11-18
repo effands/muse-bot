@@ -332,7 +332,8 @@ app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
 _OPERATOR_ENDPOINTS = {'operator_retry_task', 'operator_approve_task',
                       'operator_reject_task', 'operator_approve_batch',
                       'operator_register_node', 'operator_create_shorts',
-                      'operator_create_long'}
+                      'operator_create_long', 'operator_extend_schedule',
+                      'operator_set_autopilot', 'operator_set_paused'}
 _CSRF_EXEMPT_ENDPOINTS = {'login', 'setup', 'static'} | _OPERATOR_ENDPOINTS
 
 @app.before_request
@@ -846,7 +847,7 @@ SHORTS_MUSE_DEFAULT_CTA = 'Subscribe' # CTA bila form dikosongkan
 # berputar berdasarkan tanggal, supaya tidak sama terus. Bila bank judul
 # channel ada, judul diambil dari sana secara bergiliran; bila kosong,
 # judul dibuat dari label tema + tanggal (tanpa klaim palsu).
-AUTO_SHORTS_NICHES = ('sleep', 'lofi', 'piano', 'hujan', 'meditasi', 'fokus')
+AUTO_SHORTS_NICHES = ('sleep', 'lofi', 'piano', 'hujan', 'meditasi', 'fokus', 'anak')
 AUTO_SHORTS_NICHE_LABELS = {
     'sleep': 'Musik Tidur', 'lofi': 'Lofi', 'piano': 'Piano',
     'hujan': 'Suara Hujan', 'meditasi': 'Meditasi', 'fokus': 'Musik Fokus',
@@ -915,6 +916,15 @@ AUTO_SHORTS_BANK = {
                     'Fokus sebentar, istirahat sejenak, lalu lanjut lagi.',
                     'Biarkan musik ini menemani jam fokusmu.'],
         'ctas': ['Subscribe untuk musik fokus harian', 'Subscribe'],
+    },
+    'anak': {
+        'hooks': ['Lagu ceria untuk anak-anak!', 'Ayo bernyanyi bersama!',
+                  'Belajar sambil bernyanyi, seru!', 'Lagu anak yang bikin semangat'],
+        'scripts': ['Ayo bernyanyi bersama, tepuk tangan yuk!',
+                    'Lagu ceria ini untuk menemani harimu yang seru.',
+                    'Belajar berhitung sambil bernyanyi, menyenangkan!',
+                    'Ikuti gerakannya, lompat dan bernyanyi bersama!'],
+        'ctas': ['Subscribe ya!', 'Ajak temanmu subscribe!'],
     },
 }
 # Aturan umur bersih-bersih disk (lihat cleanup_old_files):
@@ -6965,6 +6975,101 @@ def _create_long_batch(data, max_count=BATCH_MAX_COUNT):
             "previews": previews, "tasks": _ok_tasks, "channel_name": channel_name}
 
 
+def _last_scheduled_info(yt_id):
+    """Tanggal tayang TERAKHIR + judul terakhir channel dari tasks_db.json
+    (active + history). Tugas berstatus Gagal/Ditolak diabaikan — hanya
+    jadwal yang masih berlaku yang dihitung. Kembalikan (datetime|None,
+    judul_terakhir|None)."""
+    best_dt = None
+    best_title = None
+    for t in list(active_tasks) + list(history_tasks):
+        if (t or {}).get('yt_id') != yt_id:
+            continue
+        status = str((t or {}).get('status', ''))
+        if 'Gagal' in status or 'Ditolak' in status:
+            continue
+        raw = (t or {}).get('time') or (t or {}).get('publish_date') or \
+            ((t or {}).get('blueprint') or {}).get('publish_date') or ''
+        try:
+            dt = datetime.strptime(str(raw), '%Y-%m-%d %H:%M')
+        except Exception:
+            continue
+        if best_dt is None or dt > best_dt:
+            best_dt = dt
+            best_title = (t or {}).get('title') or ''
+    return best_dt, best_title
+
+
+def _extend_schedule(yt_id, days, start=None):
+    """Perpanjang jadwal channel sebanyak `days` hari (1–90). Logika inti
+    dipakai endpoint operator Telegram (dan panel bila ada nanti).
+    - Mulai sehari setelah tanggal tayang terakhir (atau besok bila belum
+      ada jadwal); `start` opsional menggeser awal (tetap tidak boleh
+      menabrak jadwal yang sudah ada).
+    - Judul dari bank judul channel secara BERURUTAN, melanjutkan dari
+      judul terakhir yang dipakai (bukan mengulang dari awal) — memakai
+      pola siklus bank yang sama seperti operator_create_long.
+    - Semua gerbang _create_long_batch berlaku (stagger, autopilot,
+      antrean penuh → 429). Channel dijeda / bank judul kosong ditolak
+      dengan pesan jelas. Mengembalikan dict seperti _create_long_batch
+      ditambah first_date/last_date."""
+    channel_rec = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+    if channel_rec is None:
+        return {"ok": False, "message": "Channel tidak ditemukan.", "http": 404}
+    if _channel_paused(yt_id):
+        return {"ok": False,
+                "message": f"Channel {channel_rec.get('name', yt_id)} sedang dijeda — lanjutkan dulu channelnya sebelum memperpanjang jadwal.",
+                "http": 400}
+    bank = [t for t in (channel_rec.get('title_bank') or [])
+            if isinstance(t, str) and t.strip()]
+    if not bank:
+        return {"ok": False,
+                "message": "Bank judul channel ini kosong — isi Bank Judul di panel dulu, baru jadwalnya bisa diperpanjang.",
+                "http": 400}
+    last_dt, last_title = _last_scheduled_info(yt_id)
+    # Jam tayang: ikut jam jadwal terakhir; bila belum ada jadwal, 19:00.
+    hour, minute = (last_dt.hour, last_dt.minute) if last_dt else (19, 0)
+    if start is not None:
+        # start eksplisit dipakai apa adanya, tapi tidak boleh menabrak
+        # jadwal yang sudah ada (geser ke sehari setelah jadwal terakhir).
+        base_date = start
+        if last_dt is not None:
+            floor = (last_dt + timedelta(days=1)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if base_date < floor:
+                base_date = floor
+    elif last_dt is not None:
+        base_date = (last_dt + timedelta(days=1)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    else:
+        base_date = (_wib_now() + timedelta(days=1)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    # Offset judul: lanjutkan dari judul terakhir yang dipakai di bank.
+    offset = 0
+    if last_title and last_title in bank:
+        offset = bank.index(last_title) + 1
+    titles = [bank[(offset + i) % len(bank)] for i in range(days)]
+    durations = [random.randint(60, 80) / 60.0 for _ in range(days)]
+    ch_name = channel_rec.get('name', yt_id)
+    descs = [f"{t}\n\n{ch_name}" for t in titles]
+    prepared = {
+        "yt_id": yt_id, "count": days,
+        "generated_titles": titles,
+        "generated_descriptions": descs,
+        "target_durations_array": durations,
+        "start_date": base_date.strftime('%Y-%m-%dT%H:%M'),
+        "interval_days": 1,
+        "mp3_per_video": 5, "vid_per_video": 1, "bg_count": 1,
+        "render_preset": "ultrafast", "source_mode": "mix",
+        "privacy": "public",
+    }
+    res = _create_long_batch(prepared, max_count=90)
+    if not res.get("ok"):
+        return res
+    tasks = res.get("tasks", []) or []
+    res["first_date"] = tasks[0]["publish_date"] if tasks else base_date.strftime('%Y-%m-%d %H:%M')
+    res["last_date"] = tasks[-1]["publish_date"] if tasks else res["first_date"]
+    res["title_offset"] = offset
+    return res
+
+
 @app.route('/api/operator/create_long', methods=['POST'])
 def operator_create_long():
     """Buat batch video long 60–80 menit dari Telegram (alur terpandu
@@ -7050,6 +7155,131 @@ def operator_create_long():
                     "batch_id": res["batch_id"], "count": res["count"],
                     "approval": "approved" if res["auto_mode"] else "pending",
                     "tasks": res.get("tasks", [])})
+
+
+@app.route('/api/operator/extend_schedule', methods=['POST'])
+def operator_extend_schedule():
+    """Perpanjang jadwal channel dari Telegram (/perpanjang / NLU).
+    Keamanan: wajib `key` == operator_key (HMAC, pola operator lain).
+    Route ini masuk _OPERATOR_ENDPOINTS di check_security.
+    Parameter: yt_id, days (default 30, batas 1–90), start opsional
+    ('YYYY-MM-DD' / 'YYYY-MM-DD HH:MM'). Judul & gerbang mengikuti
+    _extend_schedule (lanjut dari jadwal & judul terakhir)."""
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    yt_id = (data.get('yt_id') or '').strip()
+    if not _valid_yt_id(yt_id):
+        return jsonify({"status": "error", "message": "Channel tidak valid."}), 400
+    try:
+        days = int(data.get('days', 30))
+    except Exception:
+        return jsonify({"status": "error", "message": "days harus angka bulat 1–90."}), 400
+    if isinstance(data.get('days'), bool) or days < 1 or days > 90:
+        return jsonify({"status": "error", "message": "days harus angka bulat 1–90."}), 400
+    start = None
+    start_raw = (data.get('start') or '').strip()
+    if start_raw:
+        for _fmt in ('%Y-%m-%d %H:%M', '%Y-%m-%dT%H:%M', '%Y-%m-%d'):
+            try:
+                start = datetime.strptime(start_raw, _fmt)
+                break
+            except Exception:
+                continue
+        if start is None:
+            return jsonify({"status": "error", "message": "Format start salah (pakai YYYY-MM-DD atau YYYY-MM-DD HH:MM)."}), 400
+        if len(start_raw) == 10:
+            start = start.replace(hour=19, minute=0)
+    res = _extend_schedule(yt_id, days, start=start)
+    if not res.get("ok"):
+        return jsonify({"status": "error", "message": res["message"]}), res["http"]
+    if res.get("previews"):
+        threading.Thread(target=_send_approval_previews,
+                         args=(res["batch_id"], res["channel_name"], res["previews"]), daemon=True).start()
+    return jsonify({"status": "success", "message": res["message"],
+                    "batch_id": res["batch_id"], "count": res["count"],
+                    "approval": "approved" if res["auto_mode"] else "pending",
+                    "first_date": res.get("first_date"), "last_date": res.get("last_date"),
+                    "channel_name": res.get("channel_name"),
+                    "tasks": res.get("tasks", [])})
+
+
+@app.route('/api/operator/set_autopilot', methods=['POST'])
+def operator_set_autopilot():
+    """Ubah mode autopilot channel dari Telegram (/mode / NLU).
+    Keamanan: wajib `key` == operator_key (HMAC). Logika & pesan sama
+    seperti /api/set_channel_autopilot (field `autopilot` di
+    channels_db.json) — endpoint ini hanya membungkusnya untuk operator.
+    Mode tidak valid → 400; channel tidak dikenal → 404."""
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    yt_id = (data.get('yt_id') or '').strip()
+    mode = str(data.get('mode', '') or data.get('autopilot', '') or '').lower()
+    if not _valid_yt_id(yt_id):
+        return jsonify({"status": "error", "message": "Channel tidak valid."}), 400
+    if mode not in ('auto', 'approval'):
+        return jsonify({"status": "error", "message": "Mode harus 'auto' atau 'approval'."}), 400
+    with db_lock:
+        target = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+        if target is None:
+            return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
+        target['autopilot'] = mode
+        name = target.get('name', yt_id)
+        try:
+            save_channels(database_channel)
+        except Exception as e:
+            print(f"Gagal simpan autopilot {yt_id} (operator): {e}", flush=True)
+            return jsonify({"status": "error", "message": "Gagal menyimpan perubahan."}), 500
+    if mode == 'auto':
+        send_tg_message(f"🤖 *Siap Bos, channel {_tg_escape(name)} saya set Full-Auto!* 😎\nBatch baru langsung jalan tanpa approval — saya yang urus sampai tayang 💪")
+        return jsonify({"status": "success", "autopilot": "auto", "channel_name": name,
+                        "message": f"Channel {name} mode Full-Auto. Batch baru langsung masuk antrean."})
+    send_tg_message(f"👀 *Siap Bos, channel {_tg_escape(name)} balik ke mode Approval.* 😌\nBatch baru tetap saya kirim preview dulu buat Bos cek.")
+    return jsonify({"status": "success", "autopilot": "approval", "channel_name": name,
+                    "message": f"Channel {name} mode Approval. Batch baru menunggu persetujuan."})
+
+
+@app.route('/api/operator/set_paused', methods=['POST'])
+def operator_set_paused():
+    """Jeda / lanjutkan channel dari Telegram (NLU /jeda / /lanjutkan).
+    Keamanan: wajib `key` == operator_key (HMAC). Logika sama seperti
+    /api/set_channel_paused (field `paused` di channels_db.json;
+    lanjut → reset fail_streak + kembalikan task tertahan)."""
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    yt_id = (data.get('yt_id') or '').strip()
+    paused = bool(data.get('paused', False))
+    if not _valid_yt_id(yt_id):
+        return jsonify({"status": "error", "message": "Channel tidak valid."}), 400
+    with db_lock:
+        target = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+        if target is None:
+            return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
+        target['paused'] = paused
+        if not paused:
+            target['fail_streak'] = 0
+            target.pop('auto_paused', None)
+        name = target.get('name', yt_id)
+        try:
+            save_channels(database_channel)
+        except Exception as e:
+            print(f"Gagal simpan paused {yt_id} (operator): {e}", flush=True)
+            return jsonify({"status": "error", "message": "Gagal menyimpan perubahan."}), 500
+    if paused:
+        send_tg_message(f"⏸️ *Siap Bos, channel {_tg_escape(name)} saya jeda dulu.* 😌\nTask-nya saya tahan semua, nggak ada yang jalan sampai Bos lanjutkan lagi.")
+        return jsonify({"status": "success", "paused": True, "resumed_count": 0,
+                        "channel_name": name,
+                        "message": f"Channel {name} dijeda. Task terjadwal ditahan."})
+    resumed = _resume_channel_tasks(yt_id)
+    send_tg_message(f"▶️ *Siap Bos, channel {_tg_escape(name)} jalan lagi!* 💪\n{resumed} task udah masuk antrean render.")
+    return jsonify({"status": "success", "paused": False, "resumed_count": resumed,
+                    "channel_name": name,
+                    "message": f"Channel {name} dilanjutkan. {resumed} task masuk antrean."})
 
 
 @app.route('/uploads/<path:filename>')

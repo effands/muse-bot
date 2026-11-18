@@ -9,6 +9,7 @@ update_status.json
 update.log
 nodes.json
 nodes.json.tmp
+nlu_audit.jsonl
 
 # Keamanan File Rahasia & Konfigurasi Lokal
 config.json

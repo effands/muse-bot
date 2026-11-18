@@ -6302,6 +6302,41 @@ def _heal_stale_update_status():
     except Exception as e:
         print(f"⚠️ [Update] Self-heal status update gagal (diabaikan): {e}", flush=True)
 
+def _ensure_muse_ssh_key():
+    """Pasang kunci SSH publik Muse (file `muse-ssh.pub` di repo) ke
+    ~/.ssh/authorized_keys bila belum ada — supaya Muse bisa masuk ke VPS
+    sebagai admin (kirim file, periksa server) tanpa user mengetik perintah
+    panjang di konsol. Kunci ini PUBLIK (aman dibagikan); yang memegang
+    kunci privatnya hanya VM Muse. Idempotent: bila kunci sudah ada,
+    tidak ditulis ulang. Tidak pernah melempar."""
+    try:
+        repo_dir = os.path.dirname(os.path.abspath(__file__))
+        pub_path = os.path.join(repo_dir, 'muse-ssh.pub')
+        if not os.path.isfile(pub_path):
+            return
+        with open(pub_path, 'r', encoding='utf-8') as f:
+            key = f.read().strip()
+        if not key.startswith('ssh-ed25519 ') or '\n' in key:
+            print("⚠️ [SSH] muse-ssh.pub tidak valid, dilewati.", flush=True)
+            return
+        ssh_dir = os.path.expanduser('~/.ssh')
+        auth_path = os.path.join(ssh_dir, 'authorized_keys')
+        os.makedirs(ssh_dir, exist_ok=True)
+        existing = ''
+        if os.path.isfile(auth_path):
+            with open(auth_path, 'r', encoding='utf-8', errors='ignore') as f:
+                existing = f.read()
+        if key in existing:
+            return
+        with open(auth_path, 'a', encoding='utf-8') as f:
+            if existing and not existing.endswith('\n'):
+                f.write('\n')
+            f.write(key + '\n')
+        os.chmod(auth_path, 0o600)
+        print("✅ [SSH] Kunci SSH Muse dipasang ke authorized_keys.", flush=True)
+    except Exception as e:
+        print(f"⚠️ [SSH] Pemasangan kunci SSH Muse dilewati: {e}", flush=True)
+
 # Status task yang berarti "tidak sedang diproses" (aman di-restart).
 _UPDATE_IDLE_MARKERS = ('Selesai', 'Gagal', 'Dibatalkan', 'Menunggu', 'Ditunda', 'Dijeda')
 
@@ -7921,6 +7956,13 @@ save_tasks_db()
 # jalan tiap start, dan TIDAK BOLEH menggagalkan startup apa pun yang terjadi.
 try:
     _heal_stale_update_status()
+except Exception:
+    pass
+
+# 🔑 Pasang kunci SSH publik Muse (muse-ssh.pub di repo) bila belum ada —
+# jalan tiap start, TIDAK BOLEH menggagalkan startup apa pun yang terjadi.
+try:
+    _ensure_muse_ssh_key()
 except Exception:
     pass
 

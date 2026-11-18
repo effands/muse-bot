@@ -333,7 +333,9 @@ _OPERATOR_ENDPOINTS = {'operator_retry_task', 'operator_approve_task',
                       'operator_reject_task', 'operator_approve_batch',
                       'operator_register_node', 'operator_create_shorts',
                       'operator_create_long', 'operator_extend_schedule',
-                      'operator_set_autopilot', 'operator_set_paused'}
+                      'operator_set_autopilot', 'operator_set_paused',
+                      'operator_pixabay_key_add', 'operator_pixabay_key_list',
+                      'operator_pixabay_key_del'}
 _CSRF_EXEMPT_ENDPOINTS = {'login', 'setup', 'static'} | _OPERATOR_ENDPOINTS
 
 @app.before_request
@@ -835,6 +837,17 @@ FAIL_STREAK_AUTO_PAUSE = 3           # gagal beruntun → jeda channel otomatis
 # 🔥 FASE 8: Shorts Muse — video vertikal 1080x1920 dari naskah + CTA.
 # Naskah/hook/CTA dibuat oleh Muse di chat; VPS hanya me-render & upload.
 SHORTS_MUSE_KIND = 'shorts_muse'      # penanda task di blueprint & antrean aktif
+
+# 🎵 MUSIK PLAYLIST (v1.2.7): kompilasi musik dari referensi trending.
+PLAYLIST_KIND = 'playlist'            # penanda task di blueprint & antrean aktif
+PLAYLIST_TMP_DIR = os.path.join(BASE_UPLOAD, 'playlist_tmp')
+PLAYLIST_JOBS_FILE = os.path.join(BASE_DIR, 'playlist_jobs.json')
+PLAYLIST_MAX_CLIPS = 15               # klip footage Pixabay per video
+PLAYLIST_MIN_CLIPS = 5                # minimal klip agar render jalan
+PLAYLIST_RESEARCH_CACHE_SEC = 3600    # cache riset 1 jam (hemat kuota)
+PLAYLIST_MIN_VIEWS = 20000            # "meledak": minimal views referensi
+PLAYLIST_MAX_AUDIO_BYTES = 500 * 1024 * 1024   # batas audio referensi (500 MB)
+PLAYLIST_MAX_CLIP_BYTES = 300 * 1024 * 1024    # batas 1 klip footage (300 MB)
 SHORTS_MUSE_DURATIONS = (15, 30, 60)  # pilihan durasi target (detik)
 SHORTS_MUSE_MIN_SEC = 5               # batas bawah durasi (validasi server)
 SHORTS_MUSE_MAX_SEC = 180             # batas atas durasi (Shorts maks 3 menit)
@@ -3090,6 +3103,13 @@ def background_worker():
                         if d['id'] == task_id: d['status'] = "Merender Shorts Muse... 📱"
                 save_tasks_db()
                 final_video = render_shorts_muse_core(task_id, task, yt_id)
+            elif task.get('kind') == PLAYLIST_KIND:
+                # 🎵 MUSIK PLAYLIST: render loop klip + audio referensi.
+                with db_lock:
+                    for d in active_tasks:
+                        if d['id'] == task_id: d['status'] = "Merender Musik Playlist... 🎵"
+                save_tasks_db()
+                final_video = _playlist_render(task_id, task, yt_id)
             else:
                 # ============== AWAL BLOK SUMBER KONTEN (UPDATE) ==============
                 source_mode = task.get('source_mode', 'mix')
@@ -3509,7 +3529,15 @@ def background_worker():
 
                             # 🔥 FASE 8: Shorts tidak memakai thumbnail 16:9 —
                             # YouTube Shorts memakai frame video sebagai sampul.
-                            thumb_path = None if task.get('kind') == SHORTS_MUSE_KIND else get_and_consume_thumbnail(yt_id)
+                            # 🎵 Playlist: thumbnail custom hasil modifikasi
+                            # (task['playlist_thumb']) didahulukan bila ada.
+                            _pl_thumb = (task.get('playlist_thumb') or '').strip()
+                            if _pl_thumb and os.path.exists(_pl_thumb):
+                                thumb_path = _pl_thumb
+                            elif task.get('kind') == SHORTS_MUSE_KIND:
+                                thumb_path = None
+                            else:
+                                thumb_path = get_and_consume_thumbnail(yt_id)
                             if thumb_path and os.path.exists(thumb_path):
                                 try:
                                     with db_lock:
@@ -3551,10 +3579,18 @@ def background_worker():
                             move_to_history(task_id, "Tayang! ✅")
                             _shorts_pfx = "📱 Shorts " if task.get('kind') == SHORTS_MUSE_KIND else ""
                             _audio_note = (task.get('shorts_audio') or '').strip()
-                            notify_event("✅", task['title'], f"{_shorts_pfx}udah tayang di YouTube {ch_name} 😎\nJadwal tayang: {task['publish_date']}" + (f"\n🎙️ Suara: {_audio_note}" if _audio_note else ""))
+                            _pl_note = ""
+                            if task.get('kind') == PLAYLIST_KIND:
+                                _pl_note = (f"\n🎵 Musik Playlist"
+                                            f" (referensi: {(task.get('playlist_ref_title') or '')[:50]})")
+                            notify_event("✅", task['title'], f"{_shorts_pfx}udah tayang di YouTube {ch_name} 😎\nJadwal tayang: {task['publish_date']}" + (f"\n🎙️ Suara: {_audio_note}" if _audio_note else "") + _pl_note)
                             upload_berhasil = True
                             # 🔥 FASE 5: 1 sukses → reset hitungan gagal beruntun.
                             _record_channel_success(yt_id)
+                            # 🎵 MUSIK PLAYLIST: setelah upload sukses → hapus
+                            # video final + folder kerja job (audio + thumbnail).
+                            if task.get('kind') == PLAYLIST_KIND:
+                                _playlist_cleanup_after_upload(task)
                             # 🔥 BARU v1.4: batas 6 upload/hari/channel → cooldown sampai tengah malam WIB,
                             # besok lanjut otomatis. Task antre tetap aman menunggu.
                             try:
@@ -3664,6 +3700,9 @@ def background_worker():
             reason = str(e)[:200]
             move_to_history(task_id, f"Gagal QC 🛑 ({reason[:100]})")
             _record_channel_failure(yt_id, task['title'], f"QC: {reason}")
+            if task.get('kind') == PLAYLIST_KIND:
+                _playlist_job_update(task.get('playlist_job_id'), status='failed',
+                                     error=f"QC: {reason[:200]}")
             if not stop_flags.get(task_id):
                 retry_markup = {"inline_keyboard": [[
                     {"text": "🔁 Coba Lagi", "callback_data": f"retry:{task_id}"}
@@ -3707,6 +3746,9 @@ def background_worker():
                 queue_put(task, allow_overflow=True)
             else:
                 move_to_history(task_id, f"Gagal ❌ ({err_msg})")
+                if task.get('kind') == PLAYLIST_KIND:
+                    _playlist_job_update(task.get('playlist_job_id'), status='failed',
+                                         error=err_msg[:200])
                 # 🔥 FASE 5: catat kegagalan beruntun untuk auto-pause channel.
                 # Pembatalan manual (stop flag / "Dibatalkan") BUKAN kegagalan
                 # channel — jangan dihitung.
@@ -7611,6 +7653,1030 @@ def _create_shorts_muse_task(data):
             "http": 200, "task_id": t_id, "auto_mode": False, "batch_id": batch_id,
             "preview": preview, "channel_name": channel_name, "publish_date": v_date_str,
             "bg_auto": bg_auto, "bg_video": bg_video_count > 0, "bg_video_count": bg_video_count}
+
+
+# ============================================================
+# 🎵 MUSIK PLAYLIST — riset trending → kompilasi → upload
+# (v1.2.7; spek user 01:36 + 04:46 WIB 2026-11-19)
+#
+# Alur: Riset (YouTube Data API, hemat kuota) → unduh audio referensi
+# (yt-dlp) + footage Pixabay (API resmi, multi-key + failover) →
+# judul/deskripsi ditulis ulang + thumbnail dimodifikasi → render
+# loop (utamakan stream copy) → QC + upload lewat worker yang sama
+# (disk, jeda, kuota project, approval/autopilot) → cleanup.
+# Audio memakai referensi apa adanya — pesan job SELALU jujur soal ini.
+# ============================================================
+
+def _pixabay_key_entries():
+    """Daftar key Pixabay dari config.json — SELALU baca fresh (jangan
+    pakai global bot_config yang bisa basi setelah restart/operator).
+    Format: [{'key': str, 'disabled': bool}]. Migrasi otomatis dari
+    field lama `pixabay_api_key` (satu key) ke daftar."""
+    cfg = load_bot_config()
+    raw = cfg.get('pixabay_api_keys')
+    entries = []
+    if isinstance(raw, list):
+        for e in raw:
+            if isinstance(e, dict) and isinstance(e.get('key'), str) and e['key'].strip():
+                entries.append({'key': e['key'].strip(), 'disabled': bool(e.get('disabled'))})
+            elif isinstance(e, str) and e.strip():
+                entries.append({'key': e.strip(), 'disabled': False})
+    legacy = cfg.get('pixabay_api_key')
+    if isinstance(legacy, str) and legacy.strip():
+        if all(e['key'] != legacy.strip() for e in entries):
+            entries.append({'key': legacy.strip(), 'disabled': False})
+        # Migrasi permanen: pindah ke daftar, hapus field lama.
+        cfg['pixabay_api_keys'] = entries
+        cfg.pop('pixabay_api_key', None)
+        _save_bot_config(cfg)
+    return entries
+
+
+def _pixabay_save_entries(entries):
+    """Simpan daftar key (fresh load → ubah → save). Key utuh TIDAK
+    PERNAH ditulis ke log/pesan — hanya ke config.json (0600)."""
+    cfg = load_bot_config()
+    cfg['pixabay_api_keys'] = [{'key': e['key'], 'disabled': bool(e.get('disabled'))} for e in entries]
+    cfg.pop('pixabay_api_key', None)
+    _save_bot_config(cfg)
+
+
+def _pixabay_masked_list():
+    """Daftar key untuk panel/Telegram — HANYA masked + status."""
+    return [{'index': i + 1, 'masked': _mask_token(e['key']),
+             'disabled': bool(e.get('disabled'))}
+            for i, e in enumerate(_pixabay_key_entries())]
+
+
+def _pixabay_active_keys():
+    """Key yang masih aktif (tidak disabled), urut seperti disimpan."""
+    return [e['key'] for e in _pixabay_key_entries() if not e.get('disabled')]
+
+
+def _pixabay_add_key(key):
+    """Tambah key baru. Kembalikan (ok, masked, pesan). Duplikat ditolak."""
+    key = (key or '').strip()
+    if not key:
+        return False, '', 'API key tidak boleh kosong.'
+    if len(key) < 8 or len(key) > 100 or any(ch.isspace() for ch in key):
+        return False, '', 'API key tidak valid (8–100 karakter, tanpa spasi).'
+    entries = _pixabay_key_entries()
+    if any(e['key'] == key for e in entries):
+        return False, _mask_token(key), 'Key itu sudah ada di daftar.'
+    entries.append({'key': key, 'disabled': False})
+    _pixabay_save_entries(entries)
+    return True, _mask_token(key), f"Key {_mask_token(key)} ditambahkan."
+
+
+def _pixabay_delete_key(ident):
+    """Hapus key by nomor urut (1-based) atau 4 karakter terakhir.
+    Kembalikan (ok, masked, pesan)."""
+    ident = str(ident or '').strip()
+    entries = _pixabay_key_entries()
+    if not entries:
+        return False, '', 'Belum ada API key Pixabay.'
+    target = None
+    if ident.isdigit():
+        idx = int(ident) - 1
+        if 0 <= idx < len(entries):
+            target = entries[idx]
+    if target is None and len(ident) >= 4:
+        matches = [e for e in entries if e['key'][-4:] == ident[-4:]]
+        if len(matches) == 1:
+            target = matches[0]
+        elif len(matches) > 1:
+            return False, '', 'Ada beberapa key dengan 4 karakter terakhir yang sama — hapus pakai nomor urut.'
+    if target is None:
+        return False, '', 'Key tidak ditemukan (pakai 4 karakter terakhir atau nomor urut).'
+    entries.remove(target)
+    _pixabay_save_entries(entries)
+    return True, _mask_token(target['key']), f"Key {_mask_token(target['key'])} dihapus."
+
+
+def _pixabay_disable_key(key):
+    """Tandai key nonaktif (401/403) supaya tidak dicoba terus."""
+    entries = _pixabay_key_entries()
+    changed = False
+    for e in entries:
+        if e['key'] == key and not e.get('disabled'):
+            e['disabled'] = True
+            changed = True
+    if changed:
+        _pixabay_save_entries(entries)
+
+
+_PIXABAY_API_URL = 'https://pixabay.com/api/videos/'
+
+
+def _pixabay_api_get(params, timeout=30):
+    """GET Pixabay Videos API (resmi) dengan FAILOVER multi-key.
+    401/403 → key dinonaktifkan (disimpan) lalu coba key berikut;
+    429 → coba key berikut tanpa menonaktifkan; error lain → gagal
+    langsung. Kembalikan (json, masked_key). Key TIDAK PERNAH muncul
+    di pesan error/log."""
+    keys = _pixabay_active_keys()
+    if not keys:
+        raise RuntimeError("Belum ada API key Pixabay — isi dulu di Settings (gratis, daftar di pixabay.com/api) atau /pixabaykey di Telegram.")
+    last_err = ''
+    tried = 0
+    for key in keys:
+        tried += 1
+        try:
+            r = requests.get(_PIXABAY_API_URL, params=dict(params, key=key), timeout=timeout)
+        except requests.RequestException as e:
+            last_err = f"jaringan Pixabay bermasalah ({str(e)[:60]})"
+            continue
+        if r.status_code == 200:
+            return r.json(), _mask_token(key)
+        if r.status_code in (401, 403):
+            _pixabay_disable_key(key)
+            last_err = "API key tidak valid/ditolak (401/403) — key dinonaktifkan"
+            continue
+        if r.status_code == 429:
+            last_err = "rate limit Pixabay (429)"
+            continue
+        last_err = f"Pixabay menjawab HTTP {r.status_code}"
+        break
+    raise RuntimeError(f"Pixabay gagal: {last_err} (dicoba {tried} key).")
+
+
+# Bank query footage Pixabay per tema — dipilih acak per job (auto-random).
+_PLAYLIST_PIXABAY_QUERIES = {
+    'lofi': ['lofi rain city night', 'coffee shop night', 'rainy window night'],
+    'piano': ['piano concert', 'piano keys closeup', 'sheet music piano'],
+    'hujan': ['rain window', 'rain storm clouds', 'rain drops leaves'],
+    'tidur': ['night sky stars', 'moon night clouds', 'bedroom night lamp'],
+    'sleep': ['night sky stars', 'moon night clouds', 'bedroom night lamp'],
+    'meditasi': ['zen garden', 'meditation calm lake', 'sunrise mist mountain'],
+    'fokus': ['workspace desk', 'library books', 'study desk lamp'],
+    'anak': ['children playing park', 'colorful balloons sky', 'playground kids'],
+    'asmr': ['rain drops slow', 'ocean waves calm', 'forest leaves wind'],
+    'pop': ['concert lights crowd', 'city night neon', 'stage lights'],
+    'jazz': ['jazz saxophone club', 'vinyl record player', 'saxophone night'],
+    'alam': ['mountain lake sunset', 'forest sunlight', 'ocean waves beach'],
+    'nature': ['mountain lake sunset', 'forest sunlight', 'ocean waves beach'],
+}
+_PLAYLIST_PIXABAY_DEFAULT = ['nature landscape', 'city night lights', 'ocean waves']
+
+
+def _playlist_pixabay_queries(theme):
+    """2 query footage untuk tema (acak per job)."""
+    key = (theme or '').strip().lower()
+    bank = None
+    for k, v in _PLAYLIST_PIXABAY_QUERIES.items():
+        if k in key:
+            bank = v
+            break
+    if bank is None:
+        words = [w for w in re.split(r'[^a-z0-9]+', key) if w]
+        bank = [' '.join(words[:2])] if words else _PLAYLIST_PIXABAY_DEFAULT
+        if len(words) >= 2:
+            bank = bank + [words[0] + ' nature']
+    return random.sample(bank, min(2, len(bank)))
+
+
+def _pixabay_search_clips(theme, count=PLAYLIST_MAX_CLIPS, job_id=''):
+    """Cari footage 16:9 ukuran 'small' di Pixabay (API resmi).
+    Kembalikan (clips, masked_keys). Clips: [{url, width, height, tags}].
+    Diacak (seed job_id) supaya tiap job beda susunan."""
+    queries = _playlist_pixabay_queries(theme)
+    seen = set()
+    clips = []
+    used_masks = []
+    for q in queries:
+        data, masked = _pixabay_api_get({
+            'q': q, 'video_type': 'film', 'orientation': 'horizontal',
+            'min_width': 640, 'per_page': 50, 'safesearch': 'true', 'order': 'popular'})
+        if masked not in used_masks:
+            used_masks.append(masked)
+        for hit in data.get('hits', []):
+            small = ((hit.get('videos') or {}).get('small') or {})
+            url = small.get('url') or ''
+            try:
+                w, h = int(small.get('width') or 0), int(small.get('height') or 0)
+            except Exception:
+                continue
+            if not url.startswith('https://cdn.pixabay.com/'):
+                continue
+            if not w or not h or abs(w / h - 16 / 9) > 0.02:
+                continue  # hanya 16:9
+            if url in seen:
+                continue
+            seen.add(url)
+            clips.append({'url': url, 'width': w, 'height': h,
+                          'tags': hit.get('tags', ''), 'duration': hit.get('duration')})
+            if len(clips) >= count:
+                break
+        if len(clips) >= count:
+            break
+    random.Random(job_id or '').shuffle(clips)
+    clips = clips[:count]
+    if len(clips) < PLAYLIST_MIN_CLIPS:
+        raise RuntimeError(f"Footage Pixabay kurang (dapat {len(clips)}, butuh min {PLAYLIST_MIN_CLIPS}) — coba tema/kata kunci lain.")
+    return clips, used_masks
+
+
+def _pixabay_download_clip(url, dest):
+    """Unduh 1 klip footage (hanya dari CDN Pixabay)."""
+    if not url.startswith('https://cdn.pixabay.com/'):
+        raise ValueError("URL footage bukan dari CDN Pixabay.")
+    r = requests.get(url, stream=True, timeout=60,
+                     headers={'User-Agent': 'ZIMUSE-BOT/1.0'})
+    r.raise_for_status()
+    if not (r.headers.get('content-type') or '').startswith('video/'):
+        raise ValueError("Footage bukan video.")
+    total = 0
+    with open(dest, 'wb') as f:
+        for chunk in r.iter_content(1024 * 256):
+            if not chunk:
+                continue
+            f.write(chunk)
+            total += len(chunk)
+            if total > PLAYLIST_MAX_CLIP_BYTES:
+                raise RuntimeError("Footage terlalu besar (>300 MB).")
+    if total == 0:
+        raise RuntimeError("Footage kosong.")
+    return dest
+
+
+def _playlist_media_duration(path):
+    """Durasi detik via ffprobe (0 bila gagal)."""
+    try:
+        p = subprocess.run([get_ffprobe_path(), '-v', 'error',
+                            '-show_entries', 'format=duration',
+                            '-of', 'default=noprint_wrappers=1:nokey=1', path],
+                           capture_output=True, text=True, timeout=60)
+        return float((p.stdout or '').strip() or 0)
+    except Exception:
+        return 0.0
+
+
+def _playlist_iso_duration_sec(iso):
+    """Durasi ISO 8601 YouTube (PT1H5M30S) -> detik (int). Gagal parse -> 0."""
+    m = re.match(r'^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$', (iso or '').strip())
+    if not m:
+        return 0
+    h, mn, s = m.groups()
+    return int(float(h or 0)) * 3600 + int(float(mn or 0)) * 60 + int(float(s or 0))
+
+
+def _playlist_research_youtube(channel, query):
+    """Riset video musik trending 30 hari terakhir (YouTube Data API).
+    Kuota hemat: search.list 100 unit (1x) + videos().list 1 unit,
+    hasil di-cache 1 jam per (channel, query). Kembalikan
+    (candidates, err, from_cache). Kandidat: views >= 20.000, urut desc."""
+    q = (query or '').strip()
+    if not q:
+        return None, 'Tema/kata kunci wajib diisi.', False
+    cache_key = f"{channel.get('yt_id')}|{q.lower()}"
+    try:
+        store = _playlist_jobs_load()
+        hit = (store.get('research_cache') or {}).get(cache_key)
+        if hit and time.time() - float(hit.get('at') or 0) < PLAYLIST_RESEARCH_CACHE_SEC:
+            return hit.get('cands') or [], None, True
+    except Exception:
+        pass
+    youtube, err = _build_youtube_client_for_channel(channel)
+    if not youtube:
+        return None, err, False
+    search_q = q if ('music' in q.lower() or 'musik' in q.lower()) else q + ' music'
+    try:
+        published_after = (datetime.now(timezone.utc) - timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        res = youtube.search().list(
+            part='snippet', q=search_q, type='video', videoCategoryId='10',
+            order='viewCount', publishedAfter=published_after,
+            maxResults=10).execute()
+        ids = [it['id']['videoId'] for it in res.get('items', [])
+               if (it.get('id') or {}).get('videoId')]
+        if not ids:
+            return [], None, False
+        vres = youtube.videos().list(
+            part='statistics,snippet,contentDetails',
+            id=','.join(ids)).execute()
+    except Exception as e:
+        return None, f"Riset YouTube gagal: {str(e)[:120]}", False
+    cands = []
+    for v in vres.get('items', []):
+        try:
+            views = int((v.get('statistics') or {}).get('viewCount') or 0)
+        except Exception:
+            views = 0
+        if views < PLAYLIST_MIN_VIEWS:
+            continue
+        sn = v.get('snippet') or {}
+        thumbs = sn.get('thumbnails') or {}
+        thumb_url = ((thumbs.get('maxres') or thumbs.get('high')
+                      or thumbs.get('medium') or thumbs.get('default') or {}).get('url', ''))
+        cands.append({
+            'video_id': v.get('id', ''), 'title': sn.get('title', ''),
+            'channel': sn.get('channelTitle', ''), 'views': views,
+            'published_at': sn.get('publishedAt', ''),
+            'duration': (v.get('contentDetails') or {}).get('duration', ''),
+            'duration_sec': _playlist_iso_duration_sec(
+                (v.get('contentDetails') or {}).get('duration', '')),
+            'thumbnail_url': thumb_url,
+            'description': sn.get('description', '') or '',
+            'tags': list(sn.get('tags') or []),
+        })
+    cands.sort(key=lambda c: -c['views'])
+    try:
+        store = _playlist_jobs_load()
+        store.setdefault('research_cache', {})[cache_key] = {'at': time.time(), 'cands': cands}
+        _playlist_jobs_save(store)
+    except Exception:
+        pass
+    return cands, None, False
+
+
+def _playlist_download_audio(video_id, out_dir):
+    """Unduh audio referensi (mp3 192k) via yt-dlp. URL dibangun dari
+    video_id (pola ketat 11 karakter — tidak ada host arbitrer)."""
+    import yt_dlp
+    if not re.fullmatch(r'[A-Za-z0-9_-]{11}', video_id or ''):
+        raise ValueError('ID video tidak valid.')
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    os.makedirs(out_dir, exist_ok=True)
+    opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': os.path.join(out_dir, 'audio.%(ext)s'),
+        'noplaylist': True, 'quiet': True, 'no_warnings': True,
+        'postprocessors': [{'key': 'FFmpegExtractAudio',
+                            'preferredcodec': 'mp3', 'preferredquality': '192'}],
+        'ffmpeg_location': get_ffmpeg_path(),
+        'socket_timeout': 30, 'retries': 3,
+        'max_filesize': PLAYLIST_MAX_AUDIO_BYTES,
+        'http_headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'},
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        ydl.download([url])
+    audio_path = os.path.join(out_dir, 'audio.mp3')
+    if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
+        raise RuntimeError('Audio referensi gagal diunduh.')
+    return audio_path
+
+
+def _playlist_rewrite_title(ref_title, channel_name):
+    """Judul baru: inti referensi + branding channel (selalu berbeda
+    dari referensi). Varian dipilih deterministik dari judul referensi."""
+    core = (ref_title or '').strip()
+    for sep in (' | ', ' - ', ' • ', ' — '):
+        if sep in core:
+            head = core.split(sep)[0].strip()
+            if len(head) >= 15:
+                core = head
+                break
+    core = core[:90] or 'Musik Pilihan'
+    ch = (channel_name or '').strip() or 'ZIMUSE'
+    variants = [f"{core} | {ch}", f"{core} ({ch})", f"{core} — {ch}"]
+    pick = variants[sum(ord(c) for c in ref_title) % len(variants)]
+    if ' '.join(pick.lower().split()) == ' '.join((ref_title or '').lower().split()):
+        pick = f"{core} | {ch} (Playlist)"
+    return pick
+
+
+def _playlist_rewrite_description(ref_desc, channel_name, new_title):
+    """Deskripsi baru: 2 baris awal referensi (topik) + intro channel +
+    ajakan subscribe. Selalu berbeda dari referensi, < 5000 karakter."""
+    lines = [l.strip() for l in (ref_desc or '').splitlines() if l.strip()]
+    head = ' '.join(lines[:2])[:600]
+    ch = (channel_name or '').strip() or 'channel ini'
+    body = (f"{new_title}\n\n{head}\n\n"
+            f"Selamat datang di {ch} — musik pilihan untuk menemani harimu. "
+            f"Jangan lupa Subscribe dan nyalakan loncengnya supaya tidak "
+            f"ketinggalan kompilasi terbaru.\n\n"
+            f"#musik #playlist #relaksasi")
+    return body[:4500]
+
+
+def _playlist_build_tags(ref_tags, theme):
+    """Tag baru: tag referensi + tema/channel, total maks 400 karakter
+    (sama seperti worker upload)."""
+    tags = []
+    for t in (ref_tags or []):
+        t = str(t).strip().replace('#', '')
+        if t and t not in tags:
+            tags.append(t)
+    for t in [theme, 'musik', 'playlist', 'music']:
+        t = (t or '').strip()
+        if t and t not in tags:
+            tags.append(t)
+    out, total = [], 0
+    for t in tags:
+        if total + len(t) <= 400:
+            out.append(t)
+            total += len(t) + 1
+    return ', '.join(out) or 'musik, playlist'
+
+
+def _playlist_thumb_font(size):
+    """Font tebal untuk overlay thumbnail (fallback font default)."""
+    from PIL import ImageFont
+    for p in ('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+              '/usr/share/fonts/TTF/DejaVuSans-Bold.ttf'):
+        try:
+            if os.path.exists(p):
+                return ImageFont.truetype(p, size)
+        except Exception:
+            pass
+    return ImageFont.load_default()
+
+
+def _playlist_wrap_text(text, font, max_w, draw):
+    """Bungkus teks ke beberapa baris sesuai lebar maksimum."""
+    words, lines, cur = (text or '').split(), [], ''
+    for w in words:
+        trial = (cur + ' ' + w).strip()
+        if draw.textlength(trial, font=font) <= max_w or not cur:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines or ['']
+
+
+def _playlist_make_thumbnail(ref_thumb_url, new_title, channel_name, out_path):
+    """Unduh thumbnail referensi (hanya *.ytimg.com) lalu MODIFIKASI:
+    crop 1280x720, warna/kontras naik sedikit, overlay teks judul baru
+    + nama channel. Simpan JPG <= 2 MB (batas thumbnail YouTube)."""
+    if not ref_thumb_url or not re.match(r'^https://i\d*\.ytimg\.com/', ref_thumb_url):
+        raise ValueError('URL thumbnail referensi tidak valid.')
+    r = requests.get(ref_thumb_url, timeout=30,
+                     headers={'User-Agent': 'Mozilla/5.0'})
+    r.raise_for_status()
+    if not (r.headers.get('content-type') or '').startswith('image/'):
+        raise ValueError('Thumbnail referensi bukan gambar.')
+    import io as _io
+    from PIL import Image, ImageDraw, ImageEnhance
+    img = Image.open(_io.BytesIO(r.content)).convert('RGB')
+    w, h = img.size
+    target = 16 / 9
+    if w / h > target:
+        nw = int(h * target)
+        x = (w - nw) // 2
+        img = img.crop((x, 0, x + nw, h))
+    else:
+        nh = int(w / target)
+        y = (h - nh) // 2
+        img = img.crop((0, y, w, y + nh))
+    img = img.resize((1280, 720), Image.LANCZOS)
+    img = ImageEnhance.Color(img).enhance(1.15)
+    img = ImageEnhance.Contrast(img).enhance(1.05)
+    draw = ImageDraw.Draw(img, 'RGBA')
+    draw.rectangle([0, 560, 1280, 720], fill=(0, 0, 0, 160))
+    font = _playlist_thumb_font(48)
+    font_small = _playlist_thumb_font(28)
+    y = 575
+    for ln in _playlist_wrap_text(new_title, font, 1200, draw)[:2]:
+        draw.text((40, y), ln, font=font, fill=(255, 255, 255))
+        y += 55
+    draw.text((40, 685), (channel_name or '')[:60], font=font_small, fill=(255, 220, 0))
+    q = 88
+    while True:
+        img.save(out_path, 'JPEG', quality=q, optimize=True)
+        if os.path.getsize(out_path) <= 2_000_000 or q <= 50:
+            break
+        q -= 8
+    return out_path
+
+
+# --- Job store (playlist_jobs.json, gitignored) ---
+def _playlist_jobs_load():
+    try:
+        with open(PLAYLIST_JOBS_FILE, 'r', encoding='utf-8') as f:
+            d = json.load(f)
+        if isinstance(d, dict) and isinstance(d.get('jobs'), list):
+            d.setdefault('research_cache', {})
+            return d
+    except Exception:
+        pass
+    return {'jobs': [], 'research_cache': {}}
+
+
+def _playlist_jobs_save(data):
+    try:
+        tmp = PLAYLIST_JOBS_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, PLAYLIST_JOBS_FILE)
+    except Exception:
+        pass
+
+
+def _playlist_job_add(job):
+    with db_lock:
+        data = _playlist_jobs_load()
+        data['jobs'].insert(0, job)
+        data['jobs'] = data['jobs'][:50]
+        _playlist_jobs_save(data)
+    return job
+
+
+def _playlist_job_get(job_id):
+    for j in _playlist_jobs_load().get('jobs', []):
+        if j.get('job_id') == job_id:
+            return j
+    return None
+
+
+def _playlist_job_update(job_id, **fields):
+    with db_lock:
+        data = _playlist_jobs_load()
+        for j in data.get('jobs', []):
+            if j.get('job_id') == job_id:
+                j.update(fields)
+                j['updated_at'] = _wib_now().strftime('%Y-%m-%d %H:%M')
+                _playlist_jobs_save(data)
+                return j
+    return None
+
+
+def _playlist_fps(stream):
+    """Frame rate (float) dari stream ffprobe."""
+    try:
+        num, den = (stream.get('avg_frame_rate') or '30/1').split('/')
+        return float(num) / float(den or 1)
+    except Exception:
+        return 30.0
+
+
+def _playlist_render(task_id, task, yt_id):
+    """Render kompilasi Musik Playlist: loop klip 16:9 + audio referensi.
+    Utamakan STREAM COPY (-c copy, ringan & cepat); bila klip tidak
+    seragam atau bukan 1080p, normalisasi seminimal mungkin (re-encode
+    video ke 1080p30, audio tetap copy) — dicatat di
+    task['playlist_render_method']. Durasi final = durasi audio.
+    Setelah render sukses, klip + file antara DIHAPUS (audio +
+    thumbnail dipertahankan sampai upload). Gagal → file DISIMPAN
+    untuk debug (lokasi ada di job)."""
+    if stop_flags.get(task_id):
+        raise Exception('Dibatalkan')
+    audio = (task.get('playlist_audio') or '').strip()
+    clips = [c for c in (task.get('playlist_clips') or []) if isinstance(c, str)]
+    job_dir = (task.get('playlist_job_dir') or '').strip()
+    if not audio or not os.path.exists(audio):
+        raise Exception('File audio playlist tidak ditemukan.')
+    clips = [c for c in clips if os.path.exists(c)]
+    if not clips:
+        raise Exception('Klip footage playlist tidak ditemukan.')
+    audio_dur = _playlist_media_duration(audio)
+    if audio_dur <= 0:
+        raise Exception('Durasi audio tidak terbaca.')
+    infos = []
+    for c in clips:
+        p = _probe_video(c)
+        if not p:
+            continue
+        vs = [s for s in (p.get('streams') or []) if s.get('codec_type') == 'video']
+        if not vs:
+            continue
+        try:
+            dur = float((p.get('format') or {}).get('duration') or 0)
+        except Exception:
+            dur = 0.0
+        if dur <= 0:
+            continue
+        infos.append({'path': c, 'codec': vs[0].get('codec_name'),
+                      'w': int(vs[0].get('width') or 0), 'h': int(vs[0].get('height') or 0),
+                      'fps': round(_playlist_fps(vs[0]), 2), 'dur': dur})
+    if not infos:
+        raise Exception('Tidak ada klip footage yang bisa dibaca.')
+    uniform = len({(i['codec'], i['w'], i['h'], i['fps']) for i in infos}) == 1
+    is_1080p = infos[0]['w'] == 1920 and infos[0]['h'] == 1080
+    ff = get_ffmpeg_path()
+    final_video = os.path.join(BASE_DIR, f"static/final_{task_id}.mp4")
+    concat_txt = os.path.join(job_dir or BASE_UPLOAD, f"pl_concat_{task_id}.txt")
+    os.makedirs(os.path.dirname(concat_txt) or BASE_UPLOAD, exist_ok=True)
+    total_dur = sum(i['dur'] for i in infos)
+    repeats = max(1, int(-(-audio_dur // total_dur)))  # ceil
+    method = 'copy'
+    use_paths = [i['path'] for i in infos]
+    norm_files = []
+    try:
+        if not (uniform and is_1080p):
+            # Normalisasi minimal: skala ke 1080p30 h264, tanpa audio.
+            method = 'normalize'
+            norm_paths = []
+            for idx, info in enumerate(infos):
+                np_out = os.path.join(os.path.dirname(concat_txt), f"pl_norm_{task_id}_{idx}.mp4")
+                subprocess.run([ff, '-y', '-i', info['path'], '-vf',
+                                'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30',
+                                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+                                '-an', np_out],
+                               check=True, capture_output=True, timeout=3600)
+                norm_paths.append(np_out)
+                norm_files.append(np_out)
+            use_paths = norm_paths
+        # Daftar concat: klip diulang sampai menutup durasi audio.
+        with open(concat_txt, 'w', encoding='utf-8') as f:
+            for _r in range(repeats):
+                for p in use_paths:
+                    f.write(_concat_list_line(p))
+        cmd = [ff, '-y', '-f', 'concat', '-safe', '0', '-i', concat_txt,
+               '-i', audio, '-map', '0:v', '-map', '1:a',
+               '-c', 'copy', '-t', f"{audio_dur:.3f}",
+               '-movflags', '+faststart', final_video]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, timeout=3600)
+        except subprocess.CalledProcessError:
+            if method == 'copy':
+                # Klip ternyata tidak bisa di-copy apa adanya (mis. beda
+                # timebase) → jatuh ke normalisasi, lalu coba sekali lagi.
+                method = 'normalize (fallback)'
+                norm_paths = []
+                for idx, info in enumerate(infos):
+                    np_out = os.path.join(os.path.dirname(concat_txt), f"pl_norm_{task_id}_{idx}.mp4")
+                    subprocess.run([ff, '-y', '-i', info['path'], '-vf',
+                                    'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30',
+                                    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+                                    '-an', np_out],
+                                   check=True, capture_output=True, timeout=3600)
+                    norm_paths.append(np_out)
+                    norm_files.append(np_out)
+                with open(concat_txt, 'w', encoding='utf-8') as f:
+                    for _r in range(repeats):
+                        for p in norm_paths:
+                            f.write(_concat_list_line(p))
+                subprocess.run(cmd, check=True, capture_output=True, timeout=3600)
+            else:
+                raise
+        if not os.path.exists(final_video) or os.path.getsize(final_video) == 0:
+            raise Exception('Render playlist gagal (file final kosong).')
+        task['playlist_render_method'] = method
+        try:
+            _playlist_job_update(task.get('playlist_job_id'), render_method=method)
+        except Exception:
+            pass
+    finally:
+        # Bersihkan klip + file antara SETELAH render sukses; bila gagal,
+        # biarkan file tetap ada untuk debug (finally di bawah hanya
+        # menghapus bila final_video berhasil dibuat).
+        if os.path.exists(final_video) and os.path.getsize(final_video) > 0:
+            for p in list(clips) + norm_files:
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+            try:
+                os.remove(concat_txt)
+            except Exception:
+                pass
+    return final_video
+
+
+def _playlist_cleanup_after_upload(task):
+    """Setelah upload sukses: hapus video final + seluruh folder kerja
+    job (audio + thumbnail). Dipanggil dari worker (sukses upload).
+    Gagal hapus tidak boleh menggagalkan status Tayang."""
+    try:
+        task_id = task.get('id')
+        if task_id:
+            try:
+                os.remove(os.path.join(BASE_DIR, f"static/final_{task_id}.mp4"))
+            except Exception:
+                pass
+        job_dir = (task.get('playlist_job_dir') or '').strip()
+        base = os.path.abspath(PLAYLIST_TMP_DIR)
+        if job_dir and os.path.abspath(job_dir).startswith(base + os.sep):
+            shutil.rmtree(job_dir, ignore_errors=True)
+        _playlist_job_update(task.get('playlist_job_id'), status='done',
+                             video_id=task.get('video_id'),
+                             video_url=task.get('video_url'),
+                             cleaned_at=_wib_now().strftime('%Y-%m-%d %H:%M'))
+    except Exception:
+        pass
+
+
+def _playlist_create_task(data):
+    """Inti pembuatan SATU task Musik Playlist — dipakai route panel dan
+    build thread. Alurnya SAMA seperti Shorts Muse: stagger jam,
+    autopilot auto vs approval, dijeda → ditahan, lalu worker yang sama
+    (disk → render playlist → QC → upload → kuota). Mengembalikan dict
+    seperti _create_shorts_muse_task."""
+    yt_id = (data.get('yt_id') or '').strip()
+    title = (data.get('title') or '').strip()
+    if not yt_id or not title:
+        return {"ok": False, "message": "Channel dan judul wajib diisi.", "http": 400}
+    channel_rec = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+    if channel_rec is None:
+        return {"ok": False, "message": "Channel tidak ditemukan.", "http": 404}
+    title = _shorts_dedup_title(yt_id, title, channel_rec)
+    try:
+        pub_dt = datetime.strptime(data.get('publish_date', ''), '%Y-%m-%dT%H:%M')
+    except Exception:
+        try:
+            pub_dt = datetime.strptime(data.get('publish_date', ''), '%Y-%m-%d %H:%M')
+        except Exception:
+            return {"ok": False, "message": "Format tanggal salah (pakai YYYY-MM-DD HH:MM).", "http": 400}
+    v_date_str = _stagger_publish_date(pub_dt.strftime('%Y-%m-%d %H:%M'), yt_id)
+    try:
+        audio_dur = float(data.get('audio_duration') or 0)
+    except Exception:
+        audio_dur = 0.0
+    if audio_dur <= 0:
+        return {"ok": False, "message": "Durasi audio tidak valid.", "http": 400}
+    if not (data.get('audio_path') or '').strip() or not os.path.exists(data.get('audio_path') or ''):
+        return {"ok": False, "message": "File audio playlist tidak ditemukan.", "http": 400}
+    if not data.get('clip_paths'):
+        return {"ok": False, "message": "Klip footage playlist tidak ada.", "http": 400}
+    t_id = _next_task_id()
+    batch_id = f"pl{t_id}"
+    channel_name = channel_rec.get('name', yt_id)
+    auto_mode = _autopilot_of(channel_rec) == 'auto'
+    channel_paused = _channel_paused(yt_id)
+    blueprint = {
+        "id": t_id, "yt_id": yt_id, "title": title,
+        "publish_date": v_date_str,
+        "kind": PLAYLIST_KIND,
+        "target_duration_hours": audio_dur / 3600.0,
+        "description": (data.get('description') or '').strip() or title,
+        "tags": (data.get('tags') or '').strip() or 'musik, playlist',
+        "privacy": (data.get('privacy') or 'public').strip() or 'public',
+        "playlist_id": (data.get('playlist_id') or '').strip(),
+        "playlist_audio": data.get('audio_path'),
+        "playlist_clips": list(data.get('clip_paths') or []),
+        "playlist_thumb": (data.get('thumb_path') or '').strip(),
+        "playlist_job_id": (data.get('job_id') or '').strip(),
+        "playlist_job_dir": (data.get('job_dir') or '').strip(),
+        "playlist_ref_video_id": (data.get('ref_video_id') or '').strip(),
+        "playlist_ref_title": (data.get('ref_title') or '').strip(),
+        "render_preset": "ultrafast",
+        "source_mode": "mix",
+        "batch_id": batch_id,
+    }
+    if auto_mode and not channel_paused and render_queue.qsize() >= QUEUE_MAX_SIZE:
+        return {"ok": False,
+                "message": f"Antrean render penuh (maks {QUEUE_MAX_SIZE} task). "
+                           "Tunggu antrean berkurang lalu coba lagi.", "http": 429}
+    with db_lock:
+        active_tasks.append({
+            "id": t_id, "yt_id": yt_id, "title": title,
+            "time": v_date_str,
+            "status": (CHANNEL_PAUSED_STATUS if channel_paused else "Menunggu Giliran (Queue) ⏳") if auto_mode else APPROVAL_PENDING_STATUS,
+            "approval": "approved" if auto_mode else "pending",
+            "batch_id": batch_id,
+            "kind": PLAYLIST_KIND,
+            "type": "🎵 Musik Playlist",
+            "blueprint": blueprint,
+        })
+        for c in database_channel:
+            if c['yt_id'] == yt_id:
+                c['last_scheduled_date'] = v_date_str
+                c['reminder_sent'] = False
+                break
+        save_channels(database_channel)
+    save_tasks_db()
+    if auto_mode:
+        if not channel_paused:
+            try:
+                queue_put(blueprint)
+            except Exception as e:
+                print(f"Gagal queue playlist {t_id}: {e}", flush=True)
+                with db_lock:
+                    for t in list(active_tasks):
+                        if t.get('id') == t_id:
+                            active_tasks.remove(t)
+                            t['status'] = "Gagal ❌ (Stuck — antrean penuh saat dibuat)"
+                            t['updated_at'] = time.time()
+                            history_tasks.insert(0, t)
+                            break
+                    save_tasks_db()
+                return {"ok": False,
+                        "message": "Gagal masuk antrean render (antrean penuh). "
+                                   "Task ada di Riwayat dan bisa dipulihkan lewat 'Pulihkan Task Gagal'.", "http": 500}
+        return {"ok": True, "message": "Musik Playlist dibuat dan langsung masuk antrean (mode Full-Auto)!",
+                "http": 200, "task_id": t_id, "auto_mode": True, "batch_id": batch_id,
+                "preview": None, "channel_name": channel_name, "publish_date": v_date_str}
+    preview = {"id": t_id, "title": title, "publish_date": v_date_str,
+               "duration_label": f"{int(audio_dur // 60)} menit (Musik Playlist)",
+               "description": blueprint["description"], "privacy": blueprint["privacy"]}
+    return {"ok": True, "message": "Musik Playlist dibuat dan menunggu approval di Telegram!",
+            "http": 200, "task_id": t_id, "auto_mode": False, "batch_id": batch_id,
+            "preview": preview, "channel_name": channel_name, "publish_date": v_date_str}
+
+
+def _playlist_build_thread(job_id):
+    """Latar: unduh audio → Pixabay → metadata baru → thumbnail →
+    buat task. Berjalan di thread daemon supaya request HTTP tidak
+    timeout. Gagal di langkah mana pun → job 'failed' + file
+    dipertahankan untuk debug (lokasi ada di job)."""
+    job = _playlist_job_get(job_id)
+    if not job:
+        return
+    yt_id = job.get('yt_id')
+    video_id = job.get('video_id')
+    job_dir = os.path.join(PLAYLIST_TMP_DIR, job_id)
+    try:
+        _playlist_job_update(job_id, status='downloading', progress='Mengunduh audio referensi...')
+        audio = _playlist_download_audio(video_id, job_dir)
+        audio_dur = _playlist_media_duration(audio)
+        if audio_dur <= 0:
+            raise RuntimeError('Durasi audio tidak terbaca.')
+        _playlist_job_update(job_id, status='downloading',
+                             progress='Mengunduh footage Pixabay...',
+                             audio_path=audio, audio_duration=audio_dur)
+        clips, masks = _pixabay_search_clips(job.get('theme', ''), count=PLAYLIST_MAX_CLIPS, job_id=job_id)
+        clip_paths = []
+        for i, c in enumerate(clips):
+            dest = os.path.join(job_dir, f"clip_{i + 1:02d}.mp4")
+            _pixabay_download_clip(c['url'], dest)
+            clip_paths.append(dest)
+        _playlist_job_update(job_id, status='preparing',
+                             progress=f"{len(clip_paths)} klip footage siap (key Pixabay {masks[0] if masks else '?'})",
+                             clips=clip_paths, pixabay_keys_used=masks)
+        channel = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+        ch_name = (channel or {}).get('name', yt_id)
+        new_title = _playlist_rewrite_title(job.get('ref_title', ''), ch_name)
+        new_desc = _playlist_rewrite_description(job.get('ref_description', ''), ch_name, new_title)
+        new_tags = _playlist_build_tags(job.get('ref_tags') or [], job.get('theme', ''))
+        thumb_path = ''
+        if job.get('ref_thumbnail_url'):
+            try:
+                thumb_path = _playlist_make_thumbnail(
+                    job['ref_thumbnail_url'], new_title, ch_name,
+                    os.path.join(job_dir, 'thumb.jpg'))
+            except Exception as e:
+                print(f"[playlist] thumbnail gagal: {e}", flush=True)
+                thumb_path = ''
+        _playlist_job_update(job_id, status='preparing',
+                             progress='Membuat task upload...',
+                             new_title=new_title, new_description=new_desc,
+                             new_tags=new_tags, thumb_path=thumb_path)
+        res = _playlist_create_task({
+            'yt_id': yt_id, 'title': new_title, 'description': new_desc,
+            'tags': new_tags, 'publish_date': job.get('publish_date') or '',
+            'privacy': job.get('privacy') or 'public',
+            'playlist_id': job.get('playlist_id') or '',
+            'audio_path': audio, 'clip_paths': clip_paths,
+            'thumb_path': thumb_path, 'job_dir': job_dir, 'job_id': job_id,
+            'ref_video_id': video_id, 'ref_title': job.get('ref_title', ''),
+            'audio_duration': audio_dur})
+        if not res.get('ok'):
+            raise RuntimeError(res.get('message') or 'Gagal membuat task.')
+        if res.get('preview'):
+            threading.Thread(target=_send_approval_previews,
+                             args=(res['batch_id'], res['channel_name'], [res['preview']]),
+                             daemon=True).start()
+        _playlist_job_update(job_id, status='queued',
+                             progress='Task dibuat — menunggu approval/antrean.',
+                             task_id=res.get('task_id'),
+                             approval='approved' if res.get('auto_mode') else 'pending')
+        notify_event("🎵", new_title,
+                     f"Musik Playlist siap — task dibuat untuk {ch_name} (referensi: {job.get('ref_title', '')[:40]}).")
+    except Exception as e:
+        _playlist_job_update(job_id, status='failed', error=str(e)[:300])
+        notify_event("❌", job.get('ref_title') or 'Musik Playlist',
+                     f"Gagal membangun playlist: {str(e)[:150]}")
+
+
+# --- Endpoint panel: Musik Playlist (butuh login; CSRF via check_security) ---
+@app.route('/api/playlist_research', methods=['POST'])
+def playlist_research():
+    """Riset kandidat trending 30 hari terakhir (hemat kuota, cache 1 jam).
+    Body: {yt_id, theme, keyword?}. Kembalikan kandidat + job_id."""
+    data = request.get_json(silent=True) or {}
+    yt_id = (data.get('yt_id') or '').strip()
+    theme = (data.get('theme') or '').strip()
+    keyword = (data.get('keyword') or '').strip()
+    if not _valid_yt_id(yt_id):
+        return jsonify({"status": "error", "message": "Channel tidak valid."}), 400
+    channel = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+    if not channel:
+        return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
+    q = keyword or theme
+    if not q:
+        return jsonify({"status": "error", "message": "Isi tema/kata kunci dulu."}), 400
+    cands, err, from_cache = _playlist_research_youtube(channel, q)
+    if err:
+        return jsonify({"status": "error", "message": err}), 500
+    job_id = f"pl{int(time.time() * 1000)}-{secrets.token_hex(3)}"
+    _playlist_job_add({
+        'job_id': job_id, 'yt_id': yt_id,
+        'channel_name': channel.get('name', ''), 'theme': q,
+        'status': 'researched', 'candidates': cands or [],
+        'created_at': _wib_now().strftime('%Y-%m-%d %H:%M'),
+        'progress': (f"{len(cands or [])} kandidat ditemukan"
+                     + (" (dari cache — tanpa kuota)." if from_cache else " (kuota riset ~101 unit).")),
+    })
+    return jsonify({"status": "success", "job_id": job_id, "candidates": cands or [],
+                    "quota_note": ("Riset dari cache (0 unit kuota)." if from_cache
+                                   else "Riset memakai ~101 unit kuota YouTube Data API (search 100 + detail 1).")})
+
+
+@app.route('/api/playlist_create', methods=['POST'])
+def playlist_create():
+    """Pilih kandidat → bangun playlist di thread latar. Body: {job_id,
+    video_id, publish_date?, privacy?, playlist_id?}."""
+    data = request.get_json(silent=True) or {}
+    job_id = (data.get('job_id') or '').strip()
+    video_id = (data.get('video_id') or '').strip()
+    job = _playlist_job_get(job_id)
+    if not job:
+        return jsonify({"status": "error", "message": "Job riset tidak ditemukan — riset ulang."}), 404
+    if not re.fullmatch(r'[A-Za-z0-9_-]{11}', video_id or ''):
+        return jsonify({"status": "error", "message": "ID video referensi tidak valid."}), 400
+    cand = next((c for c in job.get('candidates') or [] if c.get('video_id') == video_id), None)
+    if not cand:
+        return jsonify({"status": "error", "message": "Kandidat tidak ditemukan — riset ulang."}), 404
+    if job.get('status') in ('downloading', 'preparing', 'queued'):
+        return jsonify({"status": "error", "message": "Job ini sedang berjalan."}), 409
+    pub = (data.get('publish_date') or '').strip()
+    if pub:
+        try:
+            pub_dt = datetime.strptime(pub, '%Y-%m-%dT%H:%M')
+            pub = pub_dt.strftime('%Y-%m-%d %H:%M')
+        except Exception:
+            try:
+                pub_dt = datetime.strptime(pub, '%Y-%m-%d %H:%M')
+                pub = pub_dt.strftime('%Y-%m-%d %H:%M')
+            except Exception:
+                return jsonify({"status": "error", "message": "Format tanggal salah (pakai YYYY-MM-DD HH:MM)."}), 400
+    else:
+        # Default: besok 19:00 WIB.
+        pub = (_wib_now() + timedelta(days=1)).strftime('%Y-%m-%d') + ' 19:00'
+    privacy = (data.get('privacy') or 'public').strip()
+    if privacy not in ('public', 'private', 'unlisted'):
+        privacy = 'public'
+    _playlist_job_update(job_id, status='downloading', video_id=video_id,
+                         ref_title=cand.get('title', ''),
+                         ref_description=cand.get('description', ''),
+                         ref_tags=cand.get('tags') or [],
+                         ref_thumbnail_url=cand.get('thumbnail_url', ''),
+                         publish_date=pub, privacy=privacy,
+                         playlist_id=(data.get('playlist_id') or '').strip(),
+                         progress='Memulai...')
+    threading.Thread(target=_playlist_build_thread, args=(job_id,), daemon=True).start()
+    return jsonify({"status": "success",
+                    "message": "Membangun playlist — audio & footage sedang diunduh. Pantau progres di daftar job."})
+
+
+@app.route('/api/playlist_jobs')
+def playlist_jobs():
+    """Daftar job playlist (tanpa kandidat — kandidat hanya ada di
+    respons riset)."""
+    jobs = []
+    for j in _playlist_jobs_load().get('jobs', []):
+        jobs.append({k: j.get(k) for k in (
+            'job_id', 'yt_id', 'channel_name', 'theme', 'status', 'progress',
+            'error', 'created_at', 'updated_at', 'task_id', 'approval',
+            'video_id', 'video_url', 'ref_title', 'new_title',
+            'audio_duration', 'render_method', 'pixabay_keys_used')})
+    return jsonify({"status": "success", "jobs": jobs})
+
+
+# --- Endpoint panel: API key Pixabay (butuh login; CSRF via check_security) ---
+@app.route('/api/playlist_pixabay_keys')
+def playlist_pixabay_keys():
+    return jsonify({"status": "success", "keys": _pixabay_masked_list()})
+
+
+@app.route('/api/playlist_pixabay_key_add', methods=['POST'])
+def playlist_pixabay_key_add():
+    data = request.get_json(silent=True) or {}
+    ok, masked, msg = _pixabay_add_key((data.get('key') or '').strip())
+    return jsonify({"status": "success" if ok else "error",
+                    "message": msg, "masked": masked}), (200 if ok else 400)
+
+
+@app.route('/api/playlist_pixabay_key_del', methods=['POST'])
+def playlist_pixabay_key_del():
+    data = request.get_json(silent=True) or {}
+    ok, masked, msg = _pixabay_delete_key(str(data.get('ident') or '').strip())
+    return jsonify({"status": "success" if ok else "error",
+                    "message": msg, "masked": masked}), (200 if ok else 400)
+
+
+# --- Endpoint operator: API key Pixabay (auth HMAC operator_key) ---
+@app.route('/api/operator/pixabay_key_add', methods=['POST'])
+def operator_pixabay_key_add():
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    ok, masked, msg = _pixabay_add_key((data.get('pixabay_key') or '').strip())
+    return jsonify({"status": "success" if ok else "error",
+                    "message": msg, "masked": masked}), (200 if ok else 400)
+
+
+@app.route('/api/operator/pixabay_key_list', methods=['POST'])
+def operator_pixabay_key_list():
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    return jsonify({"status": "success", "keys": _pixabay_masked_list()})
+
+
+@app.route('/api/operator/pixabay_key_del', methods=['POST'])
+def operator_pixabay_key_del():
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    ok, masked, msg = _pixabay_delete_key(str(data.get('ident') or '').strip())
+    return jsonify({"status": "success" if ok else "error",
+                    "message": msg, "masked": masked}), (200 if ok else 400)
 
 
 @app.route('/api/operator/create_shorts', methods=['POST'])

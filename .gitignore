@@ -10,6 +10,8 @@ update.log
 nodes.json
 nodes.json.tmp
 nlu_audit.jsonl
+playlist_jobs.json
+playlist_jobs.json.tmp
 
 # Keamanan File Rahasia & Konfigurasi Lokal
 config.json

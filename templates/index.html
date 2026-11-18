@@ -1038,7 +1038,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
       <img class="logo-img logo-img-light" src="/static/ziqva-logo-dark.png" onerror="this.onerror=null;this.src='/static/logo.png'" alt="Zimuse Bot">
       <div>
         <div class="logo-name">ZIMUSE BOT</div>
-        <div class="logo-ver">CLOUD VPS</div>
+        <div class="logo-ver" id="logo-ver">…</div>
       </div>
     </div>
   </div>
@@ -1053,6 +1053,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
     <button class="nav-item" onclick="go('titles',this)" id="nb-titles" title="Title Generator"><svg class="nav-ic"><use href="#ic-title"/></svg><span class="nav-label">Title Generator</span></button>
     <button class="nav-item" onclick="go('batch',this)" id="nb-batch" title="Batch Creator"><svg class="nav-ic"><use href="#ic-batch"/></svg><span class="nav-label">Batch Creator</span></button>
     <button class="nav-item" onclick="go('shorts',this)" id="nb-shorts" title="Shorts Muse"><svg class="nav-ic"><use href="#ic-shorts"/></svg><span class="nav-label">Shorts Muse</span></button>
+    <button class="nav-item" onclick="go('playlist',this)" id="nb-playlist" title="Musik Playlist"><svg class="nav-ic"><use href="#ic-music"/></svg><span class="nav-label">Musik Playlist</span></button>
     <div class="nav-section">SYSTEM</div>
     <button class="nav-item" onclick="go('settings',this)" id="nb-settings" title="Settings"><svg class="nav-ic"><use href="#ic-settings"/></svg><span class="nav-label">Settings</span></button>
   </nav>
@@ -1982,6 +1983,34 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         </div>
       </div>
     </div>
+    <div id="panel-playlist" class="panel">
+      <div class="sh" style="margin-bottom:20px">
+        <div><div class="sh-title"><svg class="nav-ic" style="width:18px;height:18px;vertical-align:-3px"><use href="#ic-music"/></svg> Musik Playlist</div><div class="sh-sub">Riset playlist YouTube yang lagi meledak (30 hari terakhir, &gt;20rb views) → kompilasi musik 16:9 → upload ke channel tujuan</div></div>
+      </div>
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-head"><span class="card-title">🔍 RISET PLAYLIST</span></div>
+        <div class="card-body">
+          <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:14px">Riset memakai ~101 unit kuota YouTube Data API per pencarian (hasilnya di-cache 1 jam — riset ulang tema yang sama tanpa kuota). Audio referensi dipakai apa adanya; judul &amp; deskripsi ditulis ulang, thumbnail dimodifikasi sedikit. Footage dari Pixabay (butuh API key di Settings — gratis).</div>
+          <div class="g2">
+            <div class="fg"><label class="fl">Channel Tujuan</label><select id="pl-channel"><option value="">-- Pilih Channel --</option></select></div>
+            <div class="fg"><label class="fl">Tema / Kata Kunci</label><input type="text" id="pl-theme" placeholder="mis. lofi, piano santai, lagu anak"></div>
+          </div>
+          <div class="btn-row"><button class="btn btn-p" id="btn-pl-research" onclick="playlistResearch()">🔍 Riset Playlist</button></div>
+          <div id="pl-candidates" style="margin-top:14px"></div>
+          <div id="pl-create-wrap" style="display:none;margin-top:14px">
+            <div class="g2">
+              <div class="fg"><label class="fl">Jadwal Tayang (WIB)</label><input type="datetime-local" id="pl-publish-date"></div>
+              <div class="fg"><label class="fl">Privasi</label><select id="pl-privacy"><option value="public">Public</option><option value="private">Private</option><option value="unlisted">Unlisted</option></select></div>
+            </div>
+            <div class="btn-row"><button class="btn btn-p" id="btn-pl-create" onclick="playlistCreate()">🎵 Buat &amp; Upload Playlist</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><span class="card-title">📋 RIWAYAT JOB PLAYLIST</span><button type="button" class="btn btn-g btn-sm" onclick="fetchPlaylistJobs()">↻ Refresh</button></div>
+        <div class="card-body"><div id="pl-jobs"><div style="text-align:center;padding:24px;color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada job playlist.</div></div></div>
+      </div>
+    </div>
     <div id="panel-settings" class="panel">
       <div class="sh" style="margin-bottom:20px">
         <div><div class="sh-title">Settings</div><div class="sh-sub">API Google, channel & konfigurasi sistem</div></div>
@@ -2035,6 +2064,25 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
           <div class="btn-row">
             <button class="btn btn-p" onclick="changePin()">Ganti PIN</button>
           </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-head">
+          <span class="card-title">🖼️ API KEY PIXABAY (Musik Playlist)</span>
+        </div>
+        <div class="card-body">
+          <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:14px">Dipakai untuk mengunduh ~15 footage gratis (tanpa watermark) untuk video Musik Playlist. Key GRATIS — daftar di <a href="https://pixabay.com/api" target="_blank" style="color:var(--accent)">pixabay.com/api</a>. Bisa simpan <b style="color:var(--text)">lebih dari 1 key</b>: bila satu key bermasalah (tidak valid / limit habis), sistem otomatis pindah ke key berikutnya. Key hanya ditampilkan dalam bentuk masked (****abcd) dan juga bisa dikelola lewat Telegram (<code>/pixabaykey</code>, <code>/pixabaykeys</code>, <code>/pixabaydel</code>).</div>
+          <div class="g2">
+            <div class="fg">
+              <label class="fl">API Key Baru</label>
+              <input type="password" id="pixabay-key-new" placeholder="Tempel API key Pixabay di sini" autocomplete="off">
+            </div>
+            <div class="fg" style="align-self:end">
+              <button class="btn btn-p" onclick="pixabayKeyAdd()">＋ Tambah Key</button>
+            </div>
+          </div>
+          <div id="pixabay-keys-list" style="margin-top:10px;font-size:13px"></div>
         </div>
       </div>
 
@@ -2132,6 +2180,9 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
   </button>
   <button class="bnav-item" onclick="go('shorts')" id="bn-shorts">
     <span class="nav-icon"><svg class="nav-ic" style="width:18px;height:18px"><use href="#ic-shorts"/></svg></span><span>Shorts</span>
+  </button>
+  <button class="bnav-item" onclick="go('playlist')" id="bn-playlist">
+    <span class="nav-icon"><svg class="nav-ic" style="width:18px;height:18px"><use href="#ic-music"/></svg></span><span>Playlist</span>
   </button>
   <button class="bnav-item" onclick="go('settings')" id="bn-settings">
     <span class="nav-icon"><svg class="nav-ic" style="width:18px;height:18px"><use href="#ic-settings"/></svg></span><span>Set</span>
@@ -2426,6 +2477,7 @@ const PAGE_META = {
   titles:    { t: 'Title Generator', s: 'Upload bank & generate judul baru' },
   batch:     { t: 'Batch Creator',   s: 'Buat banyak video sekaligus' },
   shorts:    { t: 'Shorts Muse',     s: 'Short dari naskah + CTA, render vertikal' },
+  playlist:  { t: 'Musik Playlist',  s: 'Riset playlist trending, render kompilasi & upload' },
   settings:  { t: 'Settings',        s: 'API Google, channel & konfigurasi' }
 };
 
@@ -2441,7 +2493,7 @@ function go(id, el) {
 
   document.getElementById('tb-title').textContent = PAGE_META[id].t;
   document.getElementById('tb-sub').textContent = PAGE_META[id].s;
-  if (id === 'settings') { loadTgConfig(); checkApiStatus(); loadAppVersion(); }
+  if (id === 'settings') { loadTgConfig(); checkApiStatus(); loadAppVersion(); loadPixabayKeys(); }
   if (id === 'dashboard') fetchAnalytics();
   if (id === 'calendar') loadCalendar();
   if (id === 'batch') {
@@ -2449,6 +2501,7 @@ function go(id, el) {
     setTimeout(initCanvas, 50);
   }
   if (id === 'shorts') { refreshShortsDropdowns(); fetchShortsMuse(); }
+  if (id === 'playlist') { refreshPlaylistDropdowns(); fetchPlaylistJobs(); }
 }
 
 // ────────────────────────────────────────────────────────
@@ -2939,6 +2992,8 @@ function loadAppVersion() {
     if (v) v.textContent = d.version ? 'v' + d.version : '—';
     if (c) c.textContent = d.commit || '—';
     if (p) p.textContent = d.version ? 'v' + d.version : 'v—';
+    const lv = document.getElementById('logo-ver');
+    if (lv) lv.textContent = d.version ? 'v' + d.version : '—';
   }).catch(() => {});
 }
 function checkUpdate() {
@@ -3980,6 +4035,115 @@ function createShortsMuse() {
 
 function fetchShortsMuse() {
   fetch('/api/get_shorts_muse').then(r => r.json()).then(d => renderShortsMuse(d.shorts || [])).catch(() => {});
+}
+
+// ────────────────────────────────────────────────────────
+//  🎵 MUSIK PLAYLIST (riset → kandidat → buat & upload)
+// ────────────────────────────────────────────────────────
+let plJobId = null, plSelectedVideo = null;
+function refreshPlaylistDropdowns() {
+  const sel = document.getElementById('pl-channel');
+  if (!sel) return;
+  const val = sel.value;
+  sel.innerHTML = '<option value="">-- Pilih Channel --</option>';
+  channels.forEach(c => sel.innerHTML += `<option value="${c.yt_id}">${escapeHtml(c.name)}</option>`);
+  if (val) sel.value = val;
+}
+function playlistResearch() {
+  const yt = document.getElementById('pl-channel').value;
+  const theme = document.getElementById('pl-theme').value.trim();
+  if (!yt) return toast('Pilih channel tujuan dulu', 'error');
+  if (!theme) return toast('Isi tema / kata kunci dulu', 'error');
+  const btn = document.getElementById('btn-pl-research');
+  btn.disabled = true; btn.textContent = 'Mencari...';
+  document.getElementById('pl-candidates').innerHTML = '';
+  document.getElementById('pl-create-wrap').style.display = 'none';
+  plJobId = null; plSelectedVideo = null;
+  fetch('/api/playlist_research', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ yt_id: yt, theme }) })
+    .then(r => r.json()).then(d => {
+      btn.disabled = false; btn.textContent = '🔍 Riset Playlist';
+      if (d.status !== 'success') return toast(d.message || 'Riset gagal', 'error');
+      plJobId = d.job_id;
+      toast(d.quota_note || 'Riset selesai', 'success');
+      const box = document.getElementById('pl-candidates');
+      if (!(d.candidates || []).length) { box.innerHTML = '<div style="text-align:center;padding:16px;color:var(--muted);font-family:var(--font-m);font-size:11px">Tidak ada kandidat &gt;20.000 views dalam 30 hari terakhir untuk tema ini.</div>'; return; }
+      box.innerHTML = '<div class="fs-title" style="margin-bottom:8px">Kandidat (klik satu untuk memilih):</div>' + d.candidates.map(c =>
+        `<div class="task-row" style="cursor:pointer" onclick="plSelectCandidate('${c.video_id}', this)">
+          <div class="task-icon">🎵</div>
+          <div class="task-info"><div class="task-name">${escapeHtml(c.title || '')}</div>
+          <div class="task-meta">${escapeHtml(c.channel || '')} · ${Number(c.views || 0).toLocaleString('id-ID')} views · ${escapeHtml((c.published_at || '').slice(0, 10))} · durasi ${Math.round((c.duration_sec || 0) / 60)} mnt</div></div>
+          <span class="pill p-cyan" style="flex-shrink:0">Pilih</span></div>`).join('');
+    }).catch(() => { btn.disabled = false; btn.textContent = '🔍 Riset Playlist'; toast('Gagal menghubungi server', 'error'); });
+}
+function plSelectCandidate(videoId, el) {
+  plSelectedVideo = videoId;
+  document.querySelectorAll('#pl-candidates .task-row').forEach(r => r.style.outline = '');
+  if (el) el.style.outline = '2px solid var(--accent)';
+  document.getElementById('pl-create-wrap').style.display = 'block';
+  const dt = document.getElementById('pl-publish-date');
+  if (dt && !dt.value) { const t = new Date(Date.now() + 86400000); t.setHours(19, 0, 0, 0); dt.value = t.toISOString().slice(0, 16); }
+}
+function playlistCreate() {
+  if (!plJobId || !plSelectedVideo) return toast('Pilih satu kandidat dulu', 'error');
+  const btn = document.getElementById('btn-pl-create');
+  btn.disabled = true; btn.textContent = 'Memulai...';
+  fetch('/api/playlist_create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ job_id: plJobId, video_id: plSelectedVideo, publish_date: document.getElementById('pl-publish-date').value, privacy: document.getElementById('pl-privacy').value }) })
+    .then(r => r.json()).then(d => {
+      btn.disabled = false; btn.textContent = '🎵 Buat & Upload Playlist';
+      if (d.status === 'success') { toast(d.message, 'success'); fetchPlaylistJobs(); }
+      else toast(d.message || 'Gagal membuat playlist', 'error');
+    }).catch(() => { btn.disabled = false; btn.textContent = '🎵 Buat & Upload Playlist'; toast('Gagal menghubungi server', 'error'); });
+}
+function fetchPlaylistJobs() {
+  fetch('/api/playlist_jobs').then(r => r.json()).then(d => renderPlaylistJobs(d.jobs || [])).catch(() => {});
+}
+function renderPlaylistJobs(jobs) {
+  const box = document.getElementById('pl-jobs');
+  if (!box) return;
+  if (!jobs.length) { box.innerHTML = '<div style="text-align:center;padding:24px;color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada job playlist.</div>'; return; }
+  const stMap = { researched: ['🔍 Riset selesai', 'p-cyan'], downloading: ['⬇️ Mengunduh', 'p-yellow'], preparing: ['🛠️ Menyiapkan', 'p-yellow'], queued: ['⏳ Menunggu approval/antrean', 'p-yellow'], done: ['✅ Tayang', 'p-green'], failed: ['❌ Gagal', 'p-red'] };
+  box.innerHTML = jobs.map(j => {
+    const st = stMap[j.status] || [j.status || '—', 'p-muted'];
+    const link = j.video_url ? ` <a href="${escapeHtml(j.video_url)}" target="_blank" style="color:var(--accent)">[Lihat]</a>` : '';
+    const err = j.error ? `<div class="task-meta" style="color:var(--accent2)">Alasan: ${escapeHtml(j.error)}</div>` : '';
+    const rm = j.render_method ? ` · render ${escapeHtml(j.render_method)}` : '';
+    return `<div class="task-row"><div class="task-icon">🎵</div><div class="task-info"><div class="task-name">${escapeHtml(j.new_title || j.ref_title || j.theme || '?')}</div><div class="task-meta">${escapeHtml(j.channel_name || '')} · ${escapeHtml(j.created_at || '')}${rm}${link}</div><div class="task-meta">${escapeHtml(j.progress || '')}</div>${err}</div><span class="pill ${st[1]}" style="flex-shrink:0;max-width:220px;white-space:normal;line-height:1.3">${st[0]}</span></div>`;
+  }).join('');
+}
+
+// ────────────────────────────────────────────────────────
+//  🔑 API KEY PIXABAY (multi-key, masked)
+// ────────────────────────────────────────────────────────
+function loadPixabayKeys() {
+  fetch('/api/playlist_pixabay_keys').then(r => r.json()).then(d => renderPixabayKeys(d.keys || [])).catch(() => {});
+}
+function renderPixabayKeys(keys) {
+  const box = document.getElementById('pixabay-keys-list');
+  if (!box) return;
+  if (!keys.length) { box.innerHTML = '<div style="color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada key — tambah satu di atas (atau lewat Telegram: /pixabaykey &lt;key&gt;).</div>'; return; }
+  box.innerHTML = keys.map(k =>
+    `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--border)">
+      <span style="font-family:var(--font-m)">${k.index}. <b>${escapeHtml(k.masked)}</b>${k.disabled ? ' <span class="pill p-red">nonaktif</span>' : ''}</span>
+      <button type="button" class="btn btn-g btn-sm" style="margin-left:auto" onclick="pixabayKeyDel('${escapeHtml(k.last4 || String(k.index))}')">Hapus</button>
+    </div>`).join('');
+}
+function pixabayKeyAdd() {
+  const inp = document.getElementById('pixabay-key-new');
+  const key = (inp.value || '').trim();
+  if (!key) return toast('Tempel API key dulu', 'error');
+  fetch('/api/playlist_pixabay_key_add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) })
+    .then(r => r.json()).then(d => {
+      if (d.status === 'success') { toast(d.message, 'success'); inp.value = ''; loadPixabayKeys(); }
+      else toast(d.message || 'Gagal menambah key', 'error');
+    }).catch(() => toast('Gagal menghubungi server', 'error'));
+}
+function pixabayKeyDel(ident) {
+  if (!confirm('Hapus API key Pixabay ini?')) return;
+  fetch('/api/playlist_pixabay_key_del', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ident }) })
+    .then(r => r.json()).then(d => {
+      if (d.status === 'success') { toast(d.message, 'success'); loadPixabayKeys(); }
+      else toast(d.message || 'Gagal menghapus key', 'error');
+    }).catch(() => toast('Gagal menghubungi server', 'error'));
 }
 
 function renderShortsMuse(items) {

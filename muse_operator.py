@@ -16,6 +16,21 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, 'config.json')
 CHANNELS_FILE = os.path.join(BASE_DIR, 'channels_db.json')
 TASKS_FILE = os.path.join(BASE_DIR, 'tasks_db.json')
+PLAYLIST_JOBS_FILE = os.path.join(BASE_DIR, 'playlist_jobs.json')
+
+
+def _load_playlist_jobs():
+    """Daftar job Musik Playlist (baca file panel; gagal baca → [])."""
+    if not os.path.exists(PLAYLIST_JOBS_FILE):
+        return []
+    try:
+        with open(PLAYLIST_JOBS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if isinstance(data, dict) and isinstance(data.get('jobs'), list):
+            return data['jobs']
+    except Exception:
+        pass
+    return []
 # 🔥 FASE 1 MONITORING: state dedupe (laporan harian & alert) — file runtime,
 # JANGAN di-commit (sudah masuk .gitignore). Isinya hanya tanggal + kunci alert.
 MONITOR_STATE_FILE = os.path.join(BASE_DIR, 'monitor_state.json')
@@ -1572,6 +1587,16 @@ def _tg_escape(text):
     for ch in ['*', '_', '`', '[']:
         text = text.replace(ch, '\\' + ch)
     return text
+
+
+def _log_safe_text(text):
+    """Teks aman untuk log stdout: API key Pixabay yang diketik user
+    (perintah /pixabaykey) TIDAK PERNAH tercatat utuh di log."""
+    text = str(text or '')
+    if text.strip().lower().startswith('/pixabaykey'):
+        return '/pixabaykey ****'
+    return text
+
 
 def get_main_keyboard():
     return {
@@ -4303,11 +4328,15 @@ _BOT_COMMANDS = [
     ('blueprint', 'Resep settingan video', 'konten', ''),
     ('buatshort', 'Buat Shorts Muse terpandu (judul, hook, naskah, CTA)', 'buat', ''),
     ('buatlong', 'Buat batch video long 60–80 menit terpandu', 'buat', ''),
+    ('playlist', 'Status job Musik Playlist', 'buat', ''),
     ('batal', 'Batalkan draft yang sedang dibuat', 'buat', ''),
     ('perpanjang', 'Tambah jadwal, mis. /perpanjang Aruya 0089 30 atau /perpanjang semua 30', 'atur', '[channel] [hari]'),
     ('mode', 'Ganti mode, mis. /mode Aruya 0089 auto', 'atur', '[channel] [auto|approval]'),
     ('jeda', 'Jeda channel (jadwal & antrean berhenti)', 'atur', '[channel]'),
     ('lanjutkan', 'Lanjutkan channel yang dijeda', 'atur', '[channel]'),
+    ('pixabaykey', 'Tambah API key Pixabay', 'atur', '<key>'),
+    ('pixabaykeys', 'Daftar API key Pixabay (masked)', 'atur', ''),
+    ('pixabaydel', 'Hapus API key Pixabay', 'atur', '<4-karakter-terakhir|nomor>'),
 ]
 _BOT_COMMAND_SECTIONS = [
     ('pantau', '📊 Pantau:'),
@@ -4382,7 +4411,7 @@ def handle_user_command(token, chat_id, text):
         parts = clean_cmd.split()
         first_word = parts[0] if parts else ""
 
-        print(f"Perintah diproses: '{raw_cmd}' -> clean: '{clean_cmd}'", flush=True)
+        print(f"Perintah diproses: '{_log_safe_text(raw_cmd)}' -> clean: '{clean_cmd}'", flush=True)
 
         # --- 🎬 ALUR BUAT VIDEO (/buatshort & /buatlong): dicek PALING DULU
         # supaya jawaban langkah tidak ketangkap cabang lain (mis. kata
@@ -4489,6 +4518,73 @@ def handle_user_command(token, chat_id, text):
                        "created_at": time.time()}
             _save_nlu_pending(chat_id, pending)
             _nlu_advance(token, chat_id, pending)
+            return
+
+        # --- 🎵 MUSIK PLAYLIST: /playlist (status job) ---
+        if first_word in ("/playlist",):
+            jobs = _load_playlist_jobs()
+            if not jobs:
+                send_message(token, chat_id,
+                             "🎵 *Musik Playlist*\nBelum ada job playlist. Riset dulu dari panel (menu Musik Playlist), lalu pilih kandidat dan Buat & Upload.")
+                return
+            lines = ["🎵 *Musik Playlist — Job Terakhir* 😎", "━━━━━━━━━━━━━━━━━━━━━━"]
+            for j in jobs[:5]:
+                st = {'researched': '🔍 Riset selesai', 'downloading': '⬇️ Mengunduh',
+                      'preparing': '🛠️ Menyiapkan', 'queued': '⏳ Menunggu approval/antrean',
+                      'done': '✅ Tayang', 'failed': '❌ Gagal'}.get(j.get('status'), j.get('status', '?'))
+                lines.append(f"• *{_tg_escape((j.get('new_title') or j.get('ref_title') or j.get('theme') or '?')[:45])}*")
+                lines.append(f"  {_tg_escape(j.get('channel_name', ''))} • {st}")
+                if j.get('progress'):
+                    lines.append(f"  {_tg_escape(j['progress'][:90])}")
+                if j.get('error'):
+                    lines.append(f"  Alasan: {_tg_escape(j['error'][:90])}")
+                if j.get('video_url'):
+                    lines.append(f"  ▶️ {j['video_url']}")
+            lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+            lines.append("Riset & buat playlist baru lewat panel (menu Musik Playlist).")
+            send_message(token, chat_id, "\n".join(lines))
+            return
+
+        # --- 🔑 API KEY PIXABAY: /pixabaykey, /pixabaykeys, /pixabaydel ---
+        # Key TIDAK PERNAH ditampilkan utuh kembali (di chat, log, status).
+        if first_word in ("/pixabaykey",):
+            new_key = (raw_cmd[len(first_word):].strip() if raw_cmd else '')
+            if not new_key:
+                send_message(token, chat_id,
+                             "🔑 *Tambah API Key Pixabay*\nPakai: `/pixabaykey <key>`\nKey gratis — daftar di pixabay.com/api. Key tidak akan ditampilkan lagi setelah disimpan.")
+                return
+            ok, msg, data = _operator_post('/api/operator/pixabay_key_add', {'pixabay_key': new_key})
+            send_message(token, chat_id, f"🔑 *API Key Pixabay*\n{_tg_escape(msg)}")
+            return
+        if first_word in ("/pixabaykeys",):
+            ok, msg, data = _operator_post('/api/operator/pixabay_key_list', {})
+            if not ok or not isinstance(data, dict):
+                send_message(token, chat_id, f"🔑 *API Key Pixabay*\n{_tg_escape(msg)}")
+                return
+            keys = data.get('keys') or []
+            if not keys:
+                send_message(token, chat_id,
+                             "🔑 *API Key Pixabay*\nBelum ada key. Tambah dengan `/pixabaykey <key>` (gratis, daftar di pixabay.com/api).")
+                return
+            lines = ["🔑 *API Key Pixabay* 😎", "━━━━━━━━━━━━━━━━━━━━━━"]
+            for k in keys:
+                flag = " (nonaktif — pernah ditolak)" if k.get('disabled') else ""
+                # masked dari panel ('••••' + 4 karakter terakhir, hanya
+                # bullet + alfanumerik) — aman di dalam backtick, tanpa escape
+                # (escape di dalam backtick justru menampilkan backslash).
+                lines.append(f"• `{k.get('index', '?')}. {k.get('masked', '')}`{flag}")
+            lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+            lines.append("Hapus: `/pixabaydel <4-karakter-terakhir>` atau `/pixabaydel <nomor>`.")
+            send_message(token, chat_id, "\n".join(lines))
+            return
+        if first_word in ("/pixabaydel",):
+            ident = (raw_cmd[len(first_word):].strip() if raw_cmd else '')
+            if not ident:
+                send_message(token, chat_id,
+                             "🔑 *Hapus API Key Pixabay*\nPakai: `/pixabaydel <4-karakter-terakhir>` atau `/pixabaydel <nomor>` — lihat daftar di `/pixabaykeys`.")
+                return
+            ok, msg, data = _operator_post('/api/operator/pixabay_key_del', {'ident': ident})
+            send_message(token, chat_id, f"🔑 *API Key Pixabay*\n{_tg_escape(msg)}")
             return
 
         # --- 🧠 NLU BAHASA MANUSIA: pesan bebas (bukan perintah "/" dan
@@ -4865,7 +4961,7 @@ def main():
                     text = msg.get('text', '')
 
                     if (sender_id == owner_chat_id or chat_id == owner_chat_id) and text:
-                        print(f"📩 Perintah diterima dari Bos ({chat_id}): {text}", flush=True)
+                        print(f"📩 Perintah diterima dari Bos ({chat_id}): {_log_safe_text(text)}", flush=True)
                         handle_user_command(token, chat_id, text)
                     elif text:
                         print(f"⚠️ Akses ditolak dari ID asing: {sender_id} / chat: {chat_id}", flush=True)

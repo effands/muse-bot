@@ -366,7 +366,7 @@
                 <div>
                     <div class="flex items-center gap-2">
                         <span class="text-sm sm:text-base font-bold text-white tracking-tight">ZIMUSE <span class="text-cyan-400 font-extrabold">BOT</span></span>
-                        <span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 mono">CLOUD VPS</span>
+                        <span id="hub-ver" class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 mono">…</span>
                     </div>
                     <p class="text-[10px] text-slate-400 hidden sm:block">Pusat Kendali Batch Engine &amp; Cloud Content Factory</p>
                 </div>
@@ -725,6 +725,10 @@
         (function() {
             const saved = localStorage.getItem('ziqva_theme') || 'dark';
             applyTheme(saved);
+            fetch('/api/app_version').then(r => r.json()).then(d => {
+                const el = document.getElementById('hub-ver');
+                if (el) el.textContent = d.version ? 'v' + d.version : '—';
+            }).catch(() => {});
         })();
     </script>
 </body>

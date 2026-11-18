@@ -1070,6 +1070,20 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         </div>
       </div>
 
+      <!-- ════════ FASE 6: KUOTA PROJECT GOOGLE ════════ -->
+      <div class="card" style="margin-bottom:18px;">
+        <div class="card-head">
+          <div>
+            <span class="card-title">KUOTA PROJECT GOOGLE</span>
+            <div class="card-sub">Upload hari ini per project Google (batas 6/hari/project — channel satu project berbagi kuota)</div>
+          </div>
+          <button type="button" class="btn btn-sm" onclick="fetchProjectQuotas()" title="Muat ulang kuota project">↻ Refresh</button>
+        </div>
+        <div class="card-body">
+          <div id="pq-body" style="font-size:12px;color:var(--muted)">Memuat kuota…</div>
+        </div>
+      </div>
+
       <!-- ════════ PUSAT KENDALI CEPAT (QUICK ACTIONS) ════════ -->
       <div style="margin-bottom:18px;">
         <div style="font-size:12px; font-weight:700; letter-spacing:.08em; color:var(--text); margin-bottom:10px; display:flex; align-items:center; gap:6px;">
@@ -1351,8 +1365,8 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
               <div class="fg" style="margin-bottom:0">
                 <label class="fl" style="color:var(--accent);">⚡ Kecepatan Render</label>
                 <select id="bc-render-preset" style="font-weight:bold;">
-                  <option value="ultrafast">⚡ Ultrafast (tercepat)</option>
-                  <option value="veryfast" selected>🚀 Veryfast (bawaan)</option>
+                  <option value="ultrafast" selected>⚡ Ultrafast (tercepat, bawaan)</option>
+                  <option value="veryfast">🚀 Veryfast</option>
                   <option value="medium">⚖️ Medium (kualitas lebih baik)</option>
                 </select>
               </div>
@@ -2179,8 +2193,12 @@ function renderChannelsGrid() {
         <div style="font-size:13px;font-weight:700;margin-bottom:3px">${c.name}</div>
         <span class="pill p-green">${c.status}</span>
         ${c.paused ? `<span class="pill p-yellow">⏸️ Dijeda</span>` : ''}
+        ${c.autopilot === 'auto' ? `<span class="pill p-cyan">🤖 Full-Auto</span>` : `<span class="pill p-muted">👀 Approval</span>`}
       </div>
       <div style="display:flex; gap:6px;">
+        ${c.autopilot === 'auto'
+          ? `<button class="btn btn-g btn-sm" onclick="toggleChannelAutopilot('${c.yt_id}', 'approval')" style="border-color:var(--accent); color:var(--accent);" title="Batch baru langsung jalan tanpa approval — klik untuk kembali ke mode Approval">🤖 Full-Auto</button>`
+          : `<button class="btn btn-g btn-sm" onclick="toggleChannelAutopilot('${c.yt_id}', 'auto')" style="border-color:var(--muted); color:var(--muted);" title="Batch baru menunggu approval — klik untuk Full-Auto">👀 Approval</button>`}
         ${c.paused
           ? `<button class="btn btn-g btn-sm" onclick="toggleChannelPause('${c.yt_id}', false)" style="border-color:var(--green); color:var(--green);">▶️ Lanjutkan</button>`
           : `<button class="btn btn-g btn-sm" onclick="toggleChannelPause('${c.yt_id}', true)" style="border-color:var(--yellow); color:var(--yellow);">⏸️ Jeda</button>`}
@@ -2360,6 +2378,26 @@ function toggleChannelPause(yt_id, paused) {
       setTimeout(loadCalendar, 500);
     })
     .catch(() => toast('Gagal mengubah status jeda', 'error'));
+}
+
+// ────────────────────────────────────────────────────────
+//  FASE 6: AUTOPILOT PER CHANNEL
+// ────────────────────────────────────────────────────────
+function toggleChannelAutopilot(yt_id, mode) {
+  const c = (calData.channels || []).concat(channels || []).find(x => x.yt_id === yt_id);
+  const name = c ? c.name : yt_id;
+  const msg = mode === 'auto'
+    ? `Aktifkan Full-Auto untuk channel "${name}"?\nBatch baru langsung masuk antrean render TANPA approval. Pakai untuk channel terpercaya saja.`
+    : `Kembalikan channel "${name}" ke mode Approval?\nBatch baru akan menunggu persetujuan dulu (preview ke Telegram).`;
+  if (!confirm(msg)) return;
+  fetch('/api/set_channel_autopilot', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ yt_id, autopilot: mode }) })
+    .then(r => r.json())
+    .then(d => {
+      toast(d.message, d.status === 'success' ? 'success' : 'error');
+      loadChannels();
+      setTimeout(loadCalendar, 500);
+    })
+    .catch(() => toast('Gagal mengubah mode autopilot', 'error'));
 }
 
 // ────────────────────────────────────────────────────────
@@ -3191,7 +3229,7 @@ function processBatch() {
     vis_overlay_size: parseInt(document.getElementById('bc-overlay-size')?.value || 60),
     vis_overlay_key: document.getElementById('bc-overlay-key')?.value || 'none',
     vis_zoom_pct: parseInt(document.getElementById('bc-zoom-pct')?.value || 10),
-    render_preset: document.getElementById('bc-render-preset')?.value || 'veryfast',
+    render_preset: document.getElementById('bc-render-preset')?.value || 'ultrafast',
     use_special_song: document.getElementById('bc-use-special-song')?.checked || false,
     generated_titles: generated_titles,
     generated_descriptions: generated_descs,
@@ -4102,7 +4140,7 @@ function recoverFailedTasks() {
 function fetchAnalytics() {
   fetch('/api/get_youtube_analytics').then(r => r.json()).then(data => {
     analyticsData = data; const f = document.getElementById('analytics_filter'); f.innerHTML = '<option value="ALL">⬡ ALL CHANNELS</option>';
-    data.forEach(d => f.innerHTML += `<option value="${d.yt_id}">${d.name}</option>`); renderAnalytics(); fetchVideoStats(false);
+    data.forEach(d => f.innerHTML += `<option value="${d.yt_id}">${d.name}</option>`); renderAnalytics(); fetchVideoStats(false); fetchProjectQuotas();
   }).catch(() => {});
 }
 
@@ -4170,6 +4208,35 @@ function renderVideoStats() {
     + '<td style="padding:6px 8px;text-align:right">' + (v.views || 0).toLocaleString() + '</td>'
     + '<td style="padding:6px 8px;text-align:right">' + (v.likes || 0).toLocaleString() + '</td>'
     + '<td style="padding:6px 8px;text-align:right">' + (v.comments || 0).toLocaleString() + '</td></tr>').join('');
+}
+
+// ────────────────────────────────────────────────────────
+//  FASE 6: KUOTA PROJECT GOOGLE
+// ────────────────────────────────────────────────────────
+function fetchProjectQuotas() {
+  const box = document.getElementById('pq-body');
+  fetch('/api/get_project_quotas').then(r => r.json()).then(d => {
+    if (!box) return;
+    const projects = (d && d.projects) || [];
+    if (!projects.length) {
+      box.innerHTML = 'Belum ada channel terhubung — kuota project muncul setelah channel pertama ditautkan.';
+      return;
+    }
+    box.innerHTML = projects.map(p => {
+      const used = p.uploads_today || 0, limit = p.limit || 6;
+      const pct = Math.min(100, Math.round(used / Math.max(1, limit) * 100));
+      const barColor = used >= limit ? 'var(--red,#f43f5e)' : (used >= limit - 1 ? 'var(--yellow,#f59e0b)' : 'var(--accent)');
+      const names = (p.channels || []).map(c => escapeHtml(c.name)).join(', ') || '—';
+      const pidLabel = p.project_id === 'tidak-diketahui' ? 'Project tidak diketahui (channel tanpa kredensial)' : 'Project ' + escapeHtml(p.project_id);
+      return '<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">'
+        + '<span style="font-weight:700">' + pidLabel + '</span>'
+        + '<span style="font-family:var(--font-m);font-size:11px">' + used + '/' + limit + ' upload hari ini · sisa ' + (p.remaining || 0) + '</span></div>'
+        + '<div class="pb-bg" style="margin:5px 0"><div class="pb-fill" style="width:' + pct + '%;background:' + barColor + '"></div></div>'
+        + '<div style="font-size:11px;color:var(--muted)">Channel: ' + names + '</div></div>';
+    }).join('');
+  }).catch(() => {
+    if (box) box.textContent = 'Gagal memuat kuota project.';
+  });
 }
 
 function drawChart(title, labels, d1, d2, type) {

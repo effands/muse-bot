@@ -494,6 +494,88 @@ def track_daily_upload(yt_id):
         except Exception: pass
     return count, count >= MAX_UPLOADS_PER_CHANNEL_PER_DAY
 
+# 🔥 FASE 6: KUOTA PER PROJECT GOOGLE + AUTOPILOT
+# Kuota YouTube dihitung PER PROJECT Google (~6 upload/hari), bukan per
+# channel. Project diidentifikasi dari prefix client_id kredensial utama
+# channel (angka sebelum '-' — BUKAN secret, hanya nomor project).
+def _project_id_of_channel(channel_data):
+    """Nomor project Google dari kredensial utama channel, atau None kalau
+    channel belum punya kredensial / client_id tidak terbaca."""
+    try:
+        if not channel_data:
+            return None
+        creds_list = channel_data.get('creds_list') or [channel_data.get('creds_json')]
+        cred_str = next((s for s in creds_list if s), '')
+        if not cred_str:
+            return None
+        client_id = (json.loads(cred_str) or {}).get('client_id', '')
+        if not client_id:
+            return None
+        return str(client_id).split('-')[0] or None
+    except Exception:
+        return None
+
+def _project_uploads_today(project_id):
+    """Total upload hari ini (WIB) dari semua channel di project ini."""
+    if not project_id:
+        return 0
+    today = _wib_now().strftime("%Y-%m-%d")
+    total = 0
+    with db_lock:
+        for c in database_channel:
+            if _project_id_of_channel(c) == project_id:
+                du = c.get('daily_uploads') or {}
+                if du.get('date') == today:
+                    total += int(du.get('count', 0))
+    return total
+
+def get_project_quotas():
+    """Ringkasan kuota per project Google untuk panel: project_id, daftar
+    channel, upload hari ini, batas (6), dan sisa. Channel tanpa kredensial
+    dikelompokkan sebagai 'tidak-diketahui' (kuota tidak terlacak)."""
+    today = _wib_now().strftime("%Y-%m-%d")
+    projects = {}
+    with db_lock:
+        for c in database_channel:
+            pid = _project_id_of_channel(c) or 'tidak-diketahui'
+            entry = projects.setdefault(pid, {"project_id": pid, "channels": [], "uploads_today": 0})
+            entry["channels"].append({"yt_id": c.get('yt_id'), "name": c.get('name', c.get('yt_id', ''))})
+            du = c.get('daily_uploads') or {}
+            if du.get('date') == today:
+                entry["uploads_today"] += int(du.get('count', 0))
+    out = []
+    for pid in sorted(projects):
+        e = projects[pid]
+        e["limit"] = MAX_UPLOADS_PER_CHANNEL_PER_DAY
+        e["remaining"] = max(0, MAX_UPLOADS_PER_CHANNEL_PER_DAY - e["uploads_today"])
+        out.append(e)
+    return out
+
+def _cooldown_project_channels(project_id):
+    """Pasang cooldown sampai tengah malam WIB untuk SEMUA channel di project
+    ini (dipakai saat kuota project habis). Mengembalikan nama channel yang
+    ikut dijeda."""
+    until = _next_midnight_wib_ts()
+    names = []
+    with db_lock:
+        for c in database_channel:
+            if _project_id_of_channel(c) == project_id:
+                channel_cooldowns[c.get('yt_id')] = until
+                names.append(c.get('name', c.get('yt_id')))
+    for c in database_channel:
+        if _project_id_of_channel(c) == project_id:
+            try: persist_cooldown(c.get('yt_id'))
+            except Exception: pass
+    return names
+
+def _autopilot_of(channel_data):
+    """Mode autopilot channel: 'auto' (full-auto, lewati approval) atau
+    'approval' (default — channel lama/barau tetap lewat approval Fase 2)."""
+    if not channel_data:
+        return 'approval'
+    mode = str(channel_data.get('autopilot') or 'approval').lower()
+    return mode if mode in ('auto', 'approval') else 'approval'
+
 # 🔥 SISTEM NOTIFIKASI LONCENG 🔥
 system_notifications = []
 
@@ -673,12 +755,15 @@ def get_overlay_file(yt_id, filename=None):
 
 def get_special_songs(yt_id, count=2):
     """🔥 UPDATE 6 Nov 2026: ambil maks `count` lagu khusus pertama (urut abjad)
-    dari folder special_songs channel — diputar berurutan di ujung video."""
+    dari folder special_songs channel — diputar berurutan di ujung video.
+    🔥 FASE 6: dipilih ACAK (bukan selalu 2 file pertama abjad) supaya tiap
+    video beda variasinya dan channel tidak terdengar monoton."""
     folder = get_channel_folder(yt_id, "special_songs")
     if not os.path.exists(folder): return []
     files = [f for f in os.listdir(folder) if f.lower().endswith(('.mp3', '.wav'))]
     if not files: return []
-    return [os.path.join(folder, f) for f in sorted(files)[:count]]
+    picked = random.sample(sorted(files), min(count, len(files)))
+    return [os.path.join(folder, f) for f in picked]
 
 def get_special_song(yt_id):
     songs = get_special_songs(yt_id, count=1)
@@ -1465,13 +1550,13 @@ def _run_ffmpeg_zoom(task_id, cmd, err_tag):
     try: os.remove(log_path)
     except Exception: pass
 
-def render_zoom_core(task_id, audio_path, bg_paths, output_path, duration, cfg, render_preset='veryfast'):
+def render_zoom_core(task_id, audio_path, bg_paths, output_path, duration, cfg, render_preset='ultrafast'):
     """🔥 BARU v1.5: mode Zoom Saja — background + zoom pelan, 100% FFmpeg (tanpa render
     frame Python, tanpa file overlay, tanpa floating card). Setara overlay dari sisi kecepatan.
     Durasi dibagi rata ke semua background. 🔥 v1.6: zoom BOLAK-BALIK halus (siklus 60 detik:
     30 dtk zoom-in ke 1+zoom_pct%, 30 dtk zoom-out kembali) agar terasa hidup."""
     w, h, fps = 1280, 720, 30
-    preset_enc = str(render_preset or 'veryfast').lower()
+    preset_enc = str(render_preset or 'ultrafast').lower()
     if preset_enc not in RENDER_PRESETS_ALLOWED: preset_enc = 'veryfast'
     try: zoom_pct = float(cfg.get('zoom_pct', 10) or 10)
     except Exception: zoom_pct = 10.0
@@ -1526,7 +1611,7 @@ def render_zoom_core(task_id, audio_path, bg_paths, output_path, duration, cfg, 
             try: os.remove(sf)
             except Exception: pass
 
-def render_video_core(task_id, audio_path, bg_paths, output_path, duration, cfg, render_preset='veryfast'):
+def render_video_core(task_id, audio_path, bg_paths, output_path, duration, cfg, render_preset='ultrafast'):
     # 🔥 BARU v1.5: mode Zoom Saja → render 100% FFmpeg (paling ringan, setara overlay)
     if cfg.get('zoom_mode'):
         render_zoom_core(task_id, audio_path, bg_paths, output_path, duration, cfg, render_preset)
@@ -1536,7 +1621,7 @@ def render_video_core(task_id, audio_path, bg_paths, output_path, duration, cfg,
     w, h = 1280, 720; fps = 30; total_f = int(duration * fps)
 
     # 🔥 BARU: preset kecepatan render (ultrafast = tercepat, file lebih besar)
-    preset_enc = str(render_preset or 'veryfast').lower()
+    preset_enc = str(render_preset or 'ultrafast').lower()
     if preset_enc not in RENDER_PRESETS_ALLOWED: preset_enc = 'veryfast'
 
     # 🔥 BARU: mode overlay file — lewati render visualizer frame-by-frame (jauh lebih cepat).
@@ -1615,12 +1700,12 @@ def render_video_core(task_id, audio_path, bg_paths, output_path, duration, cfg,
 # overlay_path : file video visualizer (mp4/mov/webm/mkv), idealnya sudah transparan (alpha).
 # size_pct     : lebar overlay sebagai % dari lebar video (10-100).
 # key_color    : 'none' (file sudah transparan) | 'green' (buang hijau) | 'black' (buang hitam).
-def apply_visual_overlay(task_id, video_path, overlay_path, size_pct=60, key_color='none', render_preset='veryfast'):
+def apply_visual_overlay(task_id, video_path, overlay_path, size_pct=60, key_color='none', render_preset='ultrafast'):
     try:
         pct = max(10, min(100, int(size_pct or 60)))
     except:
         pct = 60
-    preset_enc = str(render_preset or 'veryfast').lower()
+    preset_enc = str(render_preset or 'ultrafast').lower()
     if preset_enc not in RENDER_PRESETS_ALLOWED: preset_enc = 'veryfast'
 
     # Lebar overlay = pct% dari 1280 (resolusi render), tinggi mengikuti aspek (genap).
@@ -1686,6 +1771,15 @@ def background_worker():
                 try: render_queue.task_done()
                 except Exception: pass
                 continue
+
+            # 🔥 FASE 6: kuota PROJECT Google sudah habis (6 upload/hari per
+            # project, bukan per channel) → pasang cooldown untuk SEMUA
+            # channel di project ini sampai tengah malam WIB, lalu task
+            # diperlakukan seperti cooldown biasa (ditunda, bukan dibuang)
+            # supaya tidak ada render yang sia-sia.
+            _pid = _project_id_of_channel(next((c for c in database_channel if c.get('yt_id') == pyt_id), None) or {})
+            if _pid and _project_uploads_today(_pid) >= MAX_UPLOADS_PER_CHANNEL_PER_DAY:
+                _cooldown_project_channels(_pid)
 
             if pyt_id in channel_cooldowns and time.time() < channel_cooldowns[pyt_id]:
                 # Jika channel ini masih cooldown, simpan task ke wadah sementara
@@ -1947,7 +2041,7 @@ def background_worker():
             save_tasks_db()
 
             render_video_core(task_id, base_audio, bg_paths, base_video, base_duration_sec, preset,
-                            render_preset=task.get('render_preset', 'veryfast'))
+                            render_preset=task.get('render_preset', 'ultrafast'))
             if stop_flags.get(task_id): raise Exception("Dibatalkan")
 
             target_hours = float(task.get('target_duration_hours', 1))
@@ -1971,7 +2065,7 @@ def background_worker():
                 special_video = os.path.join(BASE_UPLOAD, f"temp_sp_{task_id}.mp4")
                 preset_sp = dict(preset); preset_sp['track_schedule'] = special_schedule
                 render_video_core(task_id, special_audio_path, bg_paths, special_video, special_duration_sec, preset_sp,
-                                render_preset=task.get('render_preset', 'veryfast'))
+                                render_preset=task.get('render_preset', 'ultrafast'))
                 if stop_flags.get(task_id): raise Exception("Dibatalkan")
 
             # --- loop/potong bagian utama ke main_target ---
@@ -2048,7 +2142,7 @@ def background_worker():
                 apply_visual_overlay(task_id, final_video, ov_path,
                                      size_pct=task.get('vis_overlay_size', 60),
                                      key_color=task.get('vis_overlay_key', 'none'),
-                                     render_preset=task.get('render_preset', 'veryfast'))
+                                     render_preset=task.get('render_preset', 'ultrafast'))
 
             # 🔥 FASE 3: channel dijeda saat render berjalan → jangan upload.
             # Task tetap aktif berstatus Dijeda; saat dilanjutkan ia akan
@@ -2226,6 +2320,22 @@ def background_worker():
                                     # sekali, tepat saat counter menjadi 5/6 (tinggal 1 video).
                                     notify_event("⚠️", f"Kuota hampir habis {ch_name}",
                                                  f"Udah {cnt}/{MAX_UPLOADS_PER_CHANNEL_PER_DAY} video hari ini, sisa 1 lagi 😌 Saya irit-irit dulu ya, reset tengah malam WIB.")
+                                # 🔥 FASE 6: kuota dihitung PER PROJECT Google.
+                                # Kalau total upload project ini sudah 6 hari ini,
+                                # cooldown semua channel di project yang sama
+                                # (channel yang barusan upload sudah di-cooldown
+                                # di atas; saudara satu project ikut dijeda).
+                                _pid = _project_id_of_channel(channel_data) if channel_data else None
+                                if _pid:
+                                    ptotal = _project_uploads_today(_pid)
+                                    if ptotal >= MAX_UPLOADS_PER_CHANNEL_PER_DAY:
+                                        _cooldown_project_channels(_pid)
+                                        if not capped:
+                                            notify_event("⏸️", "Kuota project Google habis",
+                                                         f"Project {_pid} udah {ptotal}/{MAX_UPLOADS_PER_CHANNEL_PER_DAY} upload hari ini 😌 Channel-channel di project ini saya jeda dulu, besok lanjut otomatis.")
+                                    elif ptotal == MAX_UPLOADS_PER_CHANNEL_PER_DAY - 1:
+                                        notify_event("⚠️", "Kuota project Google hampir habis",
+                                                     f"Project {_pid} udah {ptotal}/{MAX_UPLOADS_PER_CHANNEL_PER_DAY} hari ini, sisa 1 lagi 😌 Saya irit-irit dulu ya.")
                             except Exception:
                                 pass
                             break
@@ -3346,8 +3456,16 @@ def clear_history():
 
 @app.route('/api/get_channels')
 def get_channels():
-    safe_c = [{"id": c["id"], "name": c["name"], "yt_id": c["yt_id"], "thumbnail": c["thumbnail"], "status": c["status"], "title_bank": c.get("title_bank", []), "paused": c.get("paused", False)} for c in database_channel]
+    safe_c = [{"id": c["id"], "name": c["name"], "yt_id": c["yt_id"], "thumbnail": c["thumbnail"], "status": c["status"], "title_bank": c.get("title_bank", []), "paused": c.get("paused", False), "autopilot": c.get("autopilot", "approval")} for c in database_channel]
     return jsonify(safe_c)
+
+@app.route('/api/get_project_quotas')
+def get_project_quotas_api():
+    """🔥 FASE 6: sisa kuota upload per project Google (butuh login panel —
+    route ini TIDAK masuk allowed_routes, jadi check_security mewajibkan
+    login). Kuota dihitung dari upload hari ini (WIB) semua channel di
+    project yang sama; batas 6/hari/project."""
+    return jsonify({"status": "success", "projects": get_project_quotas()})
 
 from flask import send_file # Pastikan send_file di-import di baris paling atas jika belum ada
 
@@ -3765,6 +3883,38 @@ def set_channel_paused():
     return jsonify({"status": "success", "paused": False, "resumed_count": resumed,
                     "message": f"Channel {name} dilanjutkan. {resumed} task masuk antrean."})
 
+@app.route('/api/set_channel_autopilot', methods=['POST'])
+def set_channel_autopilot():
+    """🔥 FASE 6: ubah mode autopilot satu channel (butuh login panel — route
+    ini TIDAK masuk allowed_routes, jadi check_security mewajibkan login).
+    'auto' = channel terpercaya: batch baru langsung masuk antrean tanpa
+    approval. 'approval' = default: batch baru tetap lewat approval Fase 2.
+    Channel lama tanpa field dianggap 'approval' (aman)."""
+    data = request.get_json(silent=True) or {}
+    yt_id = data.get('yt_id')
+    mode = str(data.get('autopilot', '') or '').lower()
+    if not yt_id:
+        return jsonify({"status": "error", "message": "yt_id wajib diisi."}), 400
+    if mode not in ('auto', 'approval'):
+        return jsonify({"status": "error", "message": "Mode autopilot harus 'auto' atau 'approval'."}), 400
+    with db_lock:
+        target = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+        if target is None:
+            return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
+        target['autopilot'] = mode
+        name = target.get('name', yt_id)
+        try:
+            save_channels(database_channel)
+        except Exception as e:
+            return jsonify({"status": "error", "message": f"Gagal menyimpan: {e}"}), 500
+    if mode == 'auto':
+        send_tg_message(f"🤖 *Siap Bos, channel {name} saya set Full-Auto!* 😎\nBatch baru langsung jalan tanpa approval — saya yang urus sampai tayang 💪")
+        return jsonify({"status": "success", "autopilot": "auto",
+                        "message": f"Channel {name} mode Full-Auto. Batch baru langsung masuk antrean."})
+    send_tg_message(f"👀 *Siap Bos, channel {name} balik ke mode Approval.* 😌\nBatch baru tetap saya kirim preview dulu buat Bos cek.")
+    return jsonify({"status": "success", "autopilot": "approval",
+                    "message": f"Channel {name} mode Approval. Batch baru menunggu persetujuan."})
+
 @app.route('/api/check_secret')
 def check_secret():
     # Mengembalikan info file yang terupload agar Settings bisa menampilkannya
@@ -3947,6 +4097,39 @@ def _send_approval_previews(batch_id, channel_name, previews):
         send_tg_message(text, reply_markup=markup)
         time.sleep(0.3)  # jeda kecil supaya tidak kena rate-limit Telegram
 
+def _stagger_publish_date(v_date_str, yt_id):
+    """🔥 FASE 6: geser jam tayang +1 jam bila bentrok persis dengan task
+    aktif channel LAIN di project Google yang sama (maks 5 geseran).
+    Tujuannya: channel-channel satu project tidak upload berbarengan
+    (kuota project 6/hari, hindari burst/rate-limit). Tanpa bentrok,
+    tanggal dikembalikan apa adanya."""
+    try:
+        dt = datetime.strptime(v_date_str, '%Y-%m-%d %H:%M')
+    except Exception:
+        return v_date_str
+    my_pid = _project_id_of_channel(next((c for c in database_channel if c.get('yt_id') == yt_id), None) or {})
+    if not my_pid:
+        return v_date_str
+    for _ in range(5):
+        collision = False
+        with db_lock:
+            for t in active_tasks:
+                other_yt = t.get('yt_id') or (t.get('blueprint') or {}).get('yt_id')
+                if not other_yt or other_yt == yt_id:
+                    continue
+                other_date = t.get('time') or (t.get('blueprint') or {}).get('publish_date')
+                if other_date != v_date_str:
+                    continue
+                opid = _project_id_of_channel(next((c for c in database_channel if c.get('yt_id') == other_yt), None) or {})
+                if opid and opid == my_pid:
+                    collision = True
+                    break
+        if not collision:
+            return v_date_str
+        dt = dt + timedelta(hours=1)
+        v_date_str = dt.strftime('%Y-%m-%d %H:%M')
+    return v_date_str
+
 @app.route('/api/batch_create', methods=['POST'])
 def batch_create():
     data = request.json
@@ -3985,6 +4168,15 @@ def batch_create():
     batch_id = f"b{int(time.time())}"
     channel_name = next((c.get('name', yt_id) for c in database_channel if c.get('yt_id') == yt_id), yt_id or 'Tanpa Channel')
     previews = []
+    # 🔥 FASE 6: mode autopilot per channel — 'auto' (channel terpercaya:
+    # batch langsung masuk antrean tanpa approval) vs 'approval' (default,
+    # channel baru/lama tetap lewat approval Fase 2).
+    channel_rec = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+    auto_mode = _autopilot_of(channel_rec) == 'auto'
+    channel_paused = _channel_paused(yt_id)
+    auto_blueprints = []
+    adjusted_dates = []
+    shifted_count = 0
 
     for i in range(count):
         t_id = int(time.time()) + i
@@ -3994,6 +4186,14 @@ def batch_create():
         else:
             v_date = base_date + timedelta(days=i * interval_days)
             v_date_str = v_date.strftime('%Y-%m-%d %H:%M')
+
+        # 🔥 FASE 6: stagger jam tayang — geser +1 jam bila bentrok persis
+        # dengan task aktif channel lain di project Google yang sama.
+        _orig_date = v_date_str
+        v_date_str = _stagger_publish_date(v_date_str, yt_id)
+        if v_date_str != _orig_date:
+            shifted_count += 1
+        adjusted_dates.append(v_date_str)
         
         if i < len(durations_array):
             vid_duration = durations_array[i]
@@ -4014,7 +4214,7 @@ def batch_create():
             "vis_overlay_size": data.get('vis_overlay_size', 60),
             "vis_overlay_key": data.get('vis_overlay_key', 'none'),
             "vis_zoom_pct": data.get('vis_zoom_pct', 10),
-            "render_preset": data.get('render_preset', 'veryfast'),
+            "render_preset": data.get('render_preset', 'ultrafast'),
             "use_special_song": data.get('use_special_song', False),
             
             # 🔥 UBAH BARIS DESKRIPSI INI 🔥
@@ -4033,12 +4233,16 @@ def batch_create():
                 "time": blueprint['publish_date'],
                 # 🔥 FASE 2: task baru lahir PENDING — tidak masuk antrean render
                 # (tidak ada queue_put di sini) sampai owner menyetujui.
-                "status": APPROVAL_PENDING_STATUS,
-                "approval": "pending",
+                # 🔥 FASE 6: mode Full-Auto lahir langsung APPROVED (+ masuk
+                # antrean di bawah); channel dijeda lahir Dijeda, tidak antre.
+                "status": (CHANNEL_PAUSED_STATUS if channel_paused else "Menunggu Giliran (Queue) ⏳") if auto_mode else APPROVAL_PENDING_STATUS,
+                "approval": "approved" if auto_mode else "pending",
                 "batch_id": batch_id,
                 "type": "📺 VOD",
                 "blueprint": blueprint
             })
+        if auto_mode and not channel_paused:
+            auto_blueprints.append(blueprint)
         previews.append({
             "id": t_id, "title": blueprint['title'],
             "publish_date": blueprint['publish_date'],
@@ -4049,12 +4253,35 @@ def batch_create():
 
     save_tasks_db()
 
+    # 🔥 FASE 6: last_scheduled_date mengikuti tanggal AKHIR yang sudah
+    # di-stagger (bukan tanggal mentah dari klien).
+    if adjusted_dates:
+        with db_lock:
+            for c in database_channel:
+                if c['yt_id'] == yt_id:
+                    c['last_scheduled_date'] = adjusted_dates[-1]
+                    break
+            save_channels(database_channel)
+
+    _shift_note = (f" {shifted_count} video digeser jam tayangnya biar tidak bentrok dengan channel lain di project yang sama."
+                   if shifted_count else "")
+
+    if auto_mode:
+        # 🔥 FASE 6: Full-Auto — langsung masuk antrean render, tanpa
+        # preview approval (task lahir approved; yang dijeda tetap ditahan).
+        for bp in auto_blueprints:
+            try:
+                queue_put(bp)
+            except Exception as e:
+                print(f"Gagal queue auto task {bp.get('id')}: {e}", flush=True)
+        return jsonify({"status": "success", "message": f"{count} Video dibuat dan langsung masuk antrean (mode Full-Auto)!{_shift_note}"})
+
     # 🔥 FASE 2: kirim preview ke Telegram di thread background (panel
     # langsung merespons; kalau Telegram mati, task tetap pending di panel).
     threading.Thread(target=_send_approval_previews,
                      args=(batch_id, channel_name, previews), daemon=True).start()
 
-    return jsonify({"status": "success", "message": f"{count} Video dibuat dan menunggu approval di Telegram!"})
+    return jsonify({"status": "success", "message": f"{count} Video dibuat dan menunggu approval di Telegram!{_shift_note}"})
     
 @app.route('/uploads/<path:filename>')
 def serve_uploads(filename):

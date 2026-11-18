@@ -163,7 +163,7 @@ def process_clip_pro(source_path, output_path, start_time, duration, crop_mode, 
         '-c:a', 'aac',
         '-movflags', '+faststart',
         '-t', str(duration),
-        '-threads', '1',
+        '-threads', '0',
         output_path
     ])
 

@@ -72,7 +72,19 @@ def get_viral_moments(source_video, count=1, duration_sec=40):
         candidates = []
         safe_limit = int(duration) - duration_sec
         for index in range(max(0, safe_limit)):
-            score = sum(rms_values[index:index + duration_sec])
+            window = rms_values[index:index + duration_sec]
+            base = sum(window)
+            # 🔥 FASE 6 (audit C1): skor bukan cuma volume total — jendela
+            # yang energinya "hidup" (naik-turun seperti ucapan/momen,
+            # bukan bunyi datar yang keras terus) diberi bonus. RMS tetap
+            # dominan (bonus maks +30%).
+            mean = base / max(1, len(window))
+            if mean > 0:
+                var = sum((v - mean) ** 2 for v in window) / len(window)
+                variation = min(1.0, (var ** 0.5) / mean)
+            else:
+                variation = 0.0
+            score = base * (1.0 + 0.3 * variation)
             candidates.append({
                 "start": index,
                 "end": index + duration_sec,
@@ -95,10 +107,20 @@ def get_viral_moments(source_video, count=1, duration_sec=40):
                 break
 
         selected.sort(key=lambda item: item["start"])
-        return [
-            {"start": str(item["start"]), "duration": duration_sec}
-            for item in selected
-        ]
+        # 🔥 FASE 6 (audit C1): potong di batas hening — klip jangan mulai
+        # dengan detik-detik hening. Geser start maju ke detik pertama yang
+        # bersuara (maks 5 detik, durasi tetap 40 detik).
+        max_rms = max(rms_values) if rms_values else 0
+        silence_threshold = max_rms * 0.08
+        trimmed = []
+        for item in selected:
+            start = item["start"]
+            shift = 0
+            while (shift < 5 and (start + shift) < len(rms_values)
+                   and rms_values[start + shift] <= silence_threshold):
+                shift += 1
+            trimmed.append({"start": str(start + shift), "duration": duration_sec})
+        return trimmed
 
     except Exception:
         if os.path.exists(temp_wav):
@@ -110,6 +132,46 @@ def get_viral_moments(source_video, count=1, duration_sec=40):
             {"start": str(index * duration_sec), "duration": duration_sec}
             for index in range(count)
         ]
+
+
+MOMENTS_CACHE_VERSION = 1
+
+
+def get_viral_moments_cached(source_video, count=1, duration_sec=40):
+    """🔥 FASE 6 (audit C2): cache hasil deteksi momen per video sumber.
+    Batch dengan sumber yang sama tidak memindai ulang video penuh tiap klip
+    — hasil disimpan di sidecar JSON di samping file sumber dan dipakai ulang
+    selama ukuran + mtime file sumber tidak berubah. Fallback (exception di
+    dalam get_viral_moments) TIDAK di-cache."""
+    import json as _json
+
+    cache_path = str(source_video) + ".moments.json"
+    try:
+        st = os.stat(source_video)
+        key_size, key_mtime = st.st_size, st.st_mtime
+    except OSError:
+        return get_viral_moments(source_video, count=count, duration_sec=duration_sec)
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            cached = _json.load(f)
+        if (cached.get("version") == MOMENTS_CACHE_VERSION
+                and cached.get("size") == key_size
+                and cached.get("mtime") == key_mtime
+                and cached.get("duration_sec") == duration_sec
+                and isinstance(cached.get("moments"), list)
+                and len(cached["moments"]) >= count):
+            return [dict(m) for m in cached["moments"][:count]]
+    except Exception:
+        pass
+    moments = get_viral_moments(source_video, count=count, duration_sec=duration_sec)
+    try:
+        with open(cache_path, "w", encoding="utf-8") as f:
+            _json.dump({"version": MOMENTS_CACHE_VERSION, "size": key_size,
+                        "mtime": key_mtime, "duration_sec": duration_sec,
+                        "moments": moments}, f)
+    except Exception:
+        pass
+    return moments
 
 
 def infer_provider(token):
@@ -365,6 +427,7 @@ def generate_lyrics_srt(audio_path, api_keys, provider="auto"):
 
 __all__ = [
     "get_viral_moments",
+    "get_viral_moments_cached",
     "generate_lyrics_srt",
     "normalize_api_keys",
 ]

@@ -7,7 +7,7 @@ import shutil
 import subprocess
 from flask import Blueprint, request, jsonify, Response, send_from_directory
 from werkzeug.utils import secure_filename
-from .ytdlp_service import get_metadata
+from .ytdlp_service import get_metadata, cache_key_for_url
 from .queue_worker import read_db, write_db
 
 # Inisialisasi Blueprint
@@ -50,13 +50,18 @@ def start_clip():
         return jsonify({"success": False, "error": {"message": "URL tidak boleh kosong."}})
 
     base_job_id = f"{int(time.time())}"
+    # 🔥 FASE 6 (audit C4): kunci cache download yang stabil per video sumber
+    # (ID video asli / hash URL) — disimpan di tiap job supaya worker tidak
+    # memakai timestamp job sebagai kunci cache lagi.
+    source_video_id = cache_key_for_url(url, base_job_id)
     jobs = read_db()
-    
+
     for i in range(batch_count):
         job_id = f"{base_job_id}_{i+1}"
         job_data = {
             "id": job_id,
             "url": url,
+            "source_video_id": source_video_id,
             "status": "queued",
             "progress": 0,
             "stage": "Menunggu antrean...",

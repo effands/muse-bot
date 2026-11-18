@@ -1,5 +1,7 @@
 import datetime
+import hashlib
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -103,9 +105,44 @@ def get_metadata(url):
         return {"success": False, "error": {"message": str(exc)}}
 
 
+def extract_youtube_id(url):
+    """ID video YouTube (11 karakter) dari URL, atau None kalau tidak dikenali."""
+    if not url:
+        return None
+    patterns = [
+        r"[?&]v=([A-Za-z0-9_-]{11})",
+        r"youtu\.be/([A-Za-z0-9_-]{11})",
+        r"/shorts/([A-Za-z0-9_-]{11})",
+        r"/embed/([A-Za-z0-9_-]{11})",
+        r"/live/([A-Za-z0-9_-]{11})",
+        r"/v/([A-Za-z0-9_-]{11})",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, str(url))
+        if m:
+            return m.group(1)
+    return None
+
+
+def cache_key_for_url(url, fallback_id):
+    """Kunci cache download yang STABIL antar batch: ID video asli kalau bisa
+    dikenali dari URL, kalau tidak hash URL. JANGAN pakai timestamp/job id —
+    dua batch dari URL yang sama tidak boleh download ulang penuh."""
+    ytid = extract_youtube_id(url)
+    if ytid:
+        return ytid
+    digest = hashlib.sha1(str(url or fallback_id or "").encode("utf-8")).hexdigest()[:12]
+    return f"url_{digest}"
+
+
 def download_source(url, video_id, resolution="720p"):
+    # 🔥 FASE 6 (audit C4): kunci cache = ID video asli (atau hash URL),
+    # bukan video_id yang dikirim pemanggil (dulu: timestamp job → tiap
+    # batch download ulang). Parameter video_id dipertahankan sebagai
+    # fallback untuk URL yang ID-nya tidak bisa dikenali.
+    cache_key = cache_key_for_url(url, video_id)
     height = int(str(resolution).lower().replace("p", "") or 720)
-    output_path = DOWNLOADS_DIR / f"{video_id}_{height}p.mp4"
+    output_path = DOWNLOADS_DIR / f"{cache_key}_{height}p.mp4"
 
     if output_path.is_file() and output_path.stat().st_size > 0:
         return str(output_path)
@@ -143,4 +180,4 @@ def download_source(url, video_id, resolution="720p"):
         raise RuntimeError(f"Gagal mengunduh video: {text}") from exc
 
 
-__all__ = ["get_metadata", "download_source"]
+__all__ = ["get_metadata", "download_source", "extract_youtube_id", "cache_key_for_url"]

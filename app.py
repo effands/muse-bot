@@ -493,7 +493,8 @@ TASKS_FILE = os.path.join(BASE_DIR, 'tasks_db.json')
 PRESETS_FILE = os.path.join(BASE_DIR, 'presets.json')
 CLIENT_SECRETS_FILE = os.path.join(BASE_DIR, 'client_secret.json')
 SCOPES = ['https://www.googleapis.com/auth/youtube', 'https://www.googleapis.com/auth/youtube.upload',
-          'https://www.googleapis.com/auth/youtubeAnalytics.readonly']  # 🔥 FASE 10: scope Analytics
+          'https://www.googleapis.com/auth/yt-analytics.readonly',
+          'https://www.googleapis.com/auth/yt-analytics-monetary.readonly']  # 🔥 FASE 10: scope Analytics
 # ditambah supaya token baru membawa izin baca YouTube Analytics (subs per
 # video + RPM otomatis). Token LAMA tanpa scope ini tetap jalan normal —
 # panggilan Analytics yang ditolak 403 dicatat per channel dan panel
@@ -3131,7 +3132,7 @@ def get_youtube_analytics():
 # Per-video: views/likes/komentar via YouTube Data API v3 videos().list
 # (biaya 1 unit kuota per panggilan, maks 50 video/panggilan).
 # Subs per video dari YouTube Analytics API (blok FASE 10): hanya bila
-# token channel punya scope 'youtubeAnalytics.readonly'; bila belum,
+# token channel punya scope 'yt-analytics.readonly'; bila belum,
 # subs tampil '—' dan channel ditandai perlu taut ulang. Subs channel
 # tetap dari channels().list (endpoint lama).
 # video_id disimpan di task saat upload sukses (field baru); riwayat lama
@@ -3373,11 +3374,11 @@ def get_video_stats():
     # 🔥 FASE 10: catatan subs dinamis mengikuti status scope Analytics.
     _scope_states = [c.get("analytics_scope") for c in channels_out]
     if _scope_states and all(s is True for s in _scope_states):
-        subs_note = "Subscriber per video dari YouTube Analytics API (token channel sudah punya scope youtubeAnalytics.readonly)."
+        subs_note = "Subscriber per video dari YouTube Analytics API (token channel sudah punya scope yt-analytics.readonly)."
     elif any(s is False for s in _scope_states):
         subs_note = "Subscriber per video hanya untuk channel yang tokennya punya scope YouTube Analytics. Channel yang ditandai 'perlu taut ulang' harus ditautkan ulang (kode device baru) supaya tokennya mendapat scope baru — RPM otomatis juga ikut aktif."
     else:
-        subs_note = "Subscriber per video dari YouTube Analytics API bila token channel punya scope youtubeAnalytics.readonly; bila belum, tampil '—' — taut ulang channel (kode device baru) untuk mengaktifkannya."
+        subs_note = "Subscriber per video dari YouTube Analytics API bila token channel punya scope yt-analytics.readonly; bila belum, tampil '—' — taut ulang channel (kode device baru) untuk mengaktifkannya."
     return jsonify({
         "videos": sorted(videos_out, key=lambda x: x['publish_date'], reverse=True),
         "summary": {"total_videos": len(videos_out), "total_views": sum(v['views'] for v in videos_out),
@@ -3392,7 +3393,7 @@ def get_video_stats():
 # ==========================================
 # Token lama hanya punya scope youtube + youtube.upload, jadi subs per
 # video (Fase 4) dan RPM otomatis (Fase 9) tidak tersedia. Mulai Fase 10,
-# SCOPES ditambah 'youtubeAnalytics.readonly' — token yang dibuat /
+# SCOPES ditambah 'yt-analytics.readonly' — token yang dibuat /
 # diperbarui setelah deploy ini sudah membawa scope Analytics.
 # Token LAMA tetap jalan normal: panggilan Analytics yang ditolak 403
 # (insufficientPermissions) dicatat per channel di cache (TTL 1 jam) dan
@@ -3406,13 +3407,13 @@ def get_video_stats():
 #    metrics=subscribersGained, dimensions=video, filters=video==id,...
 #  - RPM channel: reports.query ids=channel==MINE, metrics=rpm,
 #    30 hari terakhir.
-ANALYTICS_SCOPE = 'https://www.googleapis.com/auth/youtubeAnalytics.readonly'
+ANALYTICS_SCOPE = 'https://www.googleapis.com/auth/yt-analytics.readonly'
 ANALYTICS_EARLIEST_DATE = '2005-02-14'  # tanggal paling awal yang diizinkan API
 
 
 def _analytics_insufficient_permissions(exc):
     """True bila error ini adalah 403 insufficientPermissions (token
-    tidak punya scope youtubeAnalytics.readonly). Dicek duck-typing
+    tidak punya scope yt-analytics.readonly). Dicek duck-typing
     supaya tidak perlu import HttpError baru."""
     try:
         text = str(exc).lower()
@@ -4971,7 +4972,7 @@ def clear_history():
 def get_channels():
     # 🔥 FASE 10: sertakan status scope Analytics per channel (True/False/
     # None = belum dicek) supaya panel bisa menandai channel yang tokennya
-    # belum punya scope youtubeAnalytics.readonly ("perlu taut ulang").
+    # belum punya scope yt-analytics.readonly ("perlu taut ulang").
     _scope_cache = _load_video_stats_cache()
     safe_c = [{"id": c["id"], "name": c["name"], "yt_id": c["yt_id"], "thumbnail": c["thumbnail"], "status": c["status"], "title_bank": c.get("title_bank", []), "title_weights": c.get("title_weights", {}), "paused": c.get("paused", False), "autopilot": c.get("autopilot", "approval"), "rpm_usd": c.get("rpm_usd"), "analytics_scope": _analytics_scope_state(_scope_cache, c.get("yt_id"))} for c in database_channel]
     return jsonify(safe_c)

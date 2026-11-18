@@ -640,7 +640,110 @@ input[type=color] { padding:0; height:36px; width:100%; border:1px solid var(--b
         </div>
       </div>
 
-      <div class="card"><div class="card-body" style="padding:16px"><canvas id="dashChart" style="max-height:280px;width:100%"></canvas></div></div>
+      <div class="card" style="margin-bottom:18px;"><div class="card-body" style="padding:16px"><canvas id="dashChart" style="max-height:260px;width:100%"></canvas></div></div>
+
+      <!-- ════════ PUSAT KENDALI CEPAT (QUICK ACTIONS) ════════ -->
+      <div style="margin-bottom:18px;">
+        <div style="font-size:12px; font-weight:700; letter-spacing:.08em; color:var(--text); margin-bottom:10px; display:flex; align-items:center; gap:6px;">
+          <span style="color:var(--accent);">⚡</span> PUSAT KONTROL CEPAT
+        </div>
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px;">
+          
+          <div class="card" onclick="go('gallery')" style="cursor:pointer; margin-bottom:0; padding:14px; border:1px solid var(--border); transition:all .2s;" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <div style="width:36px; height:36px; border-radius:8px; background:rgba(0,212,255,.1); color:var(--accent); display:grid; place-items:center; font-size:16px; font-weight:bold;">▦</div>
+              <div>
+                <div style="font-size:12px; font-weight:700; color:var(--text);">Galeri Media</div>
+                <div style="font-size:10px; color:var(--muted);">Upload Audio, BG, Visualizer</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" onclick="go('titles')" style="cursor:pointer; margin-bottom:0; padding:14px; border:1px solid var(--border); transition:all .2s;" onmouseover="this.style.borderColor='var(--accent3)'" onmouseout="this.style.borderColor='var(--border)'">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <div style="width:36px; height:36px; border-radius:8px; background:rgba(124,92,252,.1); color:var(--accent3); display:grid; place-items:center; font-size:16px; font-weight:bold;">✦</div>
+              <div>
+                <div style="font-size:12px; font-weight:700; color:var(--text);">Bank Judul AI</div>
+                <div style="font-size:10px; color:var(--muted);">Generate Judul SEO Otomatis</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" onclick="go('batch')" style="cursor:pointer; margin-bottom:0; padding:14px; border:1px solid var(--border); transition:all .2s;" onmouseover="this.style.borderColor='var(--green)'" onmouseout="this.style.borderColor='var(--border)'">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <div style="width:36px; height:36px; border-radius:8px; background:rgba(0,232,135,.1); color:var(--green); display:grid; place-items:center; font-size:16px; font-weight:bold;">◉</div>
+              <div>
+                <div style="font-size:12px; font-weight:700; color:var(--text);">Buat Batch Render</div>
+                <div style="font-size:10px; color:var(--muted);">Jadwalkan 30 Hari Upload</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" onclick="go('settings')" style="cursor:pointer; margin-bottom:0; padding:14px; border:1px solid var(--border); transition:all .2s;" onmouseover="this.style.borderColor='var(--yellow)'" onmouseout="this.style.borderColor='var(--border)'">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <div style="width:36px; height:36px; border-radius:8px; background:rgba(255,201,77,.1); color:var(--yellow); display:grid; place-items:center; font-size:16px; font-weight:bold;">◎</div>
+              <div>
+                <div style="font-size:12px; font-weight:700; color:var(--text);">Koneksi YouTube</div>
+                <div style="font-size:10px; color:var(--muted);">Kelola OAuth & Channel</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ════════ ALUR KERJA SISTEM (SOP PABRIK KONTEN) ════════ -->
+      <div class="card" style="margin-bottom:18px;">
+        <div class="card-head">
+          <div>
+            <span class="card-title">ALUR PRODUKSI OTOMATIS (SOP BAMS)</span>
+            <div class="card-sub">Langkah standar untuk menghasilkan video kompilasi terjadwal</div>
+          </div>
+          <span class="pill p-blue" style="font-family:var(--font-m); font-size:10px;">4 TAHAP</span>
+        </div>
+        <div class="card-body">
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:12px;">
+            
+            <div style="background:var(--card2); border:1px solid var(--border); border-radius:8px; padding:12px;">
+              <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+                <span style="font-family:var(--font-m); font-size:9px; color:var(--accent); font-weight:700;">LANGKAH 1</span>
+                <span style="font-size:12px;">🔑</span>
+              </div>
+              <div style="font-size:11px; font-weight:700; color:var(--text); margin-bottom:4px;">Hubungkan Akun</div>
+              <div style="font-size:10px; color:var(--muted); line-height:1.4;">Unggah client_secret.json Google Cloud (Status In Production), lalu klik Connect via Device Login.</div>
+            </div>
+
+            <div style="background:var(--card2); border:1px solid var(--border); border-radius:8px; padding:12px;">
+              <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+                <span style="font-family:var(--font-m); font-size:9px; color:var(--accent3); font-weight:700;">LANGKAH 2</span>
+                <span style="font-size:12px;">📁</span>
+              </div>
+              <div style="font-size:11px; font-weight:700; color:var(--text); margin-bottom:4px;">Isi Bahan Baku</div>
+              <div style="font-size:10px; color:var(--muted); line-height:1.4;">Upload background gambar tema, file audio MP3, visualizer.mov, dan 30 baris Bank Judul.</div>
+            </div>
+
+            <div style="background:var(--card2); border:1px solid var(--border); border-radius:8px; padding:12px;">
+              <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+                <span style="font-family:var(--font-m); font-size:9px; color:var(--yellow); font-weight:700;">LANGKAH 3</span>
+                <span style="font-size:12px;">⚙️</span>
+              </div>
+              <div style="font-size:11px; font-weight:700; color:var(--text); margin-bottom:4px;">Kunci Blueprint</div>
+              <div style="font-size:10px; color:var(--muted); line-height:1.4;">Tentukan durasi acak 60–80 menit, preset ultrafast, template deskripsi SEO di bawah 5.000 karakter.</div>
+            </div>
+
+            <div style="background:var(--card2); border:1px solid var(--border); border-radius:8px; padding:12px;">
+              <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+                <span style="font-family:var(--font-m); font-size:9px; color:var(--green); font-weight:700;">LANGKAH 4</span>
+                <span style="font-size:12px;">🚀</span>
+              </div>
+              <div style="font-size:11px; font-weight:700; color:var(--text); margin-bottom:4px;">Jadwalkan Batch</div>
+              <div style="font-size:10px; color:var(--muted); line-height:1.4;">Klik Buat Batch. Server merender otomatis menjelang jam tayang dan auto-upload ke YouTube!</div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
     </div>
 
     <div id="panel-tasks" class="panel">

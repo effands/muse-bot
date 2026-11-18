@@ -8794,11 +8794,39 @@ def _playlist_build_thread(job_id):
 
 # --- Inti riset & buat playlist (dipakai endpoint panel DAN operator
 # Telegram — SATU logika, tanpa duplikasi; cache riset 1 jam yang sama). ---
-def _playlist_do_research(yt_id, theme):
+def _playlist_duration_sec_param(v):
+    """Parameter durasi (detik) dari endpoint: int >= 0 atau None
+    (tidak valid / tidak diisi = tanpa filter)."""
+    try:
+        n = int(v)
+    except Exception:
+        return None
+    if n < 0:
+        return None
+    return min(n, 24 * 3600)
+
+
+def _playlist_duration_range_text(mn, mx):
+    """Teks rentang durasi untuk pesan ('40–70 menit', 'minimal 40 menit',
+    'maksimal 70 menit', atau '' bila tanpa filter)."""
+    if mn is None and mx is None:
+        return ''
+    if mn is not None and mx is not None:
+        return f"{mn // 60}–{mx // 60} menit"
+    if mn is not None:
+        return f"minimal {mn // 60} menit"
+    return f"maksimal {mx // 60} menit"
+
+
+def _playlist_do_research(yt_id, theme, min_duration_sec=None, max_duration_sec=None):
     """Riset kandidat trending 30 hari terakhir. Kembalikan
     (ok, payload, http); payload berisi job_id + candidates + quota_note
     bila sukses. Job riset dicatat di playlist_jobs.json (status
-    'researched') supaya langkah berikutnya bisa memakai job_id-nya."""
+    'researched') supaya langkah berikutnya bisa memakai job_id-nya.
+    min/max_duration_sec (detik, opsional): kandidat di luar rentang
+    dibuang — tidak pernah dikembalikan diam-diam. Filter diterapkan
+    SETELAH cache riset, jadi cache 1 jam tetap mentah dan dipakai
+    bersama untuk rentang durasi apa pun (0 kuota tambahan)."""
     if not _valid_yt_id(yt_id):
         return False, {"status": "error", "message": "Channel tidak valid."}, 400
     channel = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
@@ -8807,19 +8835,42 @@ def _playlist_do_research(yt_id, theme):
     q = (theme or '').strip()
     if not q:
         return False, {"status": "error", "message": "Isi tema/kata kunci dulu."}, 400
+    mn = _playlist_duration_sec_param(min_duration_sec)
+    mx = _playlist_duration_sec_param(max_duration_sec)
+    if mn is not None and mx is not None and mn > mx:
+        mn, mx = mx, mn
     cands, err, from_cache = _playlist_research_youtube(channel, q)
     if err:
         return False, {"status": "error", "message": err}, 500
+    all_cands = cands or []
+    dur_txt = _playlist_duration_range_text(mn, mx)
+    filter_note = ''
+    if mn is not None or mx is not None:
+        # duration_sec 0 = durasi tak diketahui → tidak lolos filter aktif.
+        cands = [c for c in all_cands
+                 if (c.get('duration_sec') or 0) > 0
+                 and (mn is None or c['duration_sec'] >= mn)
+                 and (mx is None or c['duration_sec'] <= mx)]
+        if not cands and all_cands:
+            filter_note = (f"Tidak ada video {dur_txt} dengan views ≥20rb untuk tema ini — "
+                           "coba ubah tema atau rentang durasi.")
+    else:
+        cands = all_cands
     job_id = f"pl{int(time.time() * 1000)}-{secrets.token_hex(3)}"
     _playlist_job_add({
         'job_id': job_id, 'yt_id': yt_id,
         'channel_name': channel.get('name', ''), 'theme': q,
         'status': 'researched', 'candidates': cands or [],
+        'min_duration_sec': mn, 'max_duration_sec': mx,
         'created_at': _wib_now().strftime('%Y-%m-%d %H:%M'),
-        'progress': (f"{len(cands or [])} kandidat ditemukan"
+        'progress': (filter_note if filter_note else
+                     f"{len(cands or [])} kandidat ditemukan"
+                     + (f" (durasi {dur_txt})" if dur_txt else "")
                      + (" (dari cache — tanpa kuota)." if from_cache else " (kuota riset ~101 unit).")),
     })
     return True, {"status": "success", "job_id": job_id, "candidates": cands or [],
+                  "min_duration_sec": mn, "max_duration_sec": mx,
+                  "filter_note": filter_note,
                   "quota_note": ("Riset dari cache (0 unit kuota)." if from_cache
                                  else "Riset memakai ~101 unit kuota YouTube Data API (search 100 + detail 1).")}, 200
 
@@ -8873,27 +8924,32 @@ def _playlist_do_create(job_id, video_id, publish_date='', privacy='public',
 @app.route('/api/playlist_research', methods=['POST'])
 def playlist_research():
     """Riset kandidat trending 30 hari terakhir (hemat kuota, cache 1 jam).
-    Body: {yt_id, theme, keyword?}. Kembalikan kandidat + job_id."""
+    Body: {yt_id, theme, keyword?, min_duration_sec?, max_duration_sec?}.
+    Kembalikan kandidat + job_id."""
     data = request.get_json(silent=True) or {}
     yt_id = (data.get('yt_id') or '').strip()
     theme = (data.get('theme') or '').strip()
     keyword = (data.get('keyword') or '').strip()
-    ok, payload, http = _playlist_do_research(yt_id, keyword or theme)
+    ok, payload, http = _playlist_do_research(
+        yt_id, keyword or theme,
+        data.get('min_duration_sec'), data.get('max_duration_sec'))
     return jsonify(payload), http
 
 
 @app.route('/api/operator/playlist_research', methods=['POST'])
 def operator_playlist_research():
     """Riset kandidat playlist dari Telegram — auth HMAC operator_key.
-    Body: {key, yt_id, theme}. Memakai helper yang SAMA dengan endpoint
-    panel (cache riset 1 jam yang sama, kuota yang sama). Route ini masuk
+    Body: {key, yt_id, theme, min_duration_sec?, max_duration_sec?}.
+    Memakai helper yang SAMA dengan endpoint panel (cache riset 1 jam
+    yang sama, kuota yang sama). Route ini masuk
     _OPERATOR_ENDPOINTS di check_security."""
     data = request.get_json(silent=True) or {}
     ok_key, msg_key, _st = _validate_operator_key(data)
     if not ok_key:
         return jsonify({"status": "error", "message": msg_key}), _st
     ok, payload, http = _playlist_do_research(
-        (data.get('yt_id') or '').strip(), (data.get('theme') or '').strip())
+        (data.get('yt_id') or '').strip(), (data.get('theme') or '').strip(),
+        data.get('min_duration_sec'), data.get('max_duration_sec'))
     return jsonify(payload), http
 
 

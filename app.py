@@ -106,6 +106,18 @@ if is_configured() and not bot_config.get('operator_key'):
             json.dump(bot_config, _f, indent=4)
     except Exception:
         pass
+# 🔥 FASE 9 MULTI-NODE: identitas node ini, dibuat sekali & menetap di
+# config.json (pola sama seperti secret_key/operator_key). Default
+# single-node: role 'primary', multi_node_enabled False — berperilaku
+# persis seperti sebelum Fase 9. VPS kedua nanti: node_role 'worker',
+# node_id berbeda, multi_node_enabled True di kedua node.
+if is_configured() and not bot_config.get('node_id'):
+    bot_config['node_id'] = 'node-' + secrets.token_hex(4)
+    try:
+        with open(CONFIG_FILE, 'w') as _f:
+            json.dump(bot_config, _f, indent=4)
+    except Exception:
+        pass
 app.secret_key = bot_config.get('secret_key', secrets.token_hex(32))
 # Cookie sesi eksplisit: situs ini HTTP biasa di IP, jadi Secure harus False
 # (cookie Secure tidak akan dikirim lewat http). SameSite=Lax agar cookie
@@ -118,7 +130,7 @@ app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
 
 @app.before_request
 def check_security():
-    allowed_routes = ['login', 'setup', 'static', 'serve_uploads', 'device_login', 'poll_device_token', 'operator_retry_task', 'operator_approve_task', 'operator_reject_task', 'operator_approve_batch']
+    allowed_routes = ['login', 'setup', 'static', 'serve_uploads', 'device_login', 'poll_device_token', 'operator_retry_task', 'operator_approve_task', 'operator_reject_task', 'operator_approve_batch', 'operator_register_node']
     if request.endpoint in allowed_routes: return
     if not is_configured(): return redirect(url_for('setup'))
     if 'logged_in' not in session: return redirect(url_for('login'))
@@ -388,6 +400,12 @@ def _queue_priority(blueprint):
     return ts
 
 def queue_put(blueprint):
+    # 🔥 FASE 9: cap pemilik task. Di single-node (default) nilainya tidak
+    # dipakai — worker mengambil semua task. Di multi-node, worker hanya
+    # mengambil task yang assigned_node-nya == node_id sendiri (atau kosong
+    # = task lama, boleh diambil siapa saja).
+    if isinstance(blueprint, dict):
+        blueprint.setdefault('assigned_node', _node_id())
     render_queue.put((_queue_priority(blueprint), next(_queue_seq), blueprint))
 
 def queue_get():
@@ -1948,6 +1966,16 @@ def background_worker():
             ptask = queue_get()
             pyt_id = ptask['yt_id']
 
+            # 🔥 FASE 9 MULTI-NODE: kalau mode multi-node aktif dan task ini
+            # milik node lain, jangan dikerjakan di sini — kembalikan ke
+            # antrean (wadah sementara, sama seperti cooldown). Di
+            # single-node (default) guard ini tidak pernah aktif.
+            if _multi_node_enabled():
+                _owner = (ptask or {}).get('assigned_node')
+                if _owner and _owner != _node_id():
+                    temp_cooldowns.append(ptask)
+                    continue
+
             # 🔥 FASE 3: channel dijeda → keluarkan dari antrean (TIDAK di-render),
             # tandai Dijeda supaya bisa masuk antrean lagi saat dilanjutkan.
             # (Berbeda dengan cooldown yang dikembalikan ke antrean — task jeda
@@ -3213,6 +3241,328 @@ def reset_formula_weights():
     save_channels(database_channel)
     return jsonify({"status": "success", "message": "Semua bobot judul direset ke 1,0."})
 
+# ==========================================
+# 💰 FASE 9 — SKALA VPS KEDUA / DASHBOARD MONETISASI
+# ==========================================
+# Dua bagian, keduanya PERSIAPAN yang aman di satu VPS:
+#  A. Dashboard monetisasi dari data yang ADA — views dari cache Fase 4 +
+#     riwayat tayang. JUJUR SOAL BATAS: YouTube Data API TIDAK menyediakan
+#     data penghasilan; itu hanya ada di YouTube Analytics API dan butuh
+#     channel yang sudah monetisasi. Karena itu estimasi uang HANYA dihitung
+#     bila owner mengisi sendiri nilai RPM (USD per 1000 views) per channel
+#     di Settings. RPM kosong = TIDAK ADA angka estimasi sama sekali (bukan
+#     0 yang menyesatkan). Semua angka uang diberi label jelas "estimasi
+#     dari RPM yang diisi sendiri".
+#  B. Persiapan multi-node — konfigurasi node (node_id/role) + field
+#     assigned_node pada task + endpoint health /api/node_status dan
+#     registrasi node /api/operator/register_node. Default single-node
+#     (multi_node_enabled=False) berperilaku PERSIS seperti sebelum Fase 9:
+#     worker mengambil semua task tanpa peduli pemilik. Sinkronisasi
+#     jaringan sungguhan (DB bersama, antrean terdistribusi) TIDAK
+#     diimplementasikan — itu butuh VPS kedua + storage bersama; modul ini
+#     hanya menyiapkan kontraknya (lihat _NODE_CONTRACT di bawah).
+_NODE_CONTRACT = """KONTRAK MULTI-NODE (siap dipakai saat VPS kedua ada):
+1. VPS-2 install repo yang sama (git clone + install.sh), lalu di
+   config.json-nya set: node_role='worker', node_id berbeda (mis.
+   'node-worker-1'), multi_node_enabled=true; di VPS-1 (primary) set
+   multi_node_enabled=true juga. JANGAN samakan node_id antar node.
+2. Worker mendaftarkan diri ke primary: POST /api/operator/register_node
+   {key: operator_key, node_id, role: 'worker'} — muncul di kartu
+   NODE & SKALA dengan status online/offline (tidak lapor > 5 menit).
+3. Primary membagi tugas dengan mengisi assigned_node pada task/blueprint
+   (field sudah dicap otomatis oleh queue_put). Worker HANYA mengambil
+   task yang assigned_node-nya == node_id sendiri (guard di
+   background_worker); task tanpa assigned_node (legacy) boleh diambil
+   node mana saja. Single-node (multi_node_enabled=false) mengabaikan
+   guard ini sepenuhnya.
+4. YANG MASIH BUTUH VPS KEDUA SUNGGUHAN (belum ada di kode ini):
+   - DB bersama: channels_db.json / tasks_db.json / video_stats_cache.json
+     harus di satu storage bersama (mis. NFS) atau direplikasi — hari ini
+     tiap node punya file lokal sendiri, jadi tanpa itu worker tidak
+     melihat antrean primary.
+   - Antrean terdistribusi: render_queue hari ini in-memory per proses;
+     butuh broker (mis. Redis/RabbitMQ) atau API tarik-tugas antar node.
+   - Aset galeri bersama (uploads/) dan kredensial channel di worker.
+   Sampai 4 hal itu ada, mode multi-node TIDAK BOLEH diaktifkan —
+   guard di atas hanya memastikan tidak ada task yang dicuri/dikerjakan
+   ganda bila diaktifkan nanti."""
+NODE_FILE = os.path.join(BASE_DIR, 'nodes.json')  # registry node dikenal (di-gitignore)
+NODE_OFFLINE_AFTER_SEC = 300  # node tidak lapor > 5 menit = offline
+RPM_MIN_USD = 0.0
+RPM_MAX_USD = 100.0  # batas kewarasan: RPM > $100/1000 views tidak realistis
+
+def _node_id():
+    """ID node ini (dibuat sekali saat start, menetap di config.json)."""
+    return str(bot_config.get('node_id') or 'node-local')
+
+def _node_role():
+    """'primary' (default) atau 'worker' — dibaca dari config.json."""
+    role = str(bot_config.get('node_role') or 'primary').lower()
+    return role if role in ('primary', 'worker') else 'primary'
+
+def _multi_node_enabled():
+    """True hanya kalau owner mengaktifkan di config (multi_node_enabled).
+    Default False = single-node, worker mengambil semua task."""
+    return bool(bot_config.get('multi_node_enabled', False))
+
+def _load_known_nodes():
+    try:
+        if os.path.exists(NODE_FILE):
+            with open(NODE_FILE, 'r') as f:
+                d = json.load(f)
+            if isinstance(d, list):
+                return d
+    except Exception:
+        pass
+    return []
+
+def _save_known_nodes(nodes):
+    try:
+        tmp = NODE_FILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(nodes, f)
+        os.replace(tmp, NODE_FILE)
+    except Exception:
+        pass
+
+def _touch_known_node(node_id, role, host=None):
+    """Catat/perbarui last_seen satu node di registry. Dipakai node_status
+    (untuk node sendiri) dan register_node (untuk node remote). Entri yang
+    tidak lapor > 7 hari dibuang supaya registry tidak membengkak."""
+    nodes = _load_known_nodes()
+    now = time.time()
+    entry = next((n for n in nodes if n.get('node_id') == node_id), None)
+    if entry is None:
+        entry = {"node_id": node_id, "role": role}
+        nodes.append(entry)
+    entry["role"] = role
+    entry["last_seen"] = now
+    if host:
+        entry["host"] = str(host)[:80]
+    nodes = [n for n in nodes if now - float(n.get('last_seen', 0)) < 7 * 24 * 3600]
+    _save_known_nodes(nodes)
+    return entry
+
+def _dir_size_bytes(path):
+    total = 0
+    try:
+        for root, _dirs, files in os.walk(path):
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, f))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return total
+
+def _disk_usage_info():
+    """Ruang disk + ukuran folder besar (GB). Dipakai kartu Monetisasi &
+    endpoint node_status."""
+    try:
+        du = shutil.disk_usage(BASE_DIR)
+        gb = 1024 ** 3
+        return {"total_gb": round(du.total / gb, 1), "used_gb": round(du.used / gb, 1),
+                "free_gb": round(du.free / gb, 1),
+                "free_pct": round(du.free / max(1, du.total) * 100, 1),
+                "uploads_gb": round(_dir_size_bytes(BASE_UPLOAD) / gb, 2),
+                "downloads_gb": round(_dir_size_bytes(os.path.join(BASE_DIR, 'downloads')) / gb, 2),
+                "static_gb": round(_dir_size_bytes(os.path.join(BASE_DIR, 'static')) / gb, 2)}
+    except Exception:
+        return {"total_gb": 0, "used_gb": 0, "free_gb": 0, "free_pct": 0,
+                "uploads_gb": 0, "downloads_gb": 0, "static_gb": 0}
+
+def _monetization_task_hours(t):
+    """Durasi video tayang dalam jam: kompilasi dari blueprint
+    target_duration_hours; Shorts Muse dari shorts_duration_sec."""
+    bp = t.get('blueprint') or {}
+    try:
+        kind = t.get('kind') or bp.get('kind')
+        if kind == SHORTS_MUSE_KIND:
+            return float(t.get('shorts_duration_sec') or bp.get('shorts_duration_sec') or 0) / 3600.0
+        return float(bp.get('target_duration_hours') or t.get('target_duration_hours') or 0)
+    except Exception:
+        return 0.0
+
+def _monetization_data():
+    """Hitung dashboard monetisasi dari cache Fase 4 + riwayat tayang.
+    TIDAK memanggil YouTube API. Estimasi uang HANYA bila channel punya
+    rpm_usd (> 0); tanpa RPM, estimasi = None (tidak ditampilkan)."""
+    cache = _load_video_stats_cache()
+    cached = cache.get('videos', {})
+    now_wib = _wib_now()
+    today = now_wib.date()
+    name_by_yt = {c.get('yt_id'): c.get('name', c.get('yt_id')) for c in database_channel}
+    rpm_by_yt = {}
+    for c in database_channel:
+        try:
+            rpm_by_yt[c.get('yt_id')] = float(c.get('rpm_usd') or 0)
+        except Exception:
+            rpm_by_yt[c.get('yt_id')] = 0.0
+
+    def _in_days(pub, days):
+        try:
+            d = datetime.strptime(pub, "%Y-%m-%d").date()
+            return 0 <= (today - d).days < days
+        except Exception:
+            return False
+
+    per_channel = {}
+    for t in history_tasks:
+        vid = _history_task_video_id(t)
+        if not vid:
+            continue
+        if not t.get('video_id') and "Tayang" not in str(t.get('status', '')):
+            continue
+        yt_id = _history_task_yt_id(t)
+        if not yt_id:
+            continue
+        st = cached.get(vid) or {}
+        views = 0 if st.get('missing') else int(st.get('views', 0))
+        pub = _formula_pub_date(t, st)
+        e = per_channel.setdefault(yt_id, {"yt_id": yt_id, "name": name_by_yt.get(yt_id, yt_id),
+            "videos": 0, "total_views": 0, "views_7d": 0, "views_30d": 0,
+            "total_hours": 0.0, "best": None})
+        e["videos"] += 1
+        e["total_views"] += views
+        if _in_days(pub, 7):
+            e["views_7d"] += views
+        if _in_days(pub, 30):
+            e["views_30d"] += views
+        e["total_hours"] += _monetization_task_hours(t)
+        if e["best"] is None or views > e["best"]["views"]:
+            e["best"] = {"title": t.get('title', '?'), "views": views, "video_id": vid,
+                         "url": f"https://youtu.be/{vid}"}
+
+    channels_out = []
+    totals = {"videos": 0, "total_views": 0, "views_7d": 0, "views_30d": 0, "total_hours": 0.0,
+              "est_30d_usd": None, "est_total_usd": None, "est_projection_30d_usd": None,
+              "any_rpm": False}
+    for yt_id in sorted(per_channel, key=lambda y: per_channel[y]["total_views"], reverse=True):
+        e = per_channel[yt_id]
+        rpm = rpm_by_yt.get(yt_id, 0.0)
+        e["rpm_usd"] = rpm if rpm > 0 else None
+        e["total_hours"] = round(e["total_hours"], 2)
+        if rpm > 0:
+            totals["any_rpm"] = True
+            e["est_30d_usd"] = round(e["views_30d"] / 1000.0 * rpm, 2)
+            e["est_total_usd"] = round(e["total_views"] / 1000.0 * rpm, 2)
+            e["est_projection_30d_usd"] = e["est_30d_usd"]
+        else:
+            e["est_30d_usd"] = None
+            e["est_total_usd"] = None
+            e["est_projection_30d_usd"] = None
+        totals["videos"] += e["videos"]
+        totals["total_views"] += e["total_views"]
+        totals["views_7d"] += e["views_7d"]
+        totals["views_30d"] += e["views_30d"]
+        totals["total_hours"] += e["total_hours"]
+        channels_out.append(e)
+    totals["total_hours"] = round(totals["total_hours"], 2)
+    if totals["any_rpm"]:
+        totals["est_30d_usd"] = round(sum(c["est_30d_usd"] or 0 for c in channels_out), 2)
+        totals["est_total_usd"] = round(sum(c["est_total_usd"] or 0 for c in channels_out), 2)
+        totals["est_projection_30d_usd"] = totals["est_30d_usd"]
+    return {"channels": channels_out, "totals": totals, "disk": _disk_usage_info(),
+            "currency": "USD",
+            "honesty_note": "Estimasi penghasilan dihitung dari RPM (USD per 1000 views) yang diisi sendiri per channel di Settings — BUKAN data penghasilan dari YouTube. YouTube Data API tidak menyediakan data penghasilan; data asli butuh YouTube Analytics API + channel yang sudah monetisasi. Channel tanpa RPM tidak menampilkan estimasi sama sekali.",
+            "rpm_note": "Isi RPM per channel di Settings (kartu channel) untuk mengaktifkan estimasi. Contoh: RPM $2 berarti setiap 1000 views ≈ $2."}
+
+@app.route('/api/get_monetization')
+def get_monetization():
+    """🔥 FASE 9: dashboard monetisasi (butuh login panel — route ini TIDAK
+    masuk allowed_routes, jadi check_security mewajibkan login). Tidak
+    memanggil YouTube API; memakai cache Fase 4 + riwayat tayang."""
+    return jsonify(_monetization_data())
+
+@app.route('/api/set_channel_rpm', methods=['POST'])
+def set_channel_rpm():
+    """🔥 FASE 9: isi/ubah/hapus RPM (USD per 1000 views) satu channel
+    (butuh login). RPM kosong/null = hapus → estimasi penghasilan channel
+    itu dimatikan. Validasi 0–100 USD."""
+    data = request.get_json(silent=True) or {}
+    yt_id = data.get('yt_id')
+    raw = data.get('rpm_usd')
+    if not yt_id:
+        return jsonify({"status": "error", "message": "yt_id wajib diisi."}), 400
+    if raw is None or raw == '':
+        rpm = None
+    else:
+        try:
+            rpm = float(raw)
+        except Exception:
+            return jsonify({"status": "error", "message": "RPM harus angka (USD per 1000 views)."}), 400
+        if rpm < RPM_MIN_USD or rpm > RPM_MAX_USD:
+            return jsonify({"status": "error", "message": "RPM harus antara $0 dan $100."}), 400
+    with db_lock:
+        target = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+        if target is None:
+            return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
+        if rpm is None:
+            target.pop('rpm_usd', None)
+        else:
+            target['rpm_usd'] = rpm
+        name = target.get('name', yt_id)
+        try:
+            save_channels(database_channel)
+        except Exception as e:
+            return jsonify({"status": "error", "message": f"Gagal menyimpan: {e}"}), 500
+    if rpm is None:
+        return jsonify({"status": "success", "rpm_usd": None,
+                        "message": f"RPM channel {name} dihapus — estimasi penghasilan dimatikan."})
+    return jsonify({"status": "success", "rpm_usd": rpm,
+                    "message": f"RPM channel {name} diset ${rpm} per 1000 views."})
+
+@app.route('/api/node_status')
+def node_status():
+    """🔥 FASE 9: health node ini + node lain yang terdaftar (butuh login
+    panel — route ini TIDAK masuk allowed_routes). Node yang tidak lapor
+    > 5 menit berstatus offline. Mode single-node (default) hanya
+    menampilkan node ini."""
+    _touch_known_node(_node_id(), _node_role())
+    stats = get_system_stats()
+    disk = _disk_usage_info()
+    now = time.time()
+    nodes_out = []
+    for n in _load_known_nodes():
+        last = float(n.get('last_seen', 0))
+        nodes_out.append({"node_id": n.get('node_id'), "role": n.get('role'),
+                          "host": n.get('host', ''),
+                          "last_seen_ago_sec": int(now - last) if last else None,
+                          "status": "online" if last and now - last < NODE_OFFLINE_AFTER_SEC else "offline"})
+    return jsonify({"status": "success",
+                    "self": {"node_id": _node_id(), "role": _node_role(),
+                             "multi_node_enabled": _multi_node_enabled(),
+                             "mode": "multi-node" if _multi_node_enabled() else "single-node"},
+                    "queue": render_queue.qsize(),
+                    "active_tasks": len(active_tasks),
+                    "history_tasks": len(history_tasks),
+                    "channels": len(database_channel),
+                    "cpu": stats.get('cpu'), "ram_pct": stats.get('ram_pct'),
+                    "ram_used_gb": stats.get('ram_used'), "ram_total_gb": stats.get('ram_total'),
+                    "disk": disk,
+                    "nodes": nodes_out,
+                    "contract_note": "Kontrak multi-node (lihat _NODE_CONTRACT di app.py): task membawa assigned_node; worker hanya mengambil task miliknya saat multi_node_enabled=True. DB bersama + antrean terdistribusi masih butuh VPS kedua + storage bersama."})
+
+@app.route('/api/operator/register_node', methods=['POST'])
+def operator_register_node():
+    """🔥 FASE 9: node worker mendaftarkan diri ke primary (machine-to-machine).
+    Keamanan: wajib operator_key (HMAC) seperti endpoint operator lain;
+    route ini masuk allowed_routes di check_security."""
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), 403
+    node_id = str(data.get('node_id') or '').strip()
+    role = str(data.get('role') or 'worker').lower()
+    if not node_id or len(node_id) > 64 or not re.match(r'^[A-Za-z0-9][A-Za-z0-9_-]*$', node_id):
+        return jsonify({"status": "error", "message": "node_id tidak valid (huruf/angka/dash, maks 64 karakter)."}), 400
+    if role not in ('primary', 'worker'):
+        return jsonify({"status": "error", "message": "role harus 'primary' atau 'worker'."}), 400
+    _touch_known_node(node_id, role, host=request.remote_addr)
+    return jsonify({"status": "success", "message": f"Node {node_id} ({role}) terdaftar.",
+                    "primary_node_id": _node_id()})
+
 @app.route('/api/get_schedule')
 def get_schedule(): return jsonify({"active": active_tasks, "history": history_tasks})
 
@@ -3963,7 +4313,7 @@ def clear_history():
 
 @app.route('/api/get_channels')
 def get_channels():
-    safe_c = [{"id": c["id"], "name": c["name"], "yt_id": c["yt_id"], "thumbnail": c["thumbnail"], "status": c["status"], "title_bank": c.get("title_bank", []), "title_weights": c.get("title_weights", {}), "paused": c.get("paused", False), "autopilot": c.get("autopilot", "approval")} for c in database_channel]
+    safe_c = [{"id": c["id"], "name": c["name"], "yt_id": c["yt_id"], "thumbnail": c["thumbnail"], "status": c["status"], "title_bank": c.get("title_bank", []), "title_weights": c.get("title_weights", {}), "paused": c.get("paused", False), "autopilot": c.get("autopilot", "approval"), "rpm_usd": c.get("rpm_usd")} for c in database_channel]
     return jsonify(safe_c)
 
 @app.route('/api/get_project_quotas')

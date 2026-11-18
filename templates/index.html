@@ -1102,6 +1102,34 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         </div>
       </div>
 
+      <!-- ════════ FASE 9: MONETISASI & BEBAN ════════ -->
+      <div class="card" style="margin-bottom:18px;">
+        <div class="card-head">
+          <div>
+            <span class="card-title">MONETISASI &amp; BEBAN</span>
+            <div class="card-sub">Views dari statistik Fase 4 + riwayat tayang. Estimasi uang HANYA dari RPM yang kamu isi sendiri per channel (Settings) — bukan data penghasilan YouTube.</div>
+          </div>
+          <button type="button" class="btn btn-sm" onclick="fetchMonetization()" title="Muat ulang data monetisasi">↻ Refresh</button>
+        </div>
+        <div class="card-body">
+          <div id="mz-body" style="font-size:12px;color:var(--muted)">Memuat monetisasi…</div>
+        </div>
+      </div>
+
+      <!-- ════════ FASE 9: NODE & SKALA ════════ -->
+      <div class="card" style="margin-bottom:18px;">
+        <div class="card-head">
+          <div>
+            <span class="card-title">NODE &amp; SKALA</span>
+            <div class="card-sub">Kesehatan node ini + node lain yang terdaftar (mode single-node sampai VPS kedua ada)</div>
+          </div>
+          <button type="button" class="btn btn-sm" onclick="fetchNodeStatus()" title="Muat ulang status node">↻ Refresh</button>
+        </div>
+        <div class="card-body">
+          <div id="ns-body" style="font-size:12px;color:var(--muted)">Memuat status node…</div>
+        </div>
+      </div>
+
       <!-- ════════ PUSAT KENDALI CEPAT (QUICK ACTIONS) ════════ -->
       <div style="margin-bottom:18px;">
         <div style="font-size:12px; font-weight:700; letter-spacing:.08em; color:var(--text); margin-bottom:10px; display:flex; align-items:center; gap:6px;">
@@ -2258,6 +2286,13 @@ function renderChannelsGrid() {
         <span class="pill p-green">${c.status}</span>
         ${c.paused ? `<span class="pill p-yellow">⏸️ Dijeda</span>` : ''}
         ${c.autopilot === 'auto' ? `<span class="pill p-cyan">🤖 Full-Auto</span>` : `<span class="pill p-muted">👀 Approval</span>`}
+        <span class="pill p-muted" title="RPM: USD per 1000 views — dipakai hanya untuk estimasi penghasilan di kartu Monetisasi">💵 RPM $${c.rpm_usd != null ? c.rpm_usd : '—'}</span>
+        <div style="margin-top:6px;display:flex;gap:6px;align-items:center;font-size:11px;color:var(--muted);flex-wrap:wrap">
+          <span>RPM $</span>
+          <input type="number" min="0" max="100" step="0.1" placeholder="isi utk estimasi" value="${c.rpm_usd != null ? c.rpm_usd : ''}" id="rpm-${c.yt_id}" style="width:100px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:11px" title="RPM: USD per 1000 views. Kosongkan untuk mematikan estimasi channel ini.">
+          <span>/1000 views</span>
+          <button class="btn btn-g btn-sm" onclick="setChannelRpm('${c.yt_id}')" title="Simpan RPM channel ini">Simpan RPM</button>
+        </div>
       </div>
       <div style="display:flex; gap:6px;">
         ${c.autopilot === 'auto'
@@ -4275,7 +4310,7 @@ function recoverFailedTasks() {
 function fetchAnalytics() {
   fetch('/api/get_youtube_analytics').then(r => r.json()).then(data => {
     analyticsData = data; const f = document.getElementById('analytics_filter'); f.innerHTML = '<option value="ALL">⬡ ALL CHANNELS</option>';
-    data.forEach(d => f.innerHTML += `<option value="${d.yt_id}">${d.name}</option>`); renderAnalytics(); fetchVideoStats(false); fetchProjectQuotas(); fetchFormulaAnalytics();
+    data.forEach(d => f.innerHTML += `<option value="${d.yt_id}">${d.name}</option>`); renderAnalytics(); fetchVideoStats(false); fetchProjectQuotas(); fetchFormulaAnalytics(); fetchMonetization(); fetchNodeStatus();
   }).catch(() => {});
 }
 
@@ -4371,6 +4406,88 @@ function fetchProjectQuotas() {
     }).join('');
   }).catch(() => {
     if (box) box.textContent = 'Gagal memuat kuota project.';
+  });
+}
+
+// ────────────────────────────────────────────────────────
+//  FASE 9: MONETISASI & BEBAN + NODE & SKALA
+// ────────────────────────────────────────────────────────
+function fmtUsd(v) {
+  if (v == null) return '—';
+  return '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function fetchMonetization() {
+  const box = document.getElementById('mz-body');
+  fetch('/api/get_monetization').then(r => r.json()).then(d => {
+    if (!box) return;
+    const t = d.totals || {};
+    const disk = d.disk || {};
+    let h = '<div class="g2" style="margin-bottom:12px">'
+      + '<div><div style="font-family:var(--font-m);font-size:10px;color:var(--muted)">VIDEO TAYANG</div><div style="font-size:18px;font-weight:700;color:var(--accent)">' + (t.videos || 0) + '</div></div>'
+      + '<div><div style="font-family:var(--font-m);font-size:10px;color:var(--muted)">TOTAL JAM TAYANG</div><div style="font-size:18px;font-weight:700;color:var(--accent)">' + (t.total_hours || 0).toLocaleString() + ' jam</div></div>'
+      + '<div><div style="font-family:var(--font-m);font-size:10px;color:var(--muted)">VIEWS 30 HARI</div><div style="font-size:18px;font-weight:700;color:var(--accent)">' + (t.views_30d || 0).toLocaleString() + '</div></div>'
+      + '<div><div style="font-family:var(--font-m);font-size:10px;color:var(--muted)">ESTIMASI 30 HARI (DARI RPM)</div><div style="font-size:18px;font-weight:700;color:var(--accent)">' + fmtUsd(t.est_30d_usd) + '</div></div>'
+      + '</div>';
+    h += '<div style="font-size:12px;margin-bottom:10px">💾 Disk: <b>' + (disk.free_gb || 0) + ' GB bebas</b> dari ' + (disk.total_gb || 0) + ' GB (' + (disk.free_pct || 0) + '%) · Uploads ' + (disk.uploads_gb || 0) + ' GB · Downloads ' + (disk.downloads_gb || 0) + ' GB · Static ' + (disk.static_gb || 0) + ' GB</div>';
+    const chans = d.channels || [];
+    if (!chans.length) {
+      h += 'Belum ada video tayang — monetisasi muncul setelah video pertama tayang.';
+    } else {
+      h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="text-align:left;color:var(--muted);font-family:var(--font-m);font-size:10px;border-bottom:1px solid var(--border)">'
+        + '<th style="padding:6px 8px">CHANNEL</th><th style="padding:6px 8px;text-align:right">VIDEO</th><th style="padding:6px 8px;text-align:right">VIEWS 30D</th><th style="padding:6px 8px;text-align:right">TOTAL VIEWS</th><th style="padding:6px 8px;text-align:right">RPM</th><th style="padding:6px 8px;text-align:right">EST. 30 HARI</th><th style="padding:6px 8px">TERBAIK</th></tr></thead><tbody>'
+        + chans.map(c => '<tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 8px">' + escapeHtml(c.name) + '</td>'
+          + '<td style="padding:6px 8px;text-align:right">' + c.videos + '</td>'
+          + '<td style="padding:6px 8px;text-align:right">' + (c.views_30d || 0).toLocaleString() + '</td>'
+          + '<td style="padding:6px 8px;text-align:right">' + (c.total_views || 0).toLocaleString() + '</td>'
+          + '<td style="padding:6px 8px;text-align:right">' + (c.rpm_usd != null ? '$' + c.rpm_usd : '—') + '</td>'
+          + '<td style="padding:6px 8px;text-align:right"><b>' + fmtUsd(c.est_30d_usd) + '</b></td>'
+          + '<td style="padding:6px 8px">' + (c.best ? escapeHtml((c.best.title || '').slice(0, 40)) + ' (' + (c.best.views || 0).toLocaleString() + ')' : '—') + '</td></tr>').join('')
+        + '</tbody></table></div>';
+      if (t.est_projection_30d_usd != null) {
+        h += '<div style="font-size:11px;color:var(--muted);margin-top:8px">📈 Proyeksi 30 hari ke depan bila views sama seperti 30 hari terakhir: <b>' + fmtUsd(t.est_projection_30d_usd) + '</b> (total semua channel ber-RPM).</div>';
+      }
+    }
+    h += '<div style="font-size:11px;color:var(--muted);margin-top:10px">' + escapeHtml(d.honesty_note || '') + '<br>' + escapeHtml(d.rpm_note || '') + '</div>';
+    box.innerHTML = h;
+  }).catch(() => {
+    if (box) box.textContent = 'Gagal memuat monetisasi.';
+  });
+}
+function setChannelRpm(yt_id) {
+  const input = document.getElementById('rpm-' + yt_id);
+  if (!input) return;
+  const raw = (input.value || '').trim();
+  fetch('/api/set_channel_rpm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ yt_id, rpm_usd: raw === '' ? null : raw }) })
+    .then(r => r.json()).then(d => {
+      toast(d.message, d.status === 'success' ? 'success' : 'error');
+      if (d.status === 'success') { loadChannels(); fetchMonetization(); }
+    }).catch(() => toast('Gagal menyimpan RPM.', 'error'));
+}
+function fetchNodeStatus() {
+  const box = document.getElementById('ns-body');
+  fetch('/api/node_status').then(r => r.json()).then(d => {
+    if (!box) return;
+    const s = d.self || {};
+    const disk = d.disk || {};
+    let h = '<div style="margin-bottom:10px"><b>Node ini:</b> ' + escapeHtml(s.node_id || '—') + ' · peran <b>' + escapeHtml(s.role || '—') + '</b> · mode <b>' + escapeHtml(s.mode || '—') + '</b>'
+      + '<br>CPU ' + (d.cpu != null ? d.cpu : '—') + '% · RAM ' + (d.ram_pct != null ? d.ram_pct : '—') + '% (' + (d.ram_used_gb || 0) + '/' + (d.ram_total_gb || 0) + ' GB) · Disk bebas ' + (disk.free_gb || 0) + ' GB'
+      + '<br>Antrean ' + (d.queue || 0) + ' · Task aktif ' + (d.active_tasks || 0) + ' · Riwayat ' + (d.history_tasks || 0) + ' · Channel ' + (d.channels || 0) + '</div>';
+    const nodes = d.nodes || [];
+    if (!nodes.length || (nodes.length === 1 && nodes[0].node_id === s.node_id)) {
+      h += '<div style="color:var(--muted)">Single-node: hanya node ini yang berjalan. Saat VPS kedua ditambahkan, node worker akan muncul di sini setelah mendaftarkan diri (POST /api/operator/register_node).</div>';
+    } else {
+      h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="text-align:left;color:var(--muted);font-family:var(--font-m);font-size:10px;border-bottom:1px solid var(--border)">'
+        + '<th style="padding:6px 8px">NODE</th><th style="padding:6px 8px">PERAN</th><th style="padding:6px 8px">STATUS</th><th style="padding:6px 8px">TERAKHIR LAPOR</th></tr></thead><tbody>'
+        + nodes.map(n => '<tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 8px">' + escapeHtml(n.node_id || '') + '</td>'
+          + '<td style="padding:6px 8px">' + escapeHtml(n.role || '') + '</td>'
+          + '<td style="padding:6px 8px">' + (n.status === 'online' ? '🟢 online' : '🔴 offline') + '</td>'
+          + '<td style="padding:6px 8px">' + (n.last_seen_ago_sec != null ? n.last_seen_ago_sec + ' dtk lalu' : '—') + '</td></tr>').join('')
+        + '</tbody></table></div>';
+    }
+    h += '<div style="font-size:11px;color:var(--muted);margin-top:8px">' + escapeHtml(d.contract_note || '') + '</div>';
+    box.innerHTML = h;
+  }).catch(() => {
+    if (box) box.textContent = 'Gagal memuat status node.';
   });
 }
 

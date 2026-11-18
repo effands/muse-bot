@@ -952,6 +952,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
     <button class="nav-item" onclick="go('gallery',this)" id="nb-gallery"><span class="nav-icon">▦</span> Asset Gallery</button>
     <button class="nav-item" onclick="go('titles',this)" id="nb-titles"><span class="nav-icon">✦</span> Title Generator</button>
     <button class="nav-item" onclick="go('batch',this)" id="nb-batch"><span class="nav-icon">◉</span> Batch Creator</button>
+    <button class="nav-item" onclick="go('shorts',this)" id="nb-shorts"><span class="nav-icon">📱</span> Shorts Muse</button>
     <div class="nav-section">SYSTEM</div>
     <button class="nav-item" onclick="go('settings',this)" id="nb-settings"><span class="nav-icon">◎</span> Settings</button>
   </nav>
@@ -1755,6 +1756,37 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         </div>
       </div>
     </div>
+    <div id="panel-shorts" class="panel">
+      <div class="sh" style="margin-bottom:20px">
+        <div><div class="sh-title">Shorts Muse 📱</div><div class="sh-sub">Short vertikal 1080x1920 dari naskah + CTA — dibuat Muse, di-render &amp; di-upload VPS</div></div>
+      </div>
+
+      <div class="g2">
+        <div class="form-section">
+          <div class="fs-title">📱 Buat Short Baru</div>
+          <div class="fg"><label class="fl">Channel YouTube</label><select id="sm-channel" onchange="onSmChannelChange()"><option value="">-- Pilih Channel --</option></select></div>
+          <div class="fg"><label class="fl">Judul Short</label><input type="text" id="sm-title" placeholder="cth: 3 Menit Tenang Sebelum Tidur" maxlength="100"></div>
+          <div class="fg"><label class="fl">Jadwal Tayang</label><input type="datetime-local" id="sm-publish-date"></div>
+          <div class="fg"><label class="fl">Durasi Target</label><select id="sm-duration"><option value="15">15 detik</option><option value="30" selected>30 detik</option><option value="60">60 detik</option></select></div>
+          <div class="fg"><label class="fl">Hook — kalimat pembuka (tampil 4 detik pertama)</label><textarea id="sm-hook" rows="2" placeholder="cth: Berhenti scroll dulu, ini penting!"></textarea></div>
+          <div class="fg"><label class="fl">Naskah — isi singkat (ditampilkan berurutan)</label><textarea id="sm-script" rows="3" placeholder="cth: Musik tenang bisa menurunkan detak jantung dan membantu tidur lebih nyenyak."></textarea></div>
+          <div class="fg"><label class="fl">Teks CTA — kartu akhir (5 detik terakhir)</label><input type="text" id="sm-cta" value="Subscribe" maxlength="60"></div>
+          <div class="fg"><label class="fl">Warna Teks</label><select id="sm-color"><option value="#FFFFFF">Putih</option><option value="#FFFF00">Kuning</option><option value="#00E5FF">Cyan</option><option value="#00FF7F">Hijau</option></select></div>
+          <div class="fg"><label class="fl">Background (galeri channel — kosong = acak)</label><select id="sm-bg"><option value="">-- Acak dari galeri --</option></select></div>
+          <div class="fg"><label class="fl">Musik Latar (galeri channel)</label><select id="sm-bgm"><option value="none">Tanpa musik</option></select></div>
+          <div class="fg"><label class="fl">Deskripsi <small>(opsional — kosong = dibuat otomatis dari naskah)</small></label><textarea id="sm-description" rows="2" placeholder="Kosongkan untuk deskripsi otomatis"></textarea></div>
+          <div class="fg"><label class="fl">Tag</label><input type="text" id="sm-tags" value="#shorts" maxlength="200"></div>
+          <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:12px">Upload selalu <b>private</b> dulu (seperti Clipper) — ubah ke publik di YouTube setelah dicek. Short mengikuti approval channel, kalender, pause, QC &amp; kuota seperti video biasa.</div>
+          <button type="button" class="btn btn-p" id="btn-shorts-create" onclick="createShortsMuse()">Buat Shorts Muse 📱</button>
+        </div>
+
+        <div class="form-section">
+          <div class="fs-title">📋 Daftar Shorts Muse</div>
+          <div id="sm-list"><div style="text-align:center;padding:24px;color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada Shorts Muse.</div></div>
+          <button type="button" class="btn btn-g btn-sm" onclick="fetchShortsMuse()">↻ Refresh Daftar</button>
+        </div>
+      </div>
+    </div>
     <div id="panel-settings" class="panel">
       <div class="sh" style="margin-bottom:20px">
         <div><div class="sh-title">Settings</div><div class="sh-sub">API Google, channel & konfigurasi sistem</div></div>
@@ -1844,6 +1876,9 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
   </button>
   <button class="bnav-item" onclick="go('batch')" id="bn-batch">
     <span class="nav-icon">◉</span><span>Batch</span>
+  </button>
+  <button class="bnav-item" onclick="go('shorts')" id="bn-shorts">
+    <span class="nav-icon">📱</span><span>Shorts</span>
   </button>
   <button class="bnav-item" onclick="go('settings')" id="bn-settings">
     <span class="nav-icon">◎</span><span>Set</span>
@@ -2064,6 +2099,7 @@ const PAGE_META = {
   gallery:   { t: 'Gallery',          s: 'Kelola audio, background & thumbnail' },
   titles:    { t: 'Title Generator', s: 'Upload bank & generate judul baru' },
   batch:     { t: 'Batch Creator',   s: 'Buat banyak video sekaligus' },
+  shorts:    { t: 'Shorts Muse',     s: 'Short dari naskah + CTA, render vertikal' },
   settings:  { t: 'Settings',        s: 'API Google, channel & konfigurasi' }
 };
 
@@ -2086,6 +2122,7 @@ function go(id, el) {
     refreshBatchDropdowns();
     setTimeout(initCanvas, 50);
   }
+  if (id === 'shorts') { refreshShortsDropdowns(); fetchShortsMuse(); }
 }
 
 // ────────────────────────────────────────────────────────
@@ -2187,7 +2224,7 @@ function pollSysStats() {
 function loadChannels() {
   fetch('/api/get_channels').then(r => r.json()).then(data => {
     channels = data;
-    ['gallery-ch-sel', 'title-ch-sel', 'bc-channel'].forEach(id => {
+    ['gallery-ch-sel', 'title-ch-sel', 'bc-channel', 'sm-channel'].forEach(id => {
       const sel = document.getElementById(id);
       if (!sel) return;
       const val = sel.value;
@@ -3310,6 +3347,77 @@ function refreshBatchDropdowns() {
   sel.innerHTML = '<option value="">-- Pilih Channel --</option>';
   channels.forEach(c => sel.innerHTML += `<option value="${c.yt_id}">${c.name}</option>`);
   if (val) { sel.value = val; onBcChannelChange(); }
+}
+
+// ────────────────────────────────────────────────────────
+//  🔥 FASE 8: SHORTS MUSE — form + daftar
+// ────────────────────────────────────────────────────────
+function refreshShortsDropdowns() {
+  const sel = document.getElementById('sm-channel');
+  if (!sel) return;
+  const val = sel.value;
+  sel.innerHTML = '<option value="">-- Pilih Channel --</option>';
+  channels.forEach(c => sel.innerHTML += `<option value="${c.yt_id}">${escapeHtml(c.name)}</option>`);
+  if (val) sel.value = val;
+  onSmChannelChange();
+}
+
+function onSmChannelChange() {
+  const yt = document.getElementById('sm-channel').value;
+  const bgSel = document.getElementById('sm-bg');
+  const bgmSel = document.getElementById('sm-bgm');
+  bgSel.innerHTML = '<option value="">-- Acak dari galeri --</option>';
+  bgmSel.innerHTML = '<option value="none">Tanpa musik</option>';
+  if (!yt) return;
+  fetch(`/api/get_gallery?yt_id=${yt}`).then(r => r.json()).then(data => {
+    (data.background || []).forEach(f => bgSel.innerHTML += `<option value="${escapeHtml(f.name)}">${escapeHtml(f.name)}</option>`);
+    (data.audio || []).forEach(f => bgmSel.innerHTML += `<option value="${escapeHtml(f.name)}">${escapeHtml(f.name)}</option>`);
+  }).catch(() => {});
+}
+
+function createShortsMuse() {
+  const payload = {
+    yt_id: document.getElementById('sm-channel').value,
+    title: document.getElementById('sm-title').value.trim(),
+    publish_date: document.getElementById('sm-publish-date').value,
+    duration_sec: parseInt(document.getElementById('sm-duration').value, 10) || 30,
+    hook: document.getElementById('sm-hook').value,
+    script: document.getElementById('sm-script').value,
+    cta: document.getElementById('sm-cta').value,
+    text_color: document.getElementById('sm-color').value,
+    bg_file: document.getElementById('sm-bg').value,
+    bgm_file: document.getElementById('sm-bgm').value,
+    description: document.getElementById('sm-description').value,
+    tags: document.getElementById('sm-tags').value
+  };
+  if (!payload.yt_id) return toast('Pilih channel dulu', 'error');
+  if (!payload.title) return toast('Judul wajib diisi', 'error');
+  if (!payload.publish_date) return toast('Isi jadwal tayang dulu', 'error');
+  if (!payload.hook.trim() && !payload.script.trim()) return toast('Isi Hook atau Naskah dulu', 'error');
+  const btn = document.getElementById('btn-shorts-create');
+  btn.disabled = true; btn.textContent = 'Membuat...';
+  fetch('/api/shorts_muse_create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+    .then(r => r.json()).then(d => {
+      btn.disabled = false; btn.textContent = 'Buat Shorts Muse 📱';
+      if (d.status === 'success') { toast(d.message, 'success'); fetchShortsMuse(); fetchServerTasks(); }
+      else toast(d.message || 'Gagal membuat Shorts', 'error');
+    }).catch(() => { btn.disabled = false; btn.textContent = 'Buat Shorts Muse 📱'; toast('Gagal menghubungi server', 'error'); });
+}
+
+function fetchShortsMuse() {
+  fetch('/api/get_shorts_muse').then(r => r.json()).then(d => renderShortsMuse(d.shorts || [])).catch(() => {});
+}
+
+function renderShortsMuse(items) {
+  const list = document.getElementById('sm-list');
+  if (!list) return;
+  if (!items.length) { list.innerHTML = `<div style="text-align:center;padding:24px;color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada Shorts Muse.</div>`; return; }
+  list.innerHTML = items.map(s => {
+    const pend = s.approval === 'pending';
+    const link = s.video_url ? ` <a href="${escapeHtml(s.video_url)}" target="_blank" style="color:var(--accent)">[Lihat]</a>` : '';
+    const btns = pend ? `<button class="stop-btn" style="background:var(--green);color:#fff" title="Setujui & masuk antrean" onclick="approveTask(${Number(s.id)})">✅</button><button class="stop-btn" style="background:var(--accent2);color:#fff" title="Tolak (tidak dieksekusi)" onclick="rejectTask(${Number(s.id)})">❌</button>` : '';
+    return `<div class="task-row"><div class="task-icon">📱</div><div class="task-info"><div class="task-name">${escapeHtml(s.title)}</div><div class="task-meta">${escapeHtml(s.channel || '')} · ${escapeHtml(s.publish_date || '')} · ${s.duration_sec || '?'} dtk · CTA: ${escapeHtml(s.cta || '')}${link}</div></div><span class="pill ${pend ? 'p-yellow' : 'p-cyan'}" style="flex-shrink:0;max-width:220px;white-space:normal;line-height:1.3">${escapeHtml(s.status || '—')}</span>${btns}</div>`;
+  }).join('');
 }
 
 // ────────────────────────────────────────────────────────

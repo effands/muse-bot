@@ -464,6 +464,15 @@ DISK_BYTES_PER_SEC = 500_000         # perkiraan ukuran hasil render (500 KB/det
 UPLOAD_MAX_ATTEMPTS = 3              # 1 percobaan + maks 2x retry (Fase 5)
 UPLOAD_RETRY_BACKOFF_BASE = 10       # detik; jeda 10 lalu 20 (eksponensial x2)
 FAIL_STREAK_AUTO_PAUSE = 3           # gagal beruntun → jeda channel otomatis
+# 🔥 FASE 8: Shorts Muse — video vertikal 1080x1920 dari naskah + CTA.
+# Naskah/hook/CTA dibuat oleh Muse di chat; VPS hanya me-render & upload.
+SHORTS_MUSE_KIND = 'shorts_muse'      # penanda task di blueprint & antrean aktif
+SHORTS_MUSE_DURATIONS = (15, 30, 60)  # pilihan durasi target (detik)
+SHORTS_MUSE_MIN_SEC = 5               # batas bawah durasi (validasi server)
+SHORTS_MUSE_MAX_SEC = 180             # batas atas durasi (Shorts maks 3 menit)
+SHORTS_MUSE_HOOK_SEC = 4.0            # hook tampil di awal video
+SHORTS_MUSE_CTA_SEC = 5.0             # kartu CTA di akhir video
+SHORTS_MUSE_DEFAULT_CTA = 'Subscribe' # CTA bila form dikosongkan
 # Aturan umur bersih-bersih disk (lihat cleanup_old_files):
 CLEANUP_TEMP_MAX_AGE = 6 * 3600      # temp render > 6 jam
 CLEANUP_FINAL_MAX_AGE = 24 * 3600    # final render > 1 hari & task tidak aktif
@@ -1745,6 +1754,189 @@ def apply_visual_overlay(task_id, video_path, overlay_path, size_pct=60, key_col
 # ==========================================
 # 🚀 BACKGROUND WORKER (SUDAH DI-TUNE UP NGEBUT)
 # ==========================================
+# ============================================================
+# 🔥 FASE 8: SHORTS MUSE — render vertikal 1080x1920 dari naskah + CTA
+# ============================================================
+def _shorts_muse_ass_escape(text):
+    """Escape teks untuk file ASS (libass): backslash, kurung kurawal,
+    dan baris baru (backslash-N). Tanpa ini, teks berisi '{' atau koma bisa
+    merusak parsing subtitle."""
+    s = str(text or '').replace('\\', '\\\\').replace('{', '\\{').replace('}', '\\}')
+    return s.replace('\r\n', '\\N').replace('\n', '\\N').replace('\r', '\\N')
+
+def _shorts_muse_ass_time(sec):
+    """Detik float → timestamp ASS H:MM:SS.cc."""
+    sec = max(0.0, float(sec))
+    h = int(sec // 3600); m = int((sec % 3600) // 60)
+    s = sec % 60
+    return f"{h}:{m:02d}:{s:05.2f}"
+
+def _hex_to_ass_color(hex_color):
+    """'#RRGGBB' → warna ASS '&HAABBGGRR' (alpha 00 = penuh). Tidak valid
+    → putih. Dipakai untuk warna teks pilihan user di form."""
+    try:
+        h = str(hex_color or '').strip().lstrip('#')
+        if len(h) != 6:
+            return '&H00FFFFFF'
+        r, g, b = h[0:2], h[2:4], h[4:6]
+        int(r, 16); int(g, 16); int(b, 16)
+        return f"&H00{b}{g}{r}"
+    except Exception:
+        return '&H00FFFFFF'
+
+def _shorts_muse_split_script(script, max_words=10):
+    """Pecah naskah jadi potongan ≤ max_words kata (satu potongan = satu
+    segmen tampil di layar). Maks 6 potongan supaya tidak terlalu ramai."""
+    words = ' '.join(str(script or '').split()).split()
+    if not words:
+        return []
+    chunks = [' '.join(words[i:i + max_words])
+              for i in range(0, len(words), max_words)]
+    return chunks[:6]
+
+def _shorts_muse_build_ass(ass_path, hook, script, cta_text, text_color, duration_sec):
+    """Tulis file ASS: Hook (awal, kuning, atas), Naskah (tengah, warna
+    pilihan, bawah), CTA (5 detik terakhir, kartu tengah layar dengan
+    kotak latar). Mengikuti pola filter `subtitles` Clipper (fontsdir
+    static/fonts, Fontname Arial → fontconfig fallback)."""
+    duration_sec = float(duration_sec)
+    hook_dur = min(SHORTS_MUSE_HOOK_SEC, max(1.0, duration_sec * 0.3))
+    cta_start = max(hook_dur + 0.5, duration_sec - SHORTS_MUSE_CTA_SEC)
+    body_color = _hex_to_ass_color(text_color)
+    events = []
+    if (hook or '').strip():
+        events.append((0.0, hook_dur, 'Hook', _shorts_muse_ass_escape(hook.strip())))
+    chunks = _shorts_muse_split_script(script)
+    if chunks:
+        body_start, body_end = hook_dur, cta_start
+        span = max(0.5, (body_end - body_start) / len(chunks))
+        for i, ch in enumerate(chunks):
+            events.append((body_start + i * span,
+                           min(body_start + (i + 1) * span, body_end),
+                           'Body', _shorts_muse_ass_escape(ch)))
+    if (cta_text or '').strip():
+        events.append((cta_start, duration_sec, 'CTA', _shorts_muse_ass_escape(cta_text.strip())))
+    ass = (
+        "[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n"
+        "WrapStyle: 0\nScaledBorderAndShadow: yes\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Hook,Arial,64,&H0000FFFF,&H0000FFFF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,3,0,8,80,80,280,1\n"
+        f"Style: Body,Arial,46,{body_color},{body_color},&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,3,0,2,90,90,420,1\n"
+        "Style: CTA,Arial,72,&H00FFFF00,&H00FFFF00,&H00000000,&H80000000,1,0,0,0,100,100,0,0,3,2,0,5,80,80,0,1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+    for start, end, style, text in events:
+        ass += (f"Dialogue: 0,{_shorts_muse_ass_time(start)},"
+                f"{_shorts_muse_ass_time(end)},{style},,0,0,0,,{text}\n")
+    with open(ass_path, 'w', encoding='utf-8') as f:
+        f.write(ass)
+    return len(events)
+
+def _shorts_muse_pick_bg(yt_id, filename):
+    """Background Shorts: file pilihan form (uploads/<yt_id>/backgrounds)
+    kalau ada & valid; kalau tidak, 1 background acak dari galeri.
+    Mengembalikan path absolut atau None."""
+    folder = get_channel_folder(yt_id, "backgrounds")
+    if filename:
+        cand = os.path.join(folder, os.path.basename(str(filename)))
+        if os.path.isfile(cand) and cand.lower().endswith(('.jpg', '.jpeg', '.png', '.webp', '.mp4', '.mov', '.webm')):
+            return cand
+    picked = get_multi_backgrounds(yt_id, count=1)
+    return picked[0] if picked else None
+
+def _shorts_muse_pick_bgm(yt_id, filename):
+    """Musik latar Shorts: file pilihan form (uploads/<yt_id>/audios).
+    'none'/kosong/tidak ditemukan → None (video tetap dibuat, dengan
+    trek audio hening — QC Fase 5 dilewati untuk kasus ini)."""
+    if not filename or str(filename).strip().lower() == 'none':
+        return None
+    folder = get_channel_folder(yt_id, "audios")
+    cand = os.path.join(folder, os.path.basename(str(filename)))
+    if os.path.isfile(cand) and cand.lower().endswith(('.mp3', '.wav')):
+        return cand
+    return None
+
+def render_shorts_muse_core(task_id, task, yt_id):
+    """🔥 FASE 8: render SATU Shorts Muse — vertikal 1080x1920, 100%
+    FFmpeg (tanpa render frame Python). Background gambar/video dengan
+    zoom pelan + teks Hook/Naskah/CTA dari file ASS + musik galeri
+    (atau trek hening bila tanpa musik). Mengembalikan path final video
+    (static/final_{task_id}.mp4) — sama seperti jalur Factory, supaya
+    alur setelahnya (cek jeda → QC → upload → riwayat) dipakai ulang
+    tanpa jalur paralel."""
+    try:
+        duration_sec = float(task.get('shorts_duration_sec') or 30)
+    except Exception:
+        duration_sec = 30.0
+    duration_sec = max(SHORTS_MUSE_MIN_SEC, min(SHORTS_MUSE_MAX_SEC, duration_sec))
+    hook = (task.get('shorts_hook') or '').strip()
+    script = (task.get('shorts_script') or '').strip()
+    cta_text = (task.get('shorts_cta') or SHORTS_MUSE_DEFAULT_CTA).strip() or SHORTS_MUSE_DEFAULT_CTA
+    text_color = task.get('shorts_text_color') or '#FFFFFF'
+    if not hook and not script:
+        raise Exception("Shorts Muse butuh Hook atau Naskah — keduanya kosong!")
+
+    bg_path = _shorts_muse_pick_bg(yt_id, task.get('shorts_bg'))
+    if not bg_path:
+        raise Exception("Gallery Background Kosong! Upload gambar background ke tab Asset Gallery dulu.")
+    bgm_path = _shorts_muse_pick_bgm(yt_id, task.get('shorts_bgm'))
+    # Tandai di blueprint supaya QC Fase 5 tahu: tanpa musik = audio hening
+    # itu disengaja, bukan cacat render.
+    task['shorts_no_music'] = bgm_path is None
+
+    with db_lock:
+        for d in active_tasks:
+            if d['id'] == task_id:
+                d['status'] = "Merender Shorts Muse 1080x1920... 📱"
+                d['updated_at'] = time.time()
+                d['started_at'] = time.time()
+    save_tasks_db()
+
+    ass_path = os.path.join(BASE_UPLOAD, f"shorts_ass_{task_id}.ass")
+    output_path = os.path.join(BASE_DIR, f"static/final_{task_id}.mp4")
+    try:
+        n_events = _shorts_muse_build_ass(ass_path, hook, script, cta_text, text_color, duration_sec)
+        if n_events == 0:
+            raise Exception("Tidak ada teks yang bisa ditampilkan di Shorts (Hook/Naskah/CTA kosong)!")
+        safe_ass = os.path.abspath(ass_path).replace('\\', '/').replace(':', '\\\\:')
+        font_dir = os.path.join(BASE_DIR, 'static', 'fonts')
+        safe_font_dir = font_dir.replace('\\', '/').replace(':', '\\\\:')
+        # Zoom pelan bolak-balik selama durasi video (siklus = durasi penuh).
+        cycle_frames = max(30, int(duration_sec * 30))
+        vf = (f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
+              f"zoompan=z='1+0.08*(0.5-0.5*cos(2*PI*on/{cycle_frames}))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1080x1920:fps=30,"
+              f"format=yuv420p,subtitles='{safe_ass}':fontsdir='{safe_font_dir}'")
+        cmd = [get_ffmpeg_path(), '-y']
+        is_image = bg_path.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))
+        if is_image:
+            cmd += ['-loop', '1', '-framerate', '30', '-i', bg_path]
+        else:
+            cmd += ['-stream_loop', '-1', '-i', bg_path]
+        if bgm_path:
+            cmd += ['-stream_loop', '-1', '-i', bgm_path]
+        else:
+            cmd += ['-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo']
+        cmd += ['-filter_complex', f"[0:v]{vf}[v]",
+                '-map', '[v]', '-map', '1:a',
+                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
+                '-c:a', 'aac', '-b:a', '128k',
+                '-movflags', '+faststart',
+                '-t', f"{duration_sec:.3f}",
+                '-threads', '0', output_path]
+        # _run_ffmpeg_zoom dipakai ulang: dukung force-stop + ping watchdog.
+        _run_ffmpeg_zoom(task_id, cmd, "FFmpeg Shorts Muse Error")
+        if not os.path.exists(output_path) or os.path.getsize(output_path) <= 0:
+            raise Exception("Hasil render Shorts Muse tidak ditemukan / 0 byte!")
+        return output_path
+    finally:
+        try: os.remove(ass_path)
+        except Exception: pass
+
 def background_worker():
     global channel_cooldowns
     while True:
@@ -1854,295 +2046,305 @@ def background_worker():
                         d['updated_at'] = time.time()  # 🔥 BARU: timestamp untuk watchdog stuck
             save_tasks_db()
 
-            # ============== AWAL BLOK SUMBER KONTEN (UPDATE) ==============
-            source_mode = task.get('source_mode', 'mix')
-            base_audio = os.path.join(BASE_UPLOAD, f"temp_a_{task_id}.mp3")
-            track_schedule = []
-            # 🔥 v1.2: lagu khusus dirender terpisah (bukan ikut playlist utama)
-            special_audio_path = None
-            special_duration_sec = 0.0
-            special_schedule = []
-
-            if source_mode == 'single_video':
-                # --- JALUR BARU: MODE VIDEO UTUH ---
-                with db_lock:
-                    for d in active_tasks:
-                        if d['id'] == task_id: d['status'] = "Mencari & Mengekstrak Audio dari Video... ⚙️"
-                save_tasks_db()
-
-                # Ambil dari folder khusus base_videos yang baru
-                base_videos_dir = get_channel_folder(yt_id, "base_videos")
-                video_paths = [os.path.join(base_videos_dir, f) for f in os.listdir(base_videos_dir) if f.lower().endswith(('.mp4', '.mov', '.webm', '.mkv'))]
-                if not video_paths: raise Exception("Gallery Video+Audio kosong! Upload MP4 sumber ke tab tersebut.")
-                
-                # 🔥 BARU: Jumlah video acak per final video (default 1 = perilaku lama)
-                vid_req = int(task.get('vid_per_video', 1))
-                vid_req = max(1, min(vid_req, len(video_paths)))
-                
-                # 🔥 BARU: Pilih N video acak BEDA untuk task ini (diacak ulang tiap render).
-                # Jadi kalau Final Video 30, masing-masing mendapat 5 video acak berbeda.
-                selected_videos = random.sample(video_paths, vid_req)
-                source_video = selected_videos[0]
-                bg_paths = [source_video] # Video pertama sebagai background utama
-                
-                # 🔥 BARU: Concat video utuh (video + audio + subtitle burned jadi satu).
-                # Karena subtitle sudah di-render permanen di dalam MP4, video digabung
-                # tanpa re-encode (copy) agar kualitas & subtitle tidak berubah.
-                if vid_req > 1:
-                    concat_txt = os.path.join(BASE_UPLOAD, f"temp_sv_{task_id}.txt")
-                    with open(concat_txt, 'w', encoding='utf-8') as f:
-                        for vp in selected_videos:
-                            safe_path = os.path.abspath(vp).replace('\\', '/').replace("'", "'\\''")
-                            f.write(f"file '{safe_path}'\n")
-                    merged_video = os.path.join(BASE_UPLOAD, f"temp_mv_{task_id}.mp4")
-                    try:
-                        subprocess.run([get_ffmpeg_path(), '-y', '-f', 'concat', '-safe', '0',
-                                        '-i', concat_txt, '-c', 'copy', merged_video],
-                                       check=True, capture_output=True)
-                    except subprocess.CalledProcessError:
-                        raise Exception("Gagal menggabungkan video acak! Pastikan semua video MP4 punya format/kodek sejenis (misal resolusi & fps sama).")
-                    try: os.remove(concat_txt)
-                    except: pass
-                else:
-                    merged_video = source_video # 1 video: pakai langsung tanpa concat
-                
-                # Ekstrak audio dari video gabungan ke temp_a.mp3 (untuk visualizer)
-                try:
-                    subprocess.run([get_ffmpeg_path(), '-y', '-i', merged_video, '-vn', '-q:a', '0', base_audio], check=True, capture_output=True)
-                except subprocess.CalledProcessError:
-                    raise Exception(f"Gagal ekstrak audio! Video gabungan mungkin tidak bersuara.")
-
-                probe = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', base_audio], capture_output=True, text=True, check=True)
-                try: base_duration_sec = float(probe.stdout.strip())
-                except: raise Exception("Gagal membaca durasi audio dari video utama!")
-
-                # 🔥 BARU: track_schedule berisi SEMUA video acak (urutan concat),
-                # supaya Floating Card berganti judul mengikuti nama file tiap segmen.
-                # Judul dibersihkan dari nomor depan, misal '06. Langkah Sabar.mp4' → 'Langkah Sabar'
-                current_sec = 0.0
-                for vp in selected_videos:
-                    probe_vp = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', vp], capture_output=True, text=True)
-                    try: dur_vp = float(probe_vp.stdout.strip())
-                    except: dur_vp = 0.0
-                    raw_title = os.path.splitext(os.path.basename(vp))[0]
-                    title_vid = re.sub(r'^\d+[\.\)\-\s]*', '', raw_title).strip() if raw_title else raw_title
-                    if not title_vid: title_vid = raw_title
-                    track_schedule.append({'title': title_vid, 'path': os.path.abspath(vp), 'start': current_sec, 'end': current_sec + dur_vp, 'duration': dur_vp})
-                    current_sec += dur_vp
-
-            else:
-                # --- JALUR LAMA: MODE KLASIK (MIX MP3) ---
-                audio_paths = get_all_audios(yt_id)
-                if not audio_paths: raise Exception("Gallery Audio Kosong!")
-                
-                mp3_req = int(task.get('mp3_per_video', 5))
-                mp3_count = min(mp3_req, len(audio_paths))
-                selected_audios = audio_paths[:mp3_count]
-
-                current_sec = 0.0
-                c_txt = os.path.join(BASE_UPLOAD, f"temp_c_{task_id}.txt")
-                
-                with open(c_txt, 'w', encoding='utf-8') as f:
-                    for ap in selected_audios:
-                        safe_path = os.path.abspath(ap).replace('\\', '/').replace("'", "'\\''")
-                        f.write(f"file '{safe_path}'\n")
-                        probe = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', ap], capture_output=True, text=True)
-                        try: dur = float(probe.stdout.strip())
-                        except: dur = 0.0
-                        
-                        # 🔥 PEMBERSIH JUDUL OTOMATIS (Audio MP3)
-                        raw_title = os.path.splitext(os.path.basename(ap))[0]
-                        title = re.sub(r'^\d+[\.\)\-\s]+', '', raw_title)
-                        title = re.sub(r'\(.*?\)|\[.*?\]', '', title).strip(' -_')
-                        if not title: title = raw_title
-                        
-                        track_schedule.append({'title': title, 'path': safe_path, 'start': current_sec, 'end': current_sec + dur, 'duration': dur})
-                        current_sec += dur
-
-                # 🔥 FIX v1.2: lagu khusus TIDAK ikut playlist utama lagi — dirender
-                # terpisah & ditempel PALING AKHIR (sebelumnya ikut playlist lalu kepotong
-                # -t target_sec / loop, makanya tidak pernah terdengar di akhir video).
-                if task.get('use_special_song'):
-                    # 🔥 UPDATE 6 Nov 2026: lagu khusus memakai MAKS 2 file pertama
-                    # (urut abjad), diputar berurutan di ujung video.
-                    sp_paths = get_special_songs(yt_id, count=2)
-                    if not sp_paths:
-                        raise Exception("Lagu khusus aktif tapi Gallery 'Lagu Khusus' kosong! Upload file MP3 dulu.")
-                    special_schedule = []
-                    _sp_offset = 0.0
-                    for _sp in sp_paths:
-                        probe_sp = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', _sp], capture_output=True, text=True)
-                        try: _dur_sp = float(probe_sp.stdout.strip())
-                        except: _dur_sp = 0.0
-                        if _dur_sp <= 0:
-                            raise Exception("Gagal membaca durasi lagu khusus!")
-                        raw_sp = os.path.splitext(os.path.basename(_sp))[0]
-                        title_sp = re.sub(r'^\d+[\.\)\-\s]+', '', raw_sp)
-                        title_sp = re.sub(r'\(.*?\)|\[.*?\]', '', title_sp).strip(' -_')
-                        if not title_sp: title_sp = raw_sp
-                        special_schedule.append({'title': title_sp, 'path': os.path.abspath(_sp), 'start': _sp_offset, 'end': _sp_offset + _dur_sp, 'duration': _dur_sp, 'special': True})
-                        _sp_offset += _dur_sp
-                    special_duration_sec = _sp_offset
-                    if len(sp_paths) == 1:
-                        special_audio_path = sp_paths[0]
-                    else:
-                        # Gabung lagu-lagu khusus jadi 1 file audio untuk segmen penutup
-                        sp_txt = os.path.join(BASE_UPLOAD, f"temp_spjoin_{task_id}.txt")
-                        with open(sp_txt, 'w') as _spf:
-                            for _sp in sp_paths:
-                                _spf.write(f"file '{os.path.abspath(_sp).replace(chr(92), '/')}'\n")
-                        special_audio_path = os.path.join(BASE_UPLOAD, f"temp_spaudio_{task_id}.mp3")
-                        subprocess.run([get_ffmpeg_path(), '-y', '-f', 'concat', '-safe', '0', '-i', sp_txt, '-c:a', 'libmp3lame', '-ar', '44100', special_audio_path], check=True)
-
-                subprocess.run([get_ffmpeg_path(), '-y', '-f', 'concat', '-safe', '0', '-i', c_txt, '-c:a', 'libmp3lame', '-ar', '44100', base_audio], check=True)
-
-                probe = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', base_audio], capture_output=True, text=True, check=True)
-                base_duration_sec = float(probe.stdout.strip())
-                
-                bg_count = int(task.get('bg_count', 1))
-                bg_paths = get_multi_backgrounds(yt_id, count=bg_count)
-                if not bg_paths: raise Exception("Gallery Background Kosong!")
-
-            if base_duration_sec <= 0: raise Exception("Durasi sumber media tidak valid!")
-
+            # 🔥 FASE 8: Shorts Muse — render vertikal 1080x1920 dari naskah +
+            # CTA (bukan kompilasi panjang). channel_data/ch_name dipindah
+            # ke sini karena dipakai juga setelah blok render (upload/notif).
             channel_data = next((c for c in database_channel if c['yt_id'] == yt_id), None)
             ch_name = channel_data['name'] if channel_data else "Ziqva Muse Bot FM"
-            # ============== AKHIR BLOK SUMBER KONTEN (UPDATE) ==============raise Exception("Gallery Background Kosong!")
+            if (task.get('kind') == SHORTS_MUSE_KIND):
+                with db_lock:
+                    for d in active_tasks:
+                        if d['id'] == task_id: d['status'] = "Merender Shorts Muse... 📱"
+                save_tasks_db()
+                final_video = render_shorts_muse_core(task_id, task, yt_id)
+            else:
+                # ============== AWAL BLOK SUMBER KONTEN (UPDATE) ==============
+                source_mode = task.get('source_mode', 'mix')
+                base_audio = os.path.join(BASE_UPLOAD, f"temp_a_{task_id}.mp3")
+                track_schedule = []
+                # 🔥 v1.2: lagu khusus dirender terpisah (bukan ikut playlist utama)
+                special_audio_path = None
+                special_duration_sec = 0.0
+                special_schedule = []
 
-            preset = task.get('vis_preset')
-            allowed_presets = task.get('vis_presets_allowed', [])
-            if task.get('vis_mode') == 'random' or preset == 'random':
-                preset = get_random_preset(allowed_presets)
-            if not isinstance(preset, dict):
-                preset = {"color_bot": "#00d4ff", "color_top": "#7c5cfc", "color_part": "#ffffff", 
-                         "pos_x": 50, "pos_y": 85, "width_pct": 60, "max_height": 40, "idle_height": 5, 
-                         "bar_count": 64, "reactivity": 0.66, "gravity": 0.08, "spacing": 3, 
-                         "part_amount": 3, "part_speed": 1.0, "bar_style": "bottom"}
+                if source_mode == 'single_video':
+                    # --- JALUR BARU: MODE VIDEO UTUH ---
+                    with db_lock:
+                        for d in active_tasks:
+                            if d['id'] == task_id: d['status'] = "Mencari & Mengekstrak Audio dari Video... ⚙️"
+                    save_tasks_db()
 
-            preset['yt_id'] = yt_id
-            preset['use_floating_card'] = task.get('use_floating_card', False)
-            preset['track_schedule'] = track_schedule
-            preset['channel_name'] = ch_name
-            preset['source_mode'] = source_mode
-            # 🔥 BARU: mode overlay file — render Python dilewati, overlay ditempel via ffmpeg
-            preset['overlay_mode'] = (task.get('vis_mode') == 'overlay')
-            # 🔥 BARU v1.5: mode Zoom Saja — render 100% FFmpeg, tanpa visualizer Python
-            preset['zoom_mode'] = (task.get('vis_mode') == 'zoom')
-            try: preset['zoom_pct'] = float(task.get('vis_zoom_pct', 10) or 10)
-            except Exception: preset['zoom_pct'] = 10.0
+                    # Ambil dari folder khusus base_videos yang baru
+                    base_videos_dir = get_channel_folder(yt_id, "base_videos")
+                    video_paths = [os.path.join(base_videos_dir, f) for f in os.listdir(base_videos_dir) if f.lower().endswith(('.mp4', '.mov', '.webm', '.mkv'))]
+                    if not video_paths: raise Exception("Gallery Video+Audio kosong! Upload MP4 sumber ke tab tersebut.")
+                
+                    # 🔥 BARU: Jumlah video acak per final video (default 1 = perilaku lama)
+                    vid_req = int(task.get('vid_per_video', 1))
+                    vid_req = max(1, min(vid_req, len(video_paths)))
+                
+                    # 🔥 BARU: Pilih N video acak BEDA untuk task ini (diacak ulang tiap render).
+                    # Jadi kalau Final Video 30, masing-masing mendapat 5 video acak berbeda.
+                    selected_videos = random.sample(video_paths, vid_req)
+                    source_video = selected_videos[0]
+                    bg_paths = [source_video] # Video pertama sebagai background utama
+                
+                    # 🔥 BARU: Concat video utuh (video + audio + subtitle burned jadi satu).
+                    # Karena subtitle sudah di-render permanen di dalam MP4, video digabung
+                    # tanpa re-encode (copy) agar kualitas & subtitle tidak berubah.
+                    if vid_req > 1:
+                        concat_txt = os.path.join(BASE_UPLOAD, f"temp_sv_{task_id}.txt")
+                        with open(concat_txt, 'w', encoding='utf-8') as f:
+                            for vp in selected_videos:
+                                safe_path = os.path.abspath(vp).replace('\\', '/').replace("'", "'\\''")
+                                f.write(f"file '{safe_path}'\n")
+                        merged_video = os.path.join(BASE_UPLOAD, f"temp_mv_{task_id}.mp4")
+                        try:
+                            subprocess.run([get_ffmpeg_path(), '-y', '-f', 'concat', '-safe', '0',
+                                            '-i', concat_txt, '-c', 'copy', merged_video],
+                                           check=True, capture_output=True)
+                        except subprocess.CalledProcessError:
+                            raise Exception("Gagal menggabungkan video acak! Pastikan semua video MP4 punya format/kodek sejenis (misal resolusi & fps sama).")
+                        try: os.remove(concat_txt)
+                        except: pass
+                    else:
+                        merged_video = source_video # 1 video: pakai langsung tanpa concat
+                
+                    # Ekstrak audio dari video gabungan ke temp_a.mp3 (untuk visualizer)
+                    try:
+                        subprocess.run([get_ffmpeg_path(), '-y', '-i', merged_video, '-vn', '-q:a', '0', base_audio], check=True, capture_output=True)
+                    except subprocess.CalledProcessError:
+                        raise Exception(f"Gagal ekstrak audio! Video gabungan mungkin tidak bersuara.")
 
-            base_video = os.path.join(BASE_UPLOAD, f"temp_v_{task_id}.mp4")
-            final_video = os.path.join(BASE_DIR, f"static/final_{task_id}.mp4")
+                    probe = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', base_audio], capture_output=True, text=True, check=True)
+                    try: base_duration_sec = float(probe.stdout.strip())
+                    except: raise Exception("Gagal membaca durasi audio dari video utama!")
 
-            if stop_flags.get(task_id): raise Exception("Dibatalkan")
-            with db_lock:
-                for d in active_tasks:
-                    if d['id'] == task_id: d['status'] = "Rendering Base FFmpeg... ⚡"
-            save_tasks_db()
+                    # 🔥 BARU: track_schedule berisi SEMUA video acak (urutan concat),
+                    # supaya Floating Card berganti judul mengikuti nama file tiap segmen.
+                    # Judul dibersihkan dari nomor depan, misal '06. Langkah Sabar.mp4' → 'Langkah Sabar'
+                    current_sec = 0.0
+                    for vp in selected_videos:
+                        probe_vp = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', vp], capture_output=True, text=True)
+                        try: dur_vp = float(probe_vp.stdout.strip())
+                        except: dur_vp = 0.0
+                        raw_title = os.path.splitext(os.path.basename(vp))[0]
+                        title_vid = re.sub(r'^\d+[\.\)\-\s]*', '', raw_title).strip() if raw_title else raw_title
+                        if not title_vid: title_vid = raw_title
+                        track_schedule.append({'title': title_vid, 'path': os.path.abspath(vp), 'start': current_sec, 'end': current_sec + dur_vp, 'duration': dur_vp})
+                        current_sec += dur_vp
 
-            render_video_core(task_id, base_audio, bg_paths, base_video, base_duration_sec, preset,
-                            render_preset=task.get('render_preset', 'ultrafast'))
-            if stop_flags.get(task_id): raise Exception("Dibatalkan")
+                else:
+                    # --- JALUR LAMA: MODE KLASIK (MIX MP3) ---
+                    audio_paths = get_all_audios(yt_id)
+                    if not audio_paths: raise Exception("Gallery Audio Kosong!")
+                
+                    mp3_req = int(task.get('mp3_per_video', 5))
+                    mp3_count = min(mp3_req, len(audio_paths))
+                    selected_audios = audio_paths[:mp3_count]
 
-            target_hours = float(task.get('target_duration_hours', 1))
-            target_sec = target_hours * 3600
+                    current_sec = 0.0
+                    c_txt = os.path.join(BASE_UPLOAD, f"temp_c_{task_id}.txt")
+                
+                    with open(c_txt, 'w', encoding='utf-8') as f:
+                        for ap in selected_audios:
+                            safe_path = os.path.abspath(ap).replace('\\', '/').replace("'", "'\\''")
+                            f.write(f"file '{safe_path}'\n")
+                            probe = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', ap], capture_output=True, text=True)
+                            try: dur = float(probe.stdout.strip())
+                            except: dur = 0.0
+                        
+                            # 🔥 PEMBERSIH JUDUL OTOMATIS (Audio MP3)
+                            raw_title = os.path.splitext(os.path.basename(ap))[0]
+                            title = re.sub(r'^\d+[\.\)\-\s]+', '', raw_title)
+                            title = re.sub(r'\(.*?\)|\[.*?\]', '', title).strip(' -_')
+                            if not title: title = raw_title
+                        
+                            track_schedule.append({'title': title, 'path': safe_path, 'start': current_sec, 'end': current_sec + dur, 'duration': dur})
+                            current_sec += dur
 
-            # 🔥 FIX v1.2: lagu khusus ditempel PALING AKHIR, di luar loop/potong.
-            # Bagian utama dipotong ke (target - durasi lagu khusus), lalu segmen
-            # lagu khusus digabung di belakangnya — dijamin terdengar sampai habis.
-            has_special = bool(special_audio_path and special_duration_sec > 0)
-            main_target = target_sec - special_duration_sec if has_special else target_sec
-            if main_target < 0: main_target = 0.0
+                    # 🔥 FIX v1.2: lagu khusus TIDAK ikut playlist utama lagi — dirender
+                    # terpisah & ditempel PALING AKHIR (sebelumnya ikut playlist lalu kepotong
+                    # -t target_sec / loop, makanya tidak pernah terdengar di akhir video).
+                    if task.get('use_special_song'):
+                        # 🔥 UPDATE 6 Nov 2026: lagu khusus memakai MAKS 2 file pertama
+                        # (urut abjad), diputar berurutan di ujung video.
+                        sp_paths = get_special_songs(yt_id, count=2)
+                        if not sp_paths:
+                            raise Exception("Lagu khusus aktif tapi Gallery 'Lagu Khusus' kosong! Upload file MP3 dulu.")
+                        special_schedule = []
+                        _sp_offset = 0.0
+                        for _sp in sp_paths:
+                            probe_sp = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', _sp], capture_output=True, text=True)
+                            try: _dur_sp = float(probe_sp.stdout.strip())
+                            except: _dur_sp = 0.0
+                            if _dur_sp <= 0:
+                                raise Exception("Gagal membaca durasi lagu khusus!")
+                            raw_sp = os.path.splitext(os.path.basename(_sp))[0]
+                            title_sp = re.sub(r'^\d+[\.\)\-\s]+', '', raw_sp)
+                            title_sp = re.sub(r'\(.*?\)|\[.*?\]', '', title_sp).strip(' -_')
+                            if not title_sp: title_sp = raw_sp
+                            special_schedule.append({'title': title_sp, 'path': os.path.abspath(_sp), 'start': _sp_offset, 'end': _sp_offset + _dur_sp, 'duration': _dur_sp, 'special': True})
+                            _sp_offset += _dur_sp
+                        special_duration_sec = _sp_offset
+                        if len(sp_paths) == 1:
+                            special_audio_path = sp_paths[0]
+                        else:
+                            # Gabung lagu-lagu khusus jadi 1 file audio untuk segmen penutup
+                            sp_txt = os.path.join(BASE_UPLOAD, f"temp_spjoin_{task_id}.txt")
+                            with open(sp_txt, 'w') as _spf:
+                                for _sp in sp_paths:
+                                    _spf.write(f"file '{os.path.abspath(_sp).replace(chr(92), '/')}'\n")
+                            special_audio_path = os.path.join(BASE_UPLOAD, f"temp_spaudio_{task_id}.mp3")
+                            subprocess.run([get_ffmpeg_path(), '-y', '-f', 'concat', '-safe', '0', '-i', sp_txt, '-c:a', 'libmp3lame', '-ar', '44100', special_audio_path], check=True)
 
-            # --- render segmen lagu khusus (durasi pendek) ---
-            special_video = None
-            if has_special:
+                    subprocess.run([get_ffmpeg_path(), '-y', '-f', 'concat', '-safe', '0', '-i', c_txt, '-c:a', 'libmp3lame', '-ar', '44100', base_audio], check=True)
+
+                    probe = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', base_audio], capture_output=True, text=True, check=True)
+                    base_duration_sec = float(probe.stdout.strip())
+                
+                    bg_count = int(task.get('bg_count', 1))
+                    bg_paths = get_multi_backgrounds(yt_id, count=bg_count)
+                    if not bg_paths: raise Exception("Gallery Background Kosong!")
+
+                if base_duration_sec <= 0: raise Exception("Durasi sumber media tidak valid!")
+
+                # ============== AKHIR BLOK SUMBER KONTEN (UPDATE) ==============raise Exception("Gallery Background Kosong!")
+
+                preset = task.get('vis_preset')
+                allowed_presets = task.get('vis_presets_allowed', [])
+                if task.get('vis_mode') == 'random' or preset == 'random':
+                    preset = get_random_preset(allowed_presets)
+                if not isinstance(preset, dict):
+                    preset = {"color_bot": "#00d4ff", "color_top": "#7c5cfc", "color_part": "#ffffff", 
+                             "pos_x": 50, "pos_y": 85, "width_pct": 60, "max_height": 40, "idle_height": 5, 
+                             "bar_count": 64, "reactivity": 0.66, "gravity": 0.08, "spacing": 3, 
+                             "part_amount": 3, "part_speed": 1.0, "bar_style": "bottom"}
+
+                preset['yt_id'] = yt_id
+                preset['use_floating_card'] = task.get('use_floating_card', False)
+                preset['track_schedule'] = track_schedule
+                preset['channel_name'] = ch_name
+                preset['source_mode'] = source_mode
+                # 🔥 BARU: mode overlay file — render Python dilewati, overlay ditempel via ffmpeg
+                preset['overlay_mode'] = (task.get('vis_mode') == 'overlay')
+                # 🔥 BARU v1.5: mode Zoom Saja — render 100% FFmpeg, tanpa visualizer Python
+                preset['zoom_mode'] = (task.get('vis_mode') == 'zoom')
+                try: preset['zoom_pct'] = float(task.get('vis_zoom_pct', 10) or 10)
+                except Exception: preset['zoom_pct'] = 10.0
+
+                base_video = os.path.join(BASE_UPLOAD, f"temp_v_{task_id}.mp4")
+                final_video = os.path.join(BASE_DIR, f"static/final_{task_id}.mp4")
+
                 if stop_flags.get(task_id): raise Exception("Dibatalkan")
                 with db_lock:
                     for d in active_tasks:
-                        if d['id'] == task_id: d['status'] = "Rendering Lagu Khusus... 🎵"
+                        if d['id'] == task_id: d['status'] = "Rendering Base FFmpeg... ⚡"
                 save_tasks_db()
-                special_video = os.path.join(BASE_UPLOAD, f"temp_sp_{task_id}.mp4")
-                preset_sp = dict(preset); preset_sp['track_schedule'] = special_schedule
-                render_video_core(task_id, special_audio_path, bg_paths, special_video, special_duration_sec, preset_sp,
+
+                render_video_core(task_id, base_audio, bg_paths, base_video, base_duration_sec, preset,
                                 render_preset=task.get('render_preset', 'ultrafast'))
                 if stop_flags.get(task_id): raise Exception("Dibatalkan")
 
-            # --- loop/potong bagian utama ke main_target ---
-            loop_out = os.path.join(BASE_UPLOAD, f"temp_fm_{task_id}.mp4") if has_special else final_video
-            loop_count = math.ceil(main_target / base_duration_sec) if main_target > 0 else 0
+                target_hours = float(task.get('target_duration_hours', 1))
+                target_sec = target_hours * 3600
 
-            if loop_count > 1:
-                with db_lock:
-                    for d in active_tasks:
-                        if d['id'] == task_id: d['status'] = f"Auto-Looping {loop_count}x ke {target_hours} Jam... 🚀"
-                save_tasks_db()
+                # 🔥 FIX v1.2: lagu khusus ditempel PALING AKHIR, di luar loop/potong.
+                # Bagian utama dipotong ke (target - durasi lagu khusus), lalu segmen
+                # lagu khusus digabung di belakangnya — dijamin terdengar sampai habis.
+                has_special = bool(special_audio_path and special_duration_sec > 0)
+                main_target = target_sec - special_duration_sec if has_special else target_sec
+                if main_target < 0: main_target = 0.0
 
-                loop_txt = os.path.join(BASE_UPLOAD, f"loop_{task_id}.txt")
-                with open(loop_txt, 'w', encoding='utf-8') as f:
-                    for _ in range(loop_count):
-                        safe_path_vid = os.path.abspath(base_video).replace('\\', '/')
-                        f.write(f"file '{safe_path_vid}'\n")
+                # --- render segmen lagu khusus (durasi pendek) ---
+                special_video = None
+                if has_special:
+                    if stop_flags.get(task_id): raise Exception("Dibatalkan")
+                    with db_lock:
+                        for d in active_tasks:
+                            if d['id'] == task_id: d['status'] = "Rendering Lagu Khusus... 🎵"
+                    save_tasks_db()
+                    special_video = os.path.join(BASE_UPLOAD, f"temp_sp_{task_id}.mp4")
+                    preset_sp = dict(preset); preset_sp['track_schedule'] = special_schedule
+                    render_video_core(task_id, special_audio_path, bg_paths, special_video, special_duration_sec, preset_sp,
+                                    render_preset=task.get('render_preset', 'ultrafast'))
+                    if stop_flags.get(task_id): raise Exception("Dibatalkan")
 
-                if stop_flags.get(task_id): raise Exception("Dibatalkan")
+                # --- loop/potong bagian utama ke main_target ---
+                loop_out = os.path.join(BASE_UPLOAD, f"temp_fm_{task_id}.mp4") if has_special else final_video
+                loop_count = math.ceil(main_target / base_duration_sec) if main_target > 0 else 0
 
-                try:
-                    # Kembali ke concat tapi dengan pengaman timestamp (+genpts)
-                    subprocess.run([get_ffmpeg_path(), '-y', '-fflags', '+genpts', '-f', 'concat', '-safe', '0', '-i', loop_txt, '-c', 'copy', '-t', str(main_target), loop_out], check=True, capture_output=True, text=True)
-                except subprocess.CalledProcessError as e:
-                    # Ambil 6 baris terakhir agar error aslinya tidak tertutup statistik ukuran
-                    err_lines = e.stderr.strip().split('\n')
-                    real_err = " | ".join(err_lines[-6:])
-                    raise Exception(f"FFmpeg Concat Error: {real_err}")
-            elif main_target > 0:
-                if stop_flags.get(task_id): raise Exception("Dibatalkan")
+                if loop_count > 1:
+                    with db_lock:
+                        for d in active_tasks:
+                            if d['id'] == task_id: d['status'] = f"Auto-Looping {loop_count}x ke {target_hours} Jam... 🚀"
+                    save_tasks_db()
 
-                try:
-                    subprocess.run([get_ffmpeg_path(), '-y', '-i', base_video, '-c', 'copy', '-t', str(main_target), loop_out], check=True, capture_output=True, text=True)
-                except subprocess.CalledProcessError as e:
-                    err_lines = e.stderr.strip().split('\n')
-                    real_err = " | ".join(err_lines[-6:])
-                    raise Exception(f"FFmpeg Final Error: {real_err}")
+                    loop_txt = os.path.join(BASE_UPLOAD, f"loop_{task_id}.txt")
+                    with open(loop_txt, 'w', encoding='utf-8') as f:
+                        for _ in range(loop_count):
+                            safe_path_vid = os.path.abspath(base_video).replace('\\', '/')
+                            f.write(f"file '{safe_path_vid}'\n")
 
-            # --- gabung bagian utama + lagu khusus (lagu khusus PALING AKHIR) ---
-            if has_special:
-                if stop_flags.get(task_id): raise Exception("Dibatalkan")
-                with db_lock:
-                    for d in active_tasks:
-                        if d['id'] == task_id: d['status'] = "Menempel Lagu Khusus di Akhir... 🎵"
-                save_tasks_db()
-                try:
-                    if main_target > 0:
-                        join_txt = os.path.join(BASE_UPLOAD, f"temp_join_{task_id}.txt")
-                        with open(join_txt, 'w', encoding='utf-8') as f:
-                            for vp in [loop_out, special_video]:
-                                safe_vp = os.path.abspath(vp).replace('\\', '/')
-                                f.write(f"file '{safe_vp}'\n")
-                        subprocess.run([get_ffmpeg_path(), '-y', '-fflags', '+genpts', '-f', 'concat', '-safe', '0', '-i', join_txt, '-c', 'copy', final_video], check=True, capture_output=True, text=True)
-                    else:
-                        # Target lebih pendek dari lagu khusus: pakai lagu khusus saja (dipotong target)
-                        subprocess.run([get_ffmpeg_path(), '-y', '-i', special_video, '-c', 'copy', '-t', str(target_sec), final_video], check=True, capture_output=True, text=True)
-                except subprocess.CalledProcessError as e:
-                    err_lines = e.stderr.strip().split('\n')
-                    real_err = " | ".join(err_lines[-6:])
-                    raise Exception(f"FFmpeg Special-Song Error: {real_err}")
+                    if stop_flags.get(task_id): raise Exception("Dibatalkan")
 
-            # 🔥 BARU: mode overlay file — tempel visualizer via ffmpeg (cepat, tanpa render frame Python)
-            if task.get('vis_mode') == 'overlay':
-                ov_path = get_overlay_file(yt_id, task.get('vis_overlay_file'))
-                if not ov_path:
-                    raise Exception("Gallery Overlay kosong! Upload file visualizer (mp4/mov/webm) ke tab '✨ Overlay' dulu.")
-                if stop_flags.get(task_id): raise Exception("Dibatalkan")
-                with db_lock:
-                    for d in active_tasks:
-                        if d['id'] == task_id:
-                            d['status'] = "Menempel Overlay Visualizer... ✨"
-                            d['updated_at'] = time.time()
-                save_tasks_db()
-                apply_visual_overlay(task_id, final_video, ov_path,
-                                     size_pct=task.get('vis_overlay_size', 60),
-                                     key_color=task.get('vis_overlay_key', 'none'),
-                                     render_preset=task.get('render_preset', 'ultrafast'))
+                    try:
+                        # Kembali ke concat tapi dengan pengaman timestamp (+genpts)
+                        subprocess.run([get_ffmpeg_path(), '-y', '-fflags', '+genpts', '-f', 'concat', '-safe', '0', '-i', loop_txt, '-c', 'copy', '-t', str(main_target), loop_out], check=True, capture_output=True, text=True)
+                    except subprocess.CalledProcessError as e:
+                        # Ambil 6 baris terakhir agar error aslinya tidak tertutup statistik ukuran
+                        err_lines = e.stderr.strip().split('\n')
+                        real_err = " | ".join(err_lines[-6:])
+                        raise Exception(f"FFmpeg Concat Error: {real_err}")
+                elif main_target > 0:
+                    if stop_flags.get(task_id): raise Exception("Dibatalkan")
+
+                    try:
+                        subprocess.run([get_ffmpeg_path(), '-y', '-i', base_video, '-c', 'copy', '-t', str(main_target), loop_out], check=True, capture_output=True, text=True)
+                    except subprocess.CalledProcessError as e:
+                        err_lines = e.stderr.strip().split('\n')
+                        real_err = " | ".join(err_lines[-6:])
+                        raise Exception(f"FFmpeg Final Error: {real_err}")
+
+                # --- gabung bagian utama + lagu khusus (lagu khusus PALING AKHIR) ---
+                if has_special:
+                    if stop_flags.get(task_id): raise Exception("Dibatalkan")
+                    with db_lock:
+                        for d in active_tasks:
+                            if d['id'] == task_id: d['status'] = "Menempel Lagu Khusus di Akhir... 🎵"
+                    save_tasks_db()
+                    try:
+                        if main_target > 0:
+                            join_txt = os.path.join(BASE_UPLOAD, f"temp_join_{task_id}.txt")
+                            with open(join_txt, 'w', encoding='utf-8') as f:
+                                for vp in [loop_out, special_video]:
+                                    safe_vp = os.path.abspath(vp).replace('\\', '/')
+                                    f.write(f"file '{safe_vp}'\n")
+                            subprocess.run([get_ffmpeg_path(), '-y', '-fflags', '+genpts', '-f', 'concat', '-safe', '0', '-i', join_txt, '-c', 'copy', final_video], check=True, capture_output=True, text=True)
+                        else:
+                            # Target lebih pendek dari lagu khusus: pakai lagu khusus saja (dipotong target)
+                            subprocess.run([get_ffmpeg_path(), '-y', '-i', special_video, '-c', 'copy', '-t', str(target_sec), final_video], check=True, capture_output=True, text=True)
+                    except subprocess.CalledProcessError as e:
+                        err_lines = e.stderr.strip().split('\n')
+                        real_err = " | ".join(err_lines[-6:])
+                        raise Exception(f"FFmpeg Special-Song Error: {real_err}")
+
+                # 🔥 BARU: mode overlay file — tempel visualizer via ffmpeg (cepat, tanpa render frame Python)
+                if task.get('vis_mode') == 'overlay':
+                    ov_path = get_overlay_file(yt_id, task.get('vis_overlay_file'))
+                    if not ov_path:
+                        raise Exception("Gallery Overlay kosong! Upload file visualizer (mp4/mov/webm) ke tab '✨ Overlay' dulu.")
+                    if stop_flags.get(task_id): raise Exception("Dibatalkan")
+                    with db_lock:
+                        for d in active_tasks:
+                            if d['id'] == task_id:
+                                d['status'] = "Menempel Overlay Visualizer... ✨"
+                                d['updated_at'] = time.time()
+                    save_tasks_db()
+                    apply_visual_overlay(task_id, final_video, ov_path,
+                                         size_pct=task.get('vis_overlay_size', 60),
+                                         key_color=task.get('vis_overlay_key', 'none'),
+                                         render_preset=task.get('render_preset', 'ultrafast'))
 
             # 🔥 FASE 3: channel dijeda saat render berjalan → jangan upload.
             # Task tetap aktif berstatus Dijeda; saat dilanjutkan ia akan
@@ -2205,8 +2407,11 @@ def background_worker():
                         
                             if not tags_list: tags_list = ['wavepush']
                         
+                            # 🔥 FASE 8: Shorts Muse masuk kategori Hiburan (24)
+                            # seperti Clipper; video panjang tetap Musik (10).
+                            _cat = '24' if task.get('kind') == SHORTS_MUSE_KIND else '10'
                             body = {
-                                'snippet': {'title': task['title'], 'description': task.get('description', ''), 'tags': tags_list, 'categoryId': '10'},
+                                'snippet': {'title': task['title'], 'description': task.get('description', ''), 'tags': tags_list, 'categoryId': _cat},
                                 'status': {'privacyStatus': task.get('privacy', 'public')}
                             }
                             if sch_obj > datetime.now():
@@ -2270,7 +2475,9 @@ def background_worker():
                             except Exception:
                                 pass
 
-                            thumb_path = get_and_consume_thumbnail(yt_id)
+                            # 🔥 FASE 8: Shorts tidak memakai thumbnail 16:9 —
+                            # YouTube Shorts memakai frame video sebagai sampul.
+                            thumb_path = None if task.get('kind') == SHORTS_MUSE_KIND else get_and_consume_thumbnail(yt_id)
                             if thumb_path and os.path.exists(thumb_path):
                                 try:
                                     with db_lock:
@@ -2301,7 +2508,8 @@ def background_worker():
                                     youtube.playlistItems().insert(part='snippet', body={'snippet': {'playlistId': task['playlist_id'], 'resourceId': {'kind': 'youtube#video', 'videoId': video_id}}}).execute()
                             except: pass
                             move_to_history(task_id, f"Tayang! ✅ <a href='https://youtu.be/{video_id}' target='_blank'>[Lihat]</a>")
-                            notify_event("✅", task['title'], f"udah tayang di YouTube {ch_name} 😎\nJadwal tayang: {task['publish_date']}")
+                            _shorts_pfx = "📱 Shorts " if task.get('kind') == SHORTS_MUSE_KIND else ""
+                            notify_event("✅", task['title'], f"{_shorts_pfx}udah tayang di YouTube {ch_name} 😎\nJadwal tayang: {task['publish_date']}")
                             upload_berhasil = True
                             # 🔥 FASE 5: 1 sukses → reset hitungan gagal beruntun.
                             _record_channel_success(yt_id)
@@ -3151,7 +3359,18 @@ def run_qc_checks(task, video_path, yt_id):
     if size <= 0:
         failures.append("ukuran file video 0 byte")
         return failures
-    if size < QC_MIN_FILE_BYTES:
+    # 🔥 FASE 8: ambang ukuran untuk Shorts diskalakan dengan durasi —
+    # short 5 detik gambar statis + tanpa musik yang sah cuma ~50 KB,
+    # jadi ambang 100 KB milik video 60–80 menit akan menolaknya sia-sia.
+    if task.get('kind') == SHORTS_MUSE_KIND:
+        try:
+            _tgt = float(task.get('shorts_duration_sec') or 30)
+        except Exception:
+            _tgt = 30.0
+        min_bytes = max(10_000, int(_tgt * 5_000))
+    else:
+        min_bytes = QC_MIN_FILE_BYTES
+    if size < min_bytes:
         failures.append(f"ukuran file terlalu kecil ({size // 1024} KB)")
     probe = _probe_video(video_path)
     if probe is None:
@@ -3176,21 +3395,39 @@ def run_qc_checks(task, video_path, yt_id):
         dur = float((probe.get('format') or {}).get('duration') or 0)
     except Exception:
         dur = 0.0
-    try:
-        target = float(task.get('target_duration_hours', 1)) * 3600
-    except Exception:
-        target = 0.0
+    # 🔥 FASE 8: Shorts Muse targetnya detik (15/30/60), bukan jam —
+    # toleransi 3 detik (atau 10%) supaya QC tetap bermakna untuk video
+    # pendek (toleransi 120 detik milik Factory akan meloloskan apa saja).
+    if task.get('kind') == SHORTS_MUSE_KIND:
+        try:
+            target = float(task.get('shorts_duration_sec') or 30)
+        except Exception:
+            target = 30.0
+        tol = max(3.0, 0.10 * target)
+    else:
+        try:
+            target = float(task.get('target_duration_hours', 1)) * 3600
+        except Exception:
+            target = 0.0
+        tol = max(QC_DURATION_TOLERANCE_SEC, 0.05 * target)
     if dur <= 0:
         failures.append("durasi video tidak terbaca (0 detik)")
     elif target > 0:
-        tol = max(QC_DURATION_TOLERANCE_SEC, 0.05 * target)
         if abs(dur - target) > tol:
-            failures.append(
-                f"durasi {int(dur // 60)} mnt, target {int(target // 60)} mnt "
-                f"(selisih > {int(tol // 60)} mnt)")
+            if target < 120:
+                failures.append(
+                    f"durasi {dur:.1f} dtk, target {target:g} dtk "
+                    f"(selisih > {tol:g} dtk)")
+            else:
+                failures.append(
+                    f"durasi {int(dur // 60)} mnt, target {int(target // 60)} mnt "
+                    f"(selisih > {int(tol // 60)} mnt)")
     # --- (c) audio ada & tidak hening ---
     if not astreams:
         failures.append("tidak ada stream audio")
+    elif task.get('kind') == SHORTS_MUSE_KIND and task.get('shorts_no_music'):
+        # 🔥 FASE 8: Shorts tanpa musik disengaja (trek hening) — bukan cacat.
+        pass
     else:
         mean_db = _audio_mean_volume_db(video_path)
         if mean_db is not None and (mean_db == float('-inf')
@@ -3405,10 +3642,23 @@ def _ensure_disk_for_render(task):
               flush=True)
         return None
     return (f"Disk Penuh — sisa {free / 1024 ** 3:.1f} GB, "
-            f"butuh ≥ {need / 1024 ** 3:.1f} GB untuk render {target_hours:g} jam. "
+            f"butuh ≥ {need / 1024 ** 3:.1f} GB untuk render "
+            f"{_shorts_muse_dur_label(target_hours)}. "
             f"Saya udah bersih-bersih {cleaned_n} file ({cleaned_b / 1024 ** 2:.0f} MB) "
             f"tapi masih kurang {(need - free) / 1024 ** 3:.1f} GB 😅 "
             f"Hapus file lama / tambah disk dulu ya Bos, terus pencet Retry 💪")
+
+
+def _shorts_muse_dur_label(target_hours):
+    """Label durasi untuk pesan disk: Shorts (< 2 menit) tampil dalam
+    detik, Factory tampil dalam jam — supaya tidak muncul '0.008 jam'."""
+    try:
+        secs = float(target_hours) * 3600
+    except Exception:
+        return f"{target_hours} jam"
+    if secs < 120:
+        return f"{secs:g} detik"
+    return f"{target_hours:g} jam"
 
 
 def disk_cleanup_loop():
@@ -4339,7 +4589,9 @@ def _send_approval_previews(batch_id, channel_name, previews):
             f"📺 Channel: *{_tg_escape(channel_name)}*\n"
             f"🎬 Judul: *{_tg_escape(pv.get('title', '?'))}*\n"
             f"🗓️ Jadwal publish: `{_tg_escape(pv.get('publish_date', '-'))}`\n"
-            f"⏱️ Durasi target: `{pv.get('duration', '-')} jam` • 🔒 `{_tg_escape(pv.get('privacy', 'public'))}`\n"
+            # 🔥 FASE 8: preview Shorts membawa duration_label ("30 detik
+            # (Shorts)") supaya tidak tampil "0.008333333333333333 jam".
+            f"⏱️ Durasi target: `{pv.get('duration_label') or str(pv.get('duration', '-')) + ' jam'}` • 🔒 `{_tg_escape(pv.get('privacy', 'public'))}`\n"
             f"📝 Deskripsi: {desc_txt}"
         )
         if idx == 0:
@@ -4386,6 +4638,152 @@ def _stagger_publish_date(v_date_str, yt_id):
         dt = dt + timedelta(hours=1)
         v_date_str = dt.strftime('%Y-%m-%d %H:%M')
     return v_date_str
+
+# ============================================================
+# 🔥 FASE 8: SHORTS MUSE — buat short dari naskah + CTA
+# ============================================================
+@app.route('/api/shorts_muse_create', methods=['POST'])
+def shorts_muse_create():
+    """Buat SATU Shorts Muse. Alurnya SAMA seperti batch_create (bukan
+    jalur paralel): stagger jam (Fase 6), autopilot auto vs approval
+    (Fase 6/2), dijeda → ditahan (Fase 3), lalu worker yang sama
+    (disk → render vertikal → QC → upload → kuota). Privacy dipaksa
+    'private' seperti Clipper — owner yang mengubahnya di YouTube.
+    Butuh login panel (route TIDAK masuk allowed_routes)."""
+    data = request.get_json(silent=True) or {}
+    yt_id = (data.get('yt_id') or '').strip()
+    title = (data.get('title') or '').strip()
+    if not yt_id or not title:
+        return jsonify({"status": "error", "message": "Channel dan judul wajib diisi."}), 400
+    channel_rec = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+    if channel_rec is None:
+        return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
+    hook = (data.get('hook') or '').strip()
+    script = (data.get('script') or '').strip()
+    if not hook and not script:
+        return jsonify({"status": "error", "message": "Isi Hook atau Naskah — salah satunya wajib ada."}), 400
+    cta_text = (data.get('cta') or SHORTS_MUSE_DEFAULT_CTA).strip() or SHORTS_MUSE_DEFAULT_CTA
+    try:
+        duration_sec = int(float(data.get('duration_sec') or 30))
+    except Exception:
+        duration_sec = 30
+    duration_sec = max(SHORTS_MUSE_MIN_SEC, min(SHORTS_MUSE_MAX_SEC, duration_sec))
+    try:
+        pub_dt = datetime.strptime(data.get('publish_date', ''), '%Y-%m-%dT%H:%M')
+    except Exception:
+        try:
+            pub_dt = datetime.strptime(data.get('publish_date', ''), '%Y-%m-%d %H:%M')
+        except Exception:
+            return jsonify({"status": "error", "message": "Format tanggal salah (pakai YYYY-MM-DD HH:MM)."}), 400
+    v_date_str = _stagger_publish_date(pub_dt.strftime('%Y-%m-%d %H:%M'), yt_id)
+    text_color = (data.get('text_color') or '#FFFFFF').strip()
+    if not re.fullmatch(r'#[0-9A-Fa-f]{6}', text_color):
+        text_color = '#FFFFFF'
+    bg_file = (data.get('bg_file') or '').strip()
+    if bg_file:
+        bg_path = os.path.join(get_channel_folder(yt_id, "backgrounds"), os.path.basename(bg_file))
+        if not os.path.isfile(bg_path):
+            return jsonify({"status": "error", "message": f"Background '{bg_file}' tidak ditemukan di galeri channel."}), 400
+    bgm_file = (data.get('bgm_file') or '').strip()
+    if bgm_file and bgm_file.lower() != 'none':
+        bgm_path = os.path.join(get_channel_folder(yt_id, "audios"), os.path.basename(bgm_file))
+        if not os.path.isfile(bgm_path):
+            return jsonify({"status": "error", "message": f"Musik '{bgm_file}' tidak ditemukan di galeri channel."}), 400
+    else:
+        bgm_file = 'none'
+    description = (data.get('description') or '').strip()
+    if not description:
+        # Deskripsi otomatis dari naskah (QC Fase 5 mewajibkan deskripsi
+        # tidak kosong) — dipotong aman di bawah batas 5000 karakter YT.
+        auto_desc = ' '.join(x for x in [hook, script] if x)
+        description = (auto_desc[:900] + ('…' if len(auto_desc) > 900 else '')) or title
+        if cta_text:
+            description += f"\n\n{cta_text}"
+    tags = (data.get('tags') or '').strip() or '#shorts'
+
+    # ID milidetik (bukan detik seperti batch_create) supaya klik ganda
+    # dalam satu detik tidak membuat dua task dengan ID yang sama.
+    t_id = int(time.time() * 1000)
+    batch_id = f"sm{t_id}"
+    channel_name = channel_rec.get('name', yt_id)
+    auto_mode = _autopilot_of(channel_rec) == 'auto'
+    channel_paused = _channel_paused(yt_id)
+    blueprint = {
+        "id": t_id, "yt_id": yt_id, "title": title,
+        "publish_date": v_date_str,
+        "kind": SHORTS_MUSE_KIND,
+        "shorts_duration_sec": duration_sec,
+        "shorts_hook": hook, "shorts_script": script, "shorts_cta": cta_text,
+        "shorts_bg": bg_file, "shorts_bgm": bgm_file,
+        "shorts_text_color": text_color,
+        # target_duration_hours dipakai estimasi disk & QC lama — isi dari
+        # durasi detik supaya keduanya tetap konsisten.
+        "target_duration_hours": duration_sec / 3600.0,
+        "description": description, "tags": tags,
+        "privacy": "private", "playlist_id": "",
+        "render_preset": "ultrafast",
+        "source_mode": "mix",
+        "batch_id": batch_id,
+    }
+    with db_lock:
+        active_tasks.append({
+            "id": t_id, "yt_id": yt_id, "title": title,
+            "time": v_date_str,
+            "status": (CHANNEL_PAUSED_STATUS if channel_paused else "Menunggu Giliran (Queue) ⏳") if auto_mode else APPROVAL_PENDING_STATUS,
+            "approval": "approved" if auto_mode else "pending",
+            "batch_id": batch_id,
+            "kind": SHORTS_MUSE_KIND,
+            "type": "📱 Shorts Muse",
+            "blueprint": blueprint,
+        })
+        for c in database_channel:
+            if c['yt_id'] == yt_id:
+                c['last_scheduled_date'] = v_date_str
+                c['reminder_sent'] = False
+                break
+        save_channels(database_channel)
+    save_tasks_db()
+
+    if auto_mode:
+        if not channel_paused:
+            try:
+                queue_put(blueprint)
+            except Exception as e:
+                return jsonify({"status": "error", "message": f"Gagal masuk antrean: {e}"}), 500
+        return jsonify({"status": "success", "message": "Shorts Muse dibuat dan langsung masuk antrean (mode Full-Auto)!", "task_id": t_id})
+    preview = {"id": t_id, "title": title, "publish_date": v_date_str,
+               "duration_label": f"{duration_sec} detik (Shorts Muse)",
+               "description": description, "privacy": "private"}
+    threading.Thread(target=_send_approval_previews,
+                     args=(batch_id, channel_name, [preview]), daemon=True).start()
+    return jsonify({"status": "success", "message": "Shorts Muse dibuat dan menunggu approval di Telegram!", "task_id": t_id})
+
+
+@app.route('/api/get_shorts_muse')
+def get_shorts_muse():
+    """Daftar Shorts Muse (aktif + riwayat) untuk panel — butuh login.
+    Dipakai kartu daftar di panel Shorts Muse."""
+    out = []
+    for t in list(active_tasks) + list(history_tasks):
+        bp = t.get('blueprint') or {}
+        if t.get('kind') != SHORTS_MUSE_KIND and bp.get('kind') != SHORTS_MUSE_KIND:
+            continue
+        ch = next((c for c in database_channel if c.get('yt_id') == (t.get('yt_id') or bp.get('yt_id'))), None)
+        out.append({
+            "id": t.get('id'), "title": t.get('title', '?'),
+            "yt_id": t.get('yt_id') or bp.get('yt_id'),
+            "channel": ch.get('name', '') if ch else '',
+            "publish_date": t.get('time') or bp.get('publish_date', ''),
+            "duration_sec": bp.get('shorts_duration_sec'),
+            "cta": bp.get('shorts_cta', ''),
+            "status": t.get('status', ''),
+            "approval": _approval_of(t),
+            "video_id": t.get('video_id'),
+            "video_url": t.get('video_url'),
+        })
+    out.sort(key=lambda x: str(x.get('publish_date') or ''), reverse=True)
+    return jsonify({"status": "success", "shorts": out})
+
 
 @app.route('/api/batch_create', methods=['POST'])
 def batch_create():

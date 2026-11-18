@@ -21,7 +21,7 @@ from core.resource_gate import acquire_resource, release_resource
 def auto_setup_dependencies():
     ffmpeg_found = shutil.which("ffmpeg") or os.path.exists("/usr/bin/ffmpeg")
     if not ffmpeg_found:
-        print("⚙️ PABRIK KONTEN: ffmpeg tidak ditemukan, mencoba install otomatis...")
+        print("⚙️ ZIQVA MUSE BOT: ffmpeg tidak ditemukan, mencoba install otomatis...")
         ret = os.system("apt-get update -qq && apt-get install -y ffmpeg")
         if ret == 0: print("✅ ffmpeg berhasil diinstall!")
         else: print("❌ Gagal install ffmpeg otomatis. Jalankan manual: apt-get install -y ffmpeg")
@@ -221,7 +221,7 @@ def startup_sanitizer():
     except Exception:
         pass
     if notifs:
-        send_tg_message("🛡️ *Pabrik Konten Startup Sanitizer*\n" + "\n".join(notifs) + "\n\n✅ Aplikasi siap, antrean dilanjutkan otomatis.")
+        send_tg_message("🛡️ *Ziqva Muse Bot Startup Sanitizer*\n" + "\n".join(notifs) + "\n\n✅ Aplikasi siap, antrean dilanjutkan otomatis.")
 
 def queue_watchdog_worker():
     """🔥 BARU: Watchdog antrean — task stuck 'Rendering...' > 30 menit otomatis digagalkan
@@ -289,7 +289,7 @@ def telegram_status_report_worker():
             events = tg_event_queue[:MAX_FLUSH]
             tg_event_queue = tg_event_queue[MAX_FLUSH:]
             last_flush = time.time()
-            msg = "🔔 *Pabrik Konten — Laporan Kejadian*\n\n" + "\n\n".join(events)
+            msg = "🔔 *Ziqva Muse Bot — Laporan Kejadian*\n\n" + "\n\n".join(events)
             try: send_tg_message(msg)
             except Exception: pass
 
@@ -1823,7 +1823,7 @@ def background_worker():
             if base_duration_sec <= 0: raise Exception("Durasi sumber media tidak valid!")
 
             channel_data = next((c for c in database_channel if c['yt_id'] == yt_id), None)
-            ch_name = channel_data['name'] if channel_data else "Pabrik Konten FM"
+            ch_name = channel_data['name'] if channel_data else "Ziqva Muse Bot FM"
             # ============== AKHIR BLOK SUMBER KONTEN (UPDATE) ==============raise Exception("Gallery Background Kosong!")
 
             preset = task.get('vis_preset')
@@ -2885,7 +2885,7 @@ def telegram_reminder_worker():
                     
                     # Jika sisa waktu <= 24 Jam (dan belum kelewat jauh)
                     if timedelta(hours=0) < time_diff <= timedelta(hours=24):
-                        msg = f"⚠️ Notifikasi Pabrik Konten\n\nChannel: *{c['name']}*\nStok jadwal video hampir habis!\nJadwal terakhir: {last_date_str}\n\nWaktunya buat video baru, Bos K!"
+                        msg = f"⚠️ Notifikasi Ziqva Muse Bot\n\nChannel: *{c['name']}*\nStok jadwal video hampir habis!\nJadwal terakhir: {last_date_str}\n\nWaktunya buat video baru, Bos K!"
                         try:
                             # Kirim pesan ke Telegram
                             requests.post(
@@ -2953,7 +2953,7 @@ def save_telegram():
         try:
             requests.post(
                 f"https://api.telegram.org/bot{bot_config['tg_token']}/sendMessage", 
-                json={"chat_id": bot_config['tg_chat_id'], "text": "✅ Pabrik Konten: Notifikasi Telegram berhasil dihubungkan!"}
+                json={"chat_id": bot_config['tg_chat_id'], "text": "✅ Ziqva Muse Bot: Notifikasi Telegram berhasil dihubungkan!"}
             )
         except: 
             pass
@@ -3027,7 +3027,7 @@ active_tasks = [t for t in tasks_to_keep if "Dibatalkan" not in t['status']]
 save_tasks_db()
     
 startup_sanitizer()
-send_tg_message("🚀 *Pabrik Konten aktif kembali*\nTask dilanjutkan otomatis. "
+send_tg_message("🚀 *Ziqva Muse Bot aktif kembali*\nTask dilanjutkan otomatis. "
                 f"Antrean: {len(active_tasks)} | Riwayat: {len(history_tasks)}")
 
 if __name__ == '__main__':

@@ -2748,6 +2748,263 @@ def get_video_stats():
         "subs_note": "Subscriber per video tidak tersedia via YouTube Data API — butuh scope YouTube Analytics (token saat ini tidak memilikinya). Subs channel ada di statistik channel di atas.",
     })
 
+# ==========================================
+# 🔁 FASE 7 LINGKARAN ANALITIK OTOMATIS
+# ==========================================
+# Membaca statistik per video (Fase 4: cache + snapshot harian) lalu
+# menaikkan bobot judul bank yang menang dan menurunkan yang sepi — otomatis,
+# tapi dengan rem yang jelas:
+#  - bobot tidak pernah 0 (min 0.3, maks 2.0) — judul yang sepi tetap
+#    sesekali terpilih supaya bisa pulih; judul TIDAK PERNAH dihapus bank;
+#  - hanya batch BARU yang terpengaruh (judul dipilih di panel saat
+#    generateOneTitle memakai bobot dari /api/get_channels);
+#  - semua penyesuaian dicatat di formula_log channel dan bisa di-reset
+#    satu tombol (/api/reset_formula_weights).
+# Skor per video = views/hari sejak tayang (video baru tidak langsung kalah
+# dengan video lama) + bonus ringan likes/komentar. Formula = entri bank
+# judul persis (judul di riwayat adalah entri bank yang dipilih saat batch).
+# Durasi target hanya dilaporkan sebagai wawasan, tidak diubah otomatis
+# (tidak ada data tema/lagu per video di riwayat — tidak dikarang).
+FORMULA_MIN_VIDEOS = 3           # min video ternilai per channel sebelum tune
+FORMULA_MIN_AGE_DAYS = 1         # video yang tayang hari ini belum dinilai
+FORMULA_WEIGHT_MIN = 0.3
+FORMULA_WEIGHT_MAX = 2.0
+FORMULA_WEIGHT_CHANGE_MIN = 0.1  # perubahan di bawah ini dianggap noise
+FORMULA_SIGNIFICANT = 0.5        # perubahan >= ini memicu notifikasi Telegram
+FORMULA_LOG_MAX = 20
+
+def _formula_pub_date(task, stats):
+    """Tanggal tayang video (WIB): published_at API, lalu finished_date, lalu publish_date."""
+    return (stats or {}).get('published_at', '')[:10] or task.get('finished_date') or (task.get('publish_date') or '')[:10]
+
+def _formula_scored_videos():
+    """Video tayang yang punya statistik cache + umur >= 1 hari, per yt_id.
+    Kembalikan {yt_id: [{video_id, title, views, likes, comments, age_days,
+    views_per_day, score, duration_min, publish_date}]}."""
+    cache = _load_video_stats_cache()
+    cached = cache.get('videos', {})
+    today = _wib_now().date()
+    out = {}
+    for t in history_tasks:
+        vid = _history_task_video_id(t)
+        if not vid:
+            continue
+        if "Tayang" not in str(t.get('status', '')) and not t.get('video_id'):
+            continue
+        yt_id = _history_task_yt_id(t)
+        if not yt_id:
+            continue
+        st = cached.get(vid)
+        if not st or st.get('missing'):
+            continue
+        pub = _formula_pub_date(t, st)
+        try:
+            age = (today - datetime.strptime(pub, "%Y-%m-%d").date()).days
+        except Exception:
+            continue
+        if age < FORMULA_MIN_AGE_DAYS:
+            continue
+        views = int(st.get('views', 0))
+        likes = int(st.get('likes', 0))
+        comments = int(st.get('comments', 0))
+        vpd = views / age
+        score = vpd + 0.1 * (likes + 2 * comments) / age
+        dur_min = None
+        try:
+            dur_min = round(float((t.get('blueprint') or {}).get('target_duration_hours', 0)) * 60)
+        except Exception:
+            dur_min = None
+        out.setdefault(yt_id, []).append({
+            "video_id": vid, "title": t.get('title', '?'), "views": views,
+            "likes": likes, "comments": comments, "age_days": age,
+            "views_per_day": round(vpd, 1), "score": round(score, 2),
+            "duration_min": dur_min, "publish_date": pub,
+        })
+    return out
+
+def _formula_duration_bucket(dur_min):
+    if not dur_min:
+        return None
+    if dur_min < 70:
+        return "60–69 mnt"
+    if dur_min < 80:
+        return "70–79 mnt"
+    return "80+ mnt"
+
+def _compute_formula_analytics(yt_filter=None):
+    """Hitung skor formula per channel dari data yang ada (tanpa efek samping).
+    Tidak memanggil YouTube API — hanya memakai cache Fase 4 + riwayat."""
+    import statistics
+    scored = _formula_scored_videos()
+    channels_out = []
+    for c in database_channel:
+        yt_id = c.get('yt_id')
+        if not yt_id:
+            continue
+        if yt_filter and yt_filter != 'ALL' and yt_id != yt_filter:
+            continue
+        vids = scored.get(yt_id, [])
+        weights = dict(c.get('title_weights') or {})
+        by_title = {}
+        for v in vids:
+            by_title.setdefault(v['title'], []).append(v)
+        formulas = []
+        for title, vs in by_title.items():
+            mean_score = sum(v['score'] for v in vs) / len(vs)
+            mean_vpd = sum(v['views_per_day'] for v in vs) / len(vs)
+            formulas.append({
+                "title": title, "videos": len(vs),
+                "avg_score": round(mean_score, 2),
+                "avg_views_per_day": round(mean_vpd, 1),
+                "total_views": sum(v['views'] for v in vs),
+                "weight": round(float(weights.get(title, 1.0)), 2),
+            })
+        median = statistics.median([f['avg_score'] for f in formulas]) if formulas else 0
+        for f in formulas:
+            ratio = (f['avg_score'] / median) if median and median > 0 else 1.0
+            f['target_weight'] = round(max(FORMULA_WEIGHT_MIN, min(FORMULA_WEIGHT_MAX, ratio)), 2)
+        buckets = {}
+        for v in vids:
+            b = _formula_duration_bucket(v.get('duration_min'))
+            if b:
+                buckets.setdefault(b, []).append(v)
+        dur_out = [{"bucket": b, "videos": len(vs),
+                    "avg_views_per_day": round(sum(x['views_per_day'] for x in vs) / len(vs), 1)}
+                   for b, vs in sorted(buckets.items())]
+        formulas_sorted = sorted(formulas, key=lambda f: f['avg_score'], reverse=True)
+        channels_out.append({
+            "yt_id": yt_id, "name": c.get('name', yt_id),
+            "sufficient": len(vids) >= FORMULA_MIN_VIDEOS,
+            "videos_scored": len(vids),
+            "min_videos": FORMULA_MIN_VIDEOS,
+            "median_score": round(median, 2) if median else 0,
+            "formulas": formulas_sorted,
+            "best": formulas_sorted[0] if formulas_sorted else None,
+            "worst": formulas_sorted[-1] if formulas_sorted else None,
+            "duration_buckets": dur_out,
+            "tuned_at": c.get('formula_tuned_at', ''),
+            "weights": {t: round(float(w), 2) for t, w in weights.items()},
+            "log": list(c.get('formula_log') or [])[:5],
+        })
+    return {"status": "success", "channels": channels_out,
+            "min_videos": FORMULA_MIN_VIDEOS,
+            "weight_min": FORMULA_WEIGHT_MIN, "weight_max": FORMULA_WEIGHT_MAX}
+
+def _apply_formula_tune(yt_id):
+    """Terapkan bobot baru untuk satu channel. Kembalikan ringkasan perubahan.
+    Tidak menghapus judul dari bank; bobot judul yang sudah tidak ada di bank
+    dibersihkan. Perubahan < FORMULA_WEIGHT_CHANGE_MIN dianggap noise."""
+    ana = _compute_formula_analytics(yt_id)
+    ch = (ana.get('channels') or [None])[0]
+    if not ch:
+        return {"yt_id": yt_id, "status": "error", "message": "Channel tidak ditemukan.", "changes": []}
+    if not ch['sufficient']:
+        return {"yt_id": yt_id, "status": "not_enough_data",
+                "message": f"Data belum cukup ({ch['videos_scored']}/{FORMULA_MIN_VIDEOS} video ternilai) — bobot belum diubah.",
+                "changes": []}
+    channel = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+    if channel is None:
+        return {"yt_id": yt_id, "status": "error", "message": "Channel tidak ditemukan.", "changes": []}
+    bank = list(channel.get('title_bank') or [])
+    weights = {t: w for t, w in dict(channel.get('title_weights') or {}).items() if t in bank}
+    changes = []
+    for f in ch['formulas']:
+        old = round(float(weights.get(f['title'], 1.0)), 2)
+        new = f['target_weight']
+        if abs(new - old) >= FORMULA_WEIGHT_CHANGE_MIN:
+            weights[f['title']] = new
+            changes.append({"title": f['title'], "old": old, "new": new,
+                            "avg_score": f['avg_score'], "videos": f['videos']})
+    if changes:
+        today_str = _wib_now().strftime("%Y-%m-%d %H:%M")
+        log = list(channel.get('formula_log') or [])
+        for chg in changes:
+            log.insert(0, {"date": today_str, "title": chg['title'], "old": chg['old'],
+                           "new": chg['new'], "avg_score": chg['avg_score']})
+        channel['formula_log'] = log[:FORMULA_LOG_MAX]
+    channel['title_weights'] = weights
+    channel['formula_tuned_at'] = _wib_now().strftime("%Y-%m-%d %H:%M")
+    save_channels(database_channel)
+    return {"yt_id": yt_id, "status": "success", "changes": changes,
+            "tuned_at": channel['formula_tuned_at'],
+            "message": f"{len(changes)} judul disesuaikan." if changes else "Bobot sudah sesuai skor — tidak ada perubahan."}
+
+def _tune_all_formulas(notify=True):
+    """Tune semua channel. Kalau notify dan ada perubahan signifikan,
+    kirim 1 pesan Telegram ringkas per channel (lewat buffer notify_event,
+    maks 1 menit sekali — tidak spam)."""
+    results = []
+    for c in list(database_channel):
+        yt_id = c.get('yt_id')
+        if not yt_id:
+            continue
+        r = _apply_formula_tune(yt_id)
+        results.append(r)
+        if notify and r.get('status') == 'success':
+            sig = [x for x in r.get('changes', []) if abs(x['new'] - x['old']) >= FORMULA_SIGNIFICANT]
+            if sig:
+                best = max(sig, key=lambda x: x['new'])
+                ch_name = c.get('name', yt_id)
+                notify_event("🔁", f"Lingkaran Analitik — {ch_name}",
+                    f"Bos, lingkaran analitik udah jalan nih 😎 Judul '{best['title'][:60]}' lagi naik daun — bobotnya saya naikin ke {best['new']} biar makin sering kepilih 💪 Yang sepi saya turunin dikit, tapi tetap saya kasih kesempatan kok. Total {len(r['changes'])} judul disesuaikan hari ini.")
+    return results
+
+_formula_tune_last_date = ""
+def _formula_tune_loop():
+    """Daemon: tune semua channel 1x sehari (cek tiap jam)."""
+    global _formula_tune_last_date
+    while True:
+        time.sleep(3600)
+        try:
+            today = _wib_now().strftime("%Y-%m-%d")
+            if today == _formula_tune_last_date:
+                continue
+            _formula_tune_last_date = today
+            _tune_all_formulas(notify=True)
+        except Exception as e:
+            print(f"[Fase 7] tune loop error: {e}", flush=True)
+threading.Thread(target=_formula_tune_loop, daemon=True).start()
+
+@app.route('/api/get_formula_analytics')
+def get_formula_analytics():
+    """🔥 FASE 7: skor formula + bobot per channel (butuh login panel —
+    route ini TIDAK masuk allowed_routes, jadi check_security mewajibkan
+    login). Tidak memanggil YouTube API; memakai cache Fase 4 + riwayat."""
+    yt_id = request.args.get('yt_id') or 'ALL'
+    return jsonify(_compute_formula_analytics(yt_id))
+
+@app.route('/api/run_formula_tune', methods=['POST'])
+def run_formula_tune():
+    """🔥 FASE 7: hitung ulang skor & terapkan bobot sekarang (butuh login).
+    Body opsional {yt_id} — tanpa yt_id, tune semua channel. Notifikasi
+    Telegram TIDAK dikirim di sini (tune manual dari panel); notifikasi
+    hanya dari loop harian."""
+    data = request.json or {}
+    yt_id = data.get('yt_id')
+    if yt_id:
+        return jsonify({"status": "success", "results": [_apply_formula_tune(yt_id)]})
+    return jsonify({"status": "success", "results": _tune_all_formulas(notify=False)})
+
+@app.route('/api/reset_formula_weights', methods=['POST'])
+def reset_formula_weights():
+    """🔥 FASE 7: kembalikan semua bobot satu channel ke 1,0 (butuh login).
+    Judul tidak dihapus — hanya bobot yang direset. Dicatat di formula_log."""
+    data = request.json or {}
+    yt_id = data.get('yt_id')
+    if not yt_id:
+        return jsonify({"status": "error", "message": "yt_id wajib diisi."}), 400
+    channel = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+    if channel is None:
+        return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
+    channel['title_weights'] = {}
+    today_str = _wib_now().strftime("%Y-%m-%d %H:%M")
+    log = list(channel.get('formula_log') or [])
+    log.insert(0, {"date": today_str, "title": "(reset semua bobot)", "old": "-", "new": 1.0, "avg_score": 0})
+    channel['formula_log'] = log[:FORMULA_LOG_MAX]
+    channel['formula_tuned_at'] = today_str
+    save_channels(database_channel)
+    return jsonify({"status": "success", "message": "Semua bobot judul direset ke 1,0."})
+
 @app.route('/api/get_schedule')
 def get_schedule(): return jsonify({"active": active_tasks, "history": history_tasks})
 
@@ -3456,7 +3713,7 @@ def clear_history():
 
 @app.route('/api/get_channels')
 def get_channels():
-    safe_c = [{"id": c["id"], "name": c["name"], "yt_id": c["yt_id"], "thumbnail": c["thumbnail"], "status": c["status"], "title_bank": c.get("title_bank", []), "paused": c.get("paused", False), "autopilot": c.get("autopilot", "approval")} for c in database_channel]
+    safe_c = [{"id": c["id"], "name": c["name"], "yt_id": c["yt_id"], "thumbnail": c["thumbnail"], "status": c["status"], "title_bank": c.get("title_bank", []), "title_weights": c.get("title_weights", {}), "paused": c.get("paused", False), "autopilot": c.get("autopilot", "approval")} for c in database_channel]
     return jsonify(safe_c)
 
 @app.route('/api/get_project_quotas')

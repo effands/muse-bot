@@ -1070,6 +1070,23 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         </div>
       </div>
 
+      <!-- ════════ FASE 7: LINGKARAN ANALITIK ════════ -->
+      <div class="card" style="margin-bottom:18px;">
+        <div class="card-head">
+          <div>
+            <span class="card-title">LINGKARAN ANALITIK</span>
+            <div class="card-sub">Judul yang menang otomatis lebih sering terpilih, yang sepi dikurangi — bobot min 0,3 (tidak pernah 0), judul tidak pernah dihapus. Skor = views/hari sejak tayang + bonus likes/komentar.</div>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button type="button" class="btn btn-sm" onclick="runFormulaTune()" title="Hitung ulang skor & terapkan bobot sekarang">🔁 Terapkan Sekarang</button>
+            <button type="button" class="btn btn-sm" onclick="resetFormulaWeights()" title="Kembalikan semua bobot channel terpilih ke 1,0">↺ Reset Bobot</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div id="fa-body" style="font-size:12px;color:var(--muted)">Memuat lingkaran analitik…</div>
+        </div>
+      </div>
+
       <!-- ════════ FASE 6: KUOTA PROJECT GOOGLE ════════ -->
       <div class="card" style="margin-bottom:18px;">
         <div class="card-head">
@@ -1843,6 +1860,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
 let channels = [];
 let galleryData = { audio: [], background: [], thumbnails: [], base_video: [], overlay: [], special_song: [] };
 let titleBankData = {};    // { yt_id: [titles...] }
+let titleWeightsData = {}; // 🔥 FASE 7: { yt_id: {title: bobot} } — bobot dari lingkaran analitik (default 1,0 bila tidak ada)
 let visPresets = JSON.parse(localStorage.getItem('wp_presets') || '{}');
 let analyticsData = [];
 let chartInstance = null;
@@ -1905,9 +1923,18 @@ function saveTgConfig() {
     }).catch(() => toast('Gagal menyimpan konfigurasi Telegram', 'error'));
 }
 
-function generateOneTitle(bank) {
+function generateOneTitle(bank, yt_id) {
   if (!bank || !bank.length) return "Video Baru";
-  return bank[Math.floor(Math.random() * bank.length)];
+  // 🔥 FASE 7: pilih judul secara berbobot — judul yang menang (bobot > 1)
+  // lebih sering terpilih, yang sepi (bobot < 1, min 0,3) lebih jarang tapi
+  // tetap sesekali terpilih supaya bisa pulih. Tanpa bobot = acak merata.
+  const w = (yt_id && titleWeightsData[yt_id]) || null;
+  if (!w) return bank[Math.floor(Math.random() * bank.length)];
+  let total = 0;
+  const ws = bank.map(t => { const v = parseFloat(w[t]); const vv = (isFinite(v) && v > 0) ? v : 1.0; total += vv; return vv; });
+  let r = Math.random() * total;
+  for (let i = 0; i < bank.length; i++) { r -= ws[i]; if (r <= 0) return bank[i]; }
+  return bank[bank.length - 1];
 }
 // ────────────────────────────────────────────────────────
 
@@ -2174,7 +2201,7 @@ function loadChannels() {
       const av = document.getElementById('sb-av');
       av.innerHTML = data[0].thumbnail ? `<img src="${data[0].thumbnail}">` : data[0].name[0];
     }
-    data.forEach(c => { if (c.title_bank) titleBankData[c.yt_id] = c.title_bank; });
+    data.forEach(c => { if (c.title_bank) titleBankData[c.yt_id] = c.title_bank; if (c.title_weights) titleWeightsData[c.yt_id] = c.title_weights; });
     renderChannelsGrid();
     updateCenterLogo(); 
   }).catch(() => {});
@@ -3062,7 +3089,7 @@ function updateBatchPreview() {
   const datesList = generatePublishDates(count, startRaw);
   for (let i = 0; i < Math.min(count, 8); i++) {
     const d = datesList[i];
-    const title = bank.length ? generateOneTitle(bank) : `Video #${i + 1}`;
+    const title = bank.length ? generateOneTitle(bank, yt_id) : `Video #${i + 1}`;
     items.push({ num: i + 1, title, date: d });
   }
 
@@ -3123,7 +3150,7 @@ function buildFinalSchedule() {
   if (mode === 'zoom') visInfo = 'Zoom Saja 🔍';
 
   const items = Array.from({ length: count }, (_, i) => {
-    return { num: i + 1, title: generateOneTitle(bank), date: datesList[i] };
+    return { num: i + 1, title: generateOneTitle(bank, yt_id), date: datesList[i] };
   });
 
   document.getElementById('final-sched-list').innerHTML = items.map(item => `
@@ -3179,7 +3206,7 @@ function processBatch() {
     if (!ovItems.length) { toast('Upload file overlay dulu di Step 3 (atau tab Gallery → ✨ Overlay)!', 'warn'); return; }
   }
 
-  const generated_titles = Array.from({ length: count }, () => generateOneTitle(bank));
+  const generated_titles = Array.from({ length: count }, () => generateOneTitle(bank, yt_id));
   const floatingCb = document.getElementById('bc-use-floating-card');
   const is_floating = floatingCb ? floatingCb.checked : false;
 
@@ -4140,7 +4167,7 @@ function recoverFailedTasks() {
 function fetchAnalytics() {
   fetch('/api/get_youtube_analytics').then(r => r.json()).then(data => {
     analyticsData = data; const f = document.getElementById('analytics_filter'); f.innerHTML = '<option value="ALL">⬡ ALL CHANNELS</option>';
-    data.forEach(d => f.innerHTML += `<option value="${d.yt_id}">${d.name}</option>`); renderAnalytics(); fetchVideoStats(false); fetchProjectQuotas();
+    data.forEach(d => f.innerHTML += `<option value="${d.yt_id}">${d.name}</option>`); renderAnalytics(); fetchVideoStats(false); fetchProjectQuotas(); fetchFormulaAnalytics();
   }).catch(() => {});
 }
 
@@ -4162,7 +4189,7 @@ function renderAnalytics() {
     }
   }
   document.getElementById('st-views').textContent = tV.toLocaleString(); document.getElementById('st-watch').textContent = tW.toLocaleString(); document.getElementById('st-subs').textContent = tS.toLocaleString();
-  renderVideoStats();
+  renderVideoStats(); renderFormulaAnalytics();
 }
 
 // ────────────────────────────────────────────────────────
@@ -4237,6 +4264,71 @@ function fetchProjectQuotas() {
   }).catch(() => {
     if (box) box.textContent = 'Gagal memuat kuota project.';
   });
+}
+
+// ────────────────────────────────────────────────────────
+//  FASE 7: LINGKARAN ANALITIK
+// ────────────────────────────────────────────────────────
+let formulaData = null;
+function fetchFormulaAnalytics() {
+  const box = document.getElementById('fa-body');
+  fetch('/api/get_formula_analytics').then(r => r.json()).then(d => { formulaData = d; renderFormulaAnalytics(); }).catch(() => {
+    if (box) box.textContent = 'Gagal memuat lingkaran analitik.';
+  });
+}
+function renderFormulaAnalytics() {
+  const box = document.getElementById('fa-body'); if (!box) return;
+  const d = formulaData;
+  if (!d) { box.textContent = 'Memuat lingkaran analitik…'; return; }
+  const fv = document.getElementById('analytics_filter') ? document.getElementById('analytics_filter').value : 'ALL';
+  const chans = (d.channels || []).filter(c => fv === 'ALL' || c.yt_id === fv);
+  if (!chans.length) { box.innerHTML = 'Belum ada channel terhubung — lingkaran analitik muncul setelah channel pertama ditautkan.'; return; }
+  box.innerHTML = chans.map(c => {
+    let h = '<div style="margin-bottom:14px"><div style="font-weight:700;margin-bottom:4px">📺 ' + escapeHtml(c.name) + '</div>';
+    if (!c.sufficient) {
+      h += '<span style="color:var(--muted)">Data belum cukup (' + (c.videos_scored || 0) + '/' + (d.min_videos || 3) + ' video ternilai; video yang tayang hari ini belum dihitung). Bobot masih 1,0 untuk semua judul.</span></div>';
+      return h;
+    }
+    const rows = (c.formulas || []).slice();
+    h += '<div style="margin-bottom:6px">🏆 Terbaik: <b>' + escapeHtml(c.best.title) + '</b> (' + (c.best.avg_views_per_day || 0).toLocaleString() + ' views/hari, bobot ' + c.best.weight + ' → ' + c.best.target_weight + ')'
+      + ' · 📉 Terendah: <b>' + escapeHtml(c.worst.title) + '</b> (' + (c.worst.avg_views_per_day || 0).toLocaleString() + ' views/hari, bobot ' + c.worst.weight + ' → ' + c.worst.target_weight + ')</div>';
+    h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="text-align:left;color:var(--muted);font-family:var(--font-m);font-size:10px;border-bottom:1px solid var(--border)">'
+      + '<th style="padding:6px 8px">JUDUL (FORMULA)</th><th style="padding:6px 8px;text-align:right">VIDEO</th><th style="padding:6px 8px;text-align:right">VIEWS/HARI</th><th style="padding:6px 8px;text-align:right">SKOR</th><th style="padding:6px 8px;text-align:right">BOBOT</th></tr></thead><tbody>'
+      + rows.map(f => '<tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 8px">' + escapeHtml(f.title) + '</td>'
+        + '<td style="padding:6px 8px;text-align:right">' + f.videos + '</td>'
+        + '<td style="padding:6px 8px;text-align:right">' + (f.avg_views_per_day || 0).toLocaleString() + '</td>'
+        + '<td style="padding:6px 8px;text-align:right">' + (f.avg_score || 0).toLocaleString() + '</td>'
+        + '<td style="padding:6px 8px;text-align:right"><b>' + f.weight + '</b>' + (f.target_weight !== f.weight ? ' → ' + f.target_weight : '') + '</td></tr>').join('')
+      + '</tbody></table></div>';
+    if ((c.duration_buckets || []).length) {
+      h += '<div style="font-size:11px;color:var(--muted);margin-top:6px">⏱ Durasi target: ' + c.duration_buckets.map(b => escapeHtml(b.bucket) + ' — ' + (b.avg_views_per_day || 0).toLocaleString() + ' views/hari (' + b.videos + ' video)').join(' · ') + ' <span style="color:var(--muted)">(wawasan saja, durasi tidak diubah otomatis)</span></div>';
+    }
+    h += '<div style="font-size:11px;color:var(--muted);margin-top:6px">Terakhir disesuaikan: ' + escapeHtml(c.tuned_at || 'belum pernah') + ' · Bobot min ' + (d.weight_min || 0.3) + ' – maks ' + (d.weight_max || 2.0) + '.</div>';
+    if ((c.log || []).length) {
+      h += '<div style="font-size:11px;color:var(--muted);margin-top:4px">Riwayat penyesuaian: ' + c.log.map(l => escapeHtml(l.date || '') + ' ' + escapeHtml(l.title) + ' ' + l.old + ' → ' + l.new).join(' · ') + '</div>';
+    }
+    return h + '</div>';
+  }).join('');
+}
+function runFormulaTune() {
+  const fv = document.getElementById('analytics_filter') ? document.getElementById('analytics_filter').value : 'ALL';
+  const body = (fv && fv !== 'ALL') ? { yt_id: fv } : {};
+  fetch('/api/run_formula_tune', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    .then(r => r.json()).then(d => {
+      const res = (d.results || []);
+      const changed = res.reduce((n, r) => n + ((r.changes || []).length), 0);
+      const notEnough = res.filter(r => r.status === 'not_enough_data').length;
+      toast(notEnough && !changed ? 'Data belum cukup untuk penyesuaian bobot.' : ('Lingkaran analitik diterapkan — ' + changed + ' judul disesuaikan.'), notEnough && !changed ? 'warn' : 'success');
+      fetchFormulaAnalytics();
+    }).catch(() => toast('Gagal menjalankan lingkaran analitik.', 'error'));
+}
+function resetFormulaWeights() {
+  const fv = document.getElementById('analytics_filter') ? document.getElementById('analytics_filter').value : 'ALL';
+  if (!fv || fv === 'ALL') { toast('Pilih satu channel dulu di filter Analytics untuk reset bobot.', 'warn'); return; }
+  if (!confirm('Reset semua bobot judul channel ini ke 1,0? Judul tidak dihapus, hanya bobot yang dikembalikan.')) return;
+  fetch('/api/reset_formula_weights', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ yt_id: fv }) })
+    .then(r => r.json()).then(d => { toast(d.message || 'Bobot direset.', d.status === 'success' ? 'success' : 'error'); fetchFormulaAnalytics(); })
+    .catch(() => toast('Gagal mereset bobot.', 'error'));
 }
 
 function drawChart(title, labels, d1, d2, type) {

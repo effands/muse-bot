@@ -6162,6 +6162,60 @@ def _write_update_status(d):
     except Exception as e:
         print(f"Gagal tulis update_status: {e}", flush=True)
 
+# Batas umur status 'running': lebih tua dari ini dianggap macet (updater
+# mati sebelum sempat menulis hasil — mis. update.sh ikut terbunuh saat
+# service restart mematikan satu cgroup). Macet -> update baru diizinkan.
+_UPDATE_STALE_MINUTES = 30
+
+def _update_running_is_stale(st):
+    """True bila status 'running' sudah macet: started_at lebih dari
+    _UPDATE_STALE_MINUTES yang lalu, atau started_at tidak bisa diparse
+    (format rusak -> anggap macet, jangan pernah mengunci update selamanya)."""
+    if not isinstance(st, dict) or st.get('status') != 'running':
+        return False
+    raw = str(st.get('started_at') or '')
+    try:
+        started = datetime.strptime(raw, '%Y-%m-%d %H:%M')
+        started = started.replace(tzinfo=ZoneInfo("Asia/Jakarta"))
+    except Exception:
+        return True
+    try:
+        return (_wib_now() - started) > timedelta(minutes=_UPDATE_STALE_MINUTES)
+    except Exception:
+        return True
+
+def _heal_stale_update_status():
+    """Self-heal saat startup: bila update_status.json masih 'running'
+    (updater mati sebelum sempat menulis hasil — mis. update.sh ikut
+    terbunuh saat service restart), pulihkan dari keadaan saat ini.
+    - versi/commit BERBEDA dari yang tercatat -> pull + restart sudah
+      terjadi: tulis success dengan versi/commit saat ini.
+    - versi/commit SAMA -> updater mati sebelum pull: tulis failed.
+    Bukan 'running' -> file tidak disentuh. Tidak pernah melempar."""
+    try:
+        st = _read_update_status()
+        if not st or st.get('status') != 'running':
+            return
+        now = _wib_now().strftime('%Y-%m-%d %H:%M')
+        cur_ver, cur_commit = _app_version(), _git_short_hash()
+        old_ver, old_commit = st.get('version'), st.get('commit')
+        if cur_ver != old_ver or cur_commit != old_commit:
+            _write_update_status({"status": "success",
+                                  "started_at": st.get('started_at') or '?',
+                                  "finished_at": now,
+                                  "version": cur_ver, "commit": cur_commit,
+                                  "output": "Update selesai (status dipulihkan saat startup)."})
+            print(f"✅ [Update] Status 'running' macet dipulihkan jadi success (v{cur_ver} {cur_commit}).", flush=True)
+        else:
+            _write_update_status({"status": "failed",
+                                  "started_at": st.get('started_at') or '?',
+                                  "finished_at": now,
+                                  "version": cur_ver, "commit": cur_commit,
+                                  "output": "Updater terhenti sebelum selesai."})
+            print("⚠️ [Update] Status 'running' macet dipulihkan jadi failed (updater terhenti sebelum selesai).", flush=True)
+    except Exception as e:
+        print(f"⚠️ [Update] Self-heal status update gagal (diabaikan): {e}", flush=True)
+
 # Status task yang berarti "tidak sedang diproses" (aman di-restart).
 _UPDATE_IDLE_MARKERS = ('Selesai', 'Gagal', 'Dibatalkan', 'Menunggu', 'Ditunda', 'Dijeda')
 
@@ -6211,8 +6265,21 @@ def update_panel_api():
     bisa dipolling lewat /api/update_status)."""
     st = _read_update_status()
     if st.get('status') == 'running':
-        return jsonify({"status": "error",
-                        "message": "Update sedang berjalan, tunggu sampai selesai."}), 409
+        if _update_running_is_stale(st):
+            # Macet (lebih dari 30 menit / started_at rusak): bersihkan
+            # otomatis, lalu LANJUTKAN update baru (bukan 409). Tanpa ini
+            # satu update yang gagal di tengah jalan mengunci tombol
+            # Update selamanya.
+            old_started = st.get('started_at') or '?'
+            now = _wib_now().strftime('%Y-%m-%d %H:%M')
+            _write_update_status({"status": "failed", "started_at": old_started,
+                                  "finished_at": now,
+                                  "version": _app_version(), "commit": _git_short_hash(),
+                                  "output": f"Update sebelumnya tidak selesai (status macet sejak {old_started}); dibersihkan otomatis."})
+            print(f"🧹 [Update] Status 'running' macet sejak {old_started} dibersihkan otomatis.", flush=True)
+        else:
+            return jsonify({"status": "error",
+                            "message": "Update sedang berjalan, tunggu sampai selesai."}), 409
     if _any_task_rendering():
         return jsonify({"status": "error",
                         "message": "Ada video sedang dirender/di-upload. Coba lagi setelah selesai."}), 409
@@ -7745,7 +7812,15 @@ for t in active_tasks:
 
 active_tasks = [t for t in tasks_to_keep if "Dibatalkan" not in t['status']]
 save_tasks_db()
-    
+
+# 🔄 Self-heal status update yang macet di 'running' (updater mati sebelum
+# sempat menulis hasil — mis. ikut terbunuh saat service restart). Harus
+# jalan tiap start, dan TIDAK BOLEH menggagalkan startup apa pun yang terjadi.
+try:
+    _heal_stale_update_status()
+except Exception:
+    pass
+
 startup_sanitizer()
 # 🔥 FASE 5: bersih-bersih file lama saat start (aturan umur di cleanup_old_files).
 try:

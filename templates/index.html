@@ -2144,6 +2144,21 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
 <!-- 🔗 MODAL TAMBAH CHANNEL (Dashboard) — alur device login yang sama
      seperti di Settings (/api/device_code + /api/poll_device_token).
      Upload client_secret.json tetap hanya di Settings. -->
+<!-- ════════ KONFIRMASI UPDATE — modal bertema (bukan confirm() bawaan browser) ════════ -->
+<div id="upd-confirm-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closeUpdConfirm()">
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);max-width:460px;width:100%;padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.35)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div class="card-title" style="font-size:15px">⬆️ UPDATE &amp; RESTART</div>
+      <button type="button" class="btn btn-g btn-sm" onclick="closeUpdConfirm()" title="Tutup">✕</button>
+    </div>
+    <div style="font-size:13px;line-height:1.6;margin-bottom:16px">Update panel ke versi terbaru dari GitHub lalu restart? Panel akan mati sebentar. Pastikan tidak ada video sedang dirender.</div>
+    <div style="display:flex;justify-content:flex-end;gap:8px">
+      <button type="button" class="btn" onclick="closeUpdConfirm()">Batal</button>
+      <button type="button" class="btn btn-p" onclick="closeUpdConfirm();doUpdate()">Ya, Update</button>
+    </div>
+  </div>
+</div>
+
 <div id="add-ch-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closeAddChannelModal()">
   <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);max-width:520px;width:100%;padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.35)">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
@@ -2957,8 +2972,16 @@ function pollUpdateStatus() {
     }
   }).catch(() => {});
 }
-function startUpdate() {
-  if (!confirm('Update panel ke versi terbaru dari GitHub lalu restart? Panel akan mati sebentar. Pastikan tidak ada video sedang dirender.')) return;
+function openUpdConfirm() {
+  const m = document.getElementById('upd-confirm-modal');
+  if (m) m.style.display = 'flex';
+}
+function closeUpdConfirm() {
+  const m = document.getElementById('upd-confirm-modal');
+  if (m) m.style.display = 'none';
+}
+function startUpdate() { openUpdConfirm(); }
+function doUpdate() {
   const btn = document.getElementById('upd-run-btn');
   if (btn) btn.disabled = true;
   _updSetStatus('⏳ Memulai update…');

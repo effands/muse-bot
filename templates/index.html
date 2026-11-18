@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Pabrik Konten</title>
+<title>Ziqva Muse Bot — Cloud Production</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Clash+Display:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -545,10 +545,10 @@ input[type=color] { padding:0; height:36px; width:100%; border:1px solid var(--b
 <aside class="sidebar" id="app-sidebar">
   <div class="logo">
     <div class="logo-mark">
-      <div class="logo-sq"><img src="/static/logo.png" alt="P" style="color:var(--accent); font-weight:bold; font-size:18px;"></div>
+      <div class="logo-sq"><img src="/static/logo.png" alt="Z" style="color:var(--accent); font-weight:bold; font-size:18px;"></div>
       <div>
-        <div class="logo-name">PABRIK KONTEN</div>
-        <div class="logo-ver">v2.0 · BATCH ENGINE</div>
+        <div class="logo-name">ZIQVA MUSE BOT</div>
+        <div class="logo-ver">CLOUD VPS · BATCH ENGINE</div>
       </div>
     </div>
   </div>
@@ -692,11 +692,11 @@ input[type=color] { padding:0; height:36px; width:100%; border:1px solid var(--b
         </div>
       </div>
 
-      <!-- ════════ ALUR KERJA SISTEM (SOP PABRIK KONTEN) ════════ -->
+      <!-- ════════ ALUR KERJA SISTEM (SOP ZIQVA MUSE BOT) ════════ -->
       <div class="card" style="margin-bottom:18px;">
         <div class="card-head">
           <div>
-            <span class="card-title">ALUR PRODUKSI OTOMATIS (SOP BAMS)</span>
+            <span class="card-title">ALUR PRODUKSI OTOMATIS (SOP ZIQVA MUSE BOT)</span>
             <div class="card-sub">Langkah standar untuk menghasilkan video kompilasi terjadwal</div>
           </div>
           <span class="pill p-blue" style="font-family:var(--font-m); font-size:10px;">4 TAHAP</span>
@@ -3340,7 +3340,7 @@ function renderTasks() {
     
     list.innerHTML = sortKeys(groups, unknownKey).map(key => {
       const items = groups[key]; const isUnknown = key === unknownKey;
-      const name = isUnknown ? 'Pending Upload Lokal' : chName(key);
+      const name = isUnknown ? 'Pending Upload Cloud Storage' : chName(key);
       let html = groupDivQ(name, items.length, isUnknown ? '📤' : '📺', key);
       
       if (!qCollapsed[key]) {

@@ -157,9 +157,9 @@ def handle_user_command(token, chat_id, text):
         # 1. MENU / START
         if first_word in ["/start", "/help", "halo", "menu", "hai"]:
             msg = (
-                "🤖 *MUSE AI — OPERATOR PABRIK KONTEN*\n\n"
-                "Halo Bos! Saya siap menerima instruksi kerja. Sentuh salah satu tombol di bawah atau klik perintah berikut:\n\n"
-                "👉 /status — Cek kesehatan CPU, RAM, & antrean\n"
+                "🤖 *ZIQVA MUSE BOT — CLOUD OPERATOR*\n\n"
+                "Halo Bos! Ziqva Muse Bot siap menerima instruksi kerja. Sentuh salah satu tombol di bawah atau klik perintah berikut:\n\n"
+                "👉 /status — Cek kesehatan CPU, RAM, & antrean server\n"
                 "👉 /channel — Cek channel YouTube terdaftar\n"
                 "👉 /antrean — Cek daftar video yang sedang diproses\n"
                 "👉 /judul — Buatkan 10 judul video tidur viral\n"
@@ -177,7 +177,7 @@ def handle_user_command(token, chat_id, text):
             in_progress = len([t for t in active if 'Selesai' not in t.get('status', '') and 'Gagal' not in t.get('status', '')])
             
             msg = (
-                "📊 *LAPORAN STATUS PABRIK KONTEN*\n"
+                "📊 *LAPORAN STATUS ZIQVA MUSE BOT*\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"⚡ *Beban CPU:* `{stats['cpu']}%`\n"
                 f"🧠 *RAM Terpakai:* `{stats['ram_used_gb']} GB / {stats['ram_total_gb']} GB ({stats['ram_pct']}%)`\n"
@@ -185,7 +185,7 @@ def handle_user_command(token, chat_id, text):
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🏭 *Antrean Render:* `{in_progress} video`\n"
                 f"📁 *Riwayat Selesai:* `{len(tasks_data.get('history', []))} video`\n"
-                "🟢 *Node Engine:* Online (Port 8000)"
+                "🟢 *Cloud Engine:* Online 24/7 (Port 8000)"
             )
             send_message(token, chat_id, msg)
             return
@@ -196,8 +196,8 @@ def handle_user_command(token, chat_id, text):
             if not channels:
                 msg = (
                     "📺 *DAFTAR CHANNEL YOUTUBE*\n"
-                    "Belum ada channel terhubung di panel.\n\n"
-                    "👉 Buka browser: http://localhost:8000/factory\n"
+                    "Belum ada channel terhubung di panel Ziqva Muse Bot.\n\n"
+                    "👉 Buka browser panel VPS di port 8000 (/factory)\n"
                     "Lalu klik tombol *Connect* untuk menautkan channel YouTube pertama."
                 )
             else:
@@ -214,7 +214,7 @@ def handle_user_command(token, chat_id, text):
             tasks_data = load_tasks()
             active = tasks_data.get('active', [])
             if not active:
-                msg = "📂 *ANTREAN RENDER KOSONG*\nSaat ini belum ada tugas render yang dijadwalkan."
+                msg = "📂 *ANTREAN RENDER KOSONG*\nSaat ini belum ada tugas render yang dijadwalkan di Ziqva Muse Bot."
             else:
                 msg = f"📂 *ANTREAN TUGAS RENDER ({len(active)})*\n━━━━━━━━━━━━━━━━━━━━━━\n"
                 for idx, t in enumerate(active[:8], 1):
@@ -245,7 +245,7 @@ def handle_user_command(token, chat_id, text):
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"{title_list}\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "📋 Salin judul di atas ke kolom *Bank Judul* channel Anda di browser!"
+                "📋 Salin judul di atas ke kolom *Bank Judul* channel Anda di panel!"
             )
             send_message(token, chat_id, msg)
             return
@@ -262,7 +262,7 @@ def handle_user_command(token, chat_id, text):
                 "• Use low-medium volume (30-40%)\n"
                 "• Dim the lights in your bedroom\n"
                 "• Close your eyes and breathe gently\n\n"
-                "Tracklist & Composition by Pabrik Konten Audio Hub.\n\n"
+                "Tracklist & Audio Engineering by Ziqva Muse Bot Cloud System.\n\n"
                 "#deepsleep #relaxingmusic #sleepaid #ambientmusic #insomniarelief #calmmind"
             )
             send_message(token, chat_id, msg)
@@ -271,10 +271,10 @@ def handle_user_command(token, chat_id, text):
         # 7. BLUEPRINT RESEP
         if "blueprint" in clean_cmd or "resep" in clean_cmd:
             msg = (
-                "📐 *STANDAR BLUEPRINT PABRIK KONTEN*\n"
+                "📐 *STANDAR BLUEPRINT ZIQVA MUSE BOT*\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
                 "• *Durasi:* Acak 60 – 80 menit (optimal untuk retensi dan algoritma)\n"
-                "• *Preset Render:* ultrafast (hemat CPU server)\n"
+                "• *Preset Render:* ultrafast (hemat CPU server VPS)\n"
                 "• *Visualizer:* Waveform di bawah (pos_y 85%, opacity 100%)\n"
                 "• *Ending Special Song:* 1 lagu penutup di 2 menit terakhir\n"
                 "• *Batas Deskripsi YouTube:* Maksimal 5.000 karakter\n"
@@ -285,7 +285,7 @@ def handle_user_command(token, chat_id, text):
 
         # DEFAULT FALLBACK
         msg = (
-            f"🤖 *Muse AI Operator*\n\n"
+            f"🤖 *Ziqva Muse Bot Operator*\n\n"
             f"Saya menerima pesan: \"{raw_cmd}\"\n\n"
             "Silakan sentuh tombol di bawah atau ketik:\n"
             "👉 /status | /channel | /antrean | /judul"
@@ -297,7 +297,7 @@ def handle_user_command(token, chat_id, text):
         send_message(token, chat_id, f"⚠️ Maaf bos, ada kendala: `{e}`")
 
 def watchdog_background_loop(token, chat_id):
-    print("🛡️ [Muse Watchdog] Lapis 1 pengawas aktif...", flush=True)
+    print("🛡️ [Ziqva Watchdog] Lapis 1 pengawas aktif...", flush=True)
     last_alert_time = 0
     while True:
         try:
@@ -308,10 +308,10 @@ def watchdog_background_loop(token, chat_id):
             now = time.time()
             if failed and (now - last_alert_time > 3600):
                 msg = (
-                    "🚨 *PERINGATAN OPERATOR PABRIK KONTEN*\n\n"
+                    "🚨 *PERINGATAN ZIQVA MUSE BOT*\n\n"
                     f"Ditemukan `{len(failed)}` tugas render yang mengalami kendala!\n"
                     f"Contoh error: `{failed[0].get('title', 'Unknown')}` — {failed[0].get('status', '')}\n\n"
-                    "Silakan periksa panel: http://localhost:8000/factory"
+                    "Silakan periksa panel web Ziqva Muse Bot Anda di port 8000."
                 )
                 send_message(token, chat_id, msg)
                 last_alert_time = now

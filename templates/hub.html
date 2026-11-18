@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pabrik Konten Hub — Command Center</title>
+    <title>Ziqva Muse Bot — Command Center Hub</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
@@ -17,15 +17,18 @@
         .bg-mesh {
             position: fixed;
             inset: 0;
-            background: 
+            background-image: 
                 radial-gradient(circle at 15% 15%, rgba(0, 229, 255, 0.08) 0%, transparent 40%),
                 radial-gradient(circle at 85% 85%, rgba(139, 92, 246, 0.09) 0%, transparent 40%),
-                radial-gradient(circle at 50% 50%, rgba(16, 185, 129, 0.04) 0%, transparent 50%);
+                radial-gradient(circle at 50% 50%, rgba(16, 185, 129, 0.04) 0%, transparent 50%),
+                linear-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+            background-size: 100% 100%, 100% 100%, 100% 100%, 32px 32px, 32px 32px;
             pointer-events: none;
             z-index: 0;
         }
         .glass-card {
-            background: rgba(15, 23, 42, 0.8);
+            background: rgba(15, 23, 42, 0.82);
             backdrop-filter: blur(16px);
             -webkit-backdrop-filter: blur(16px);
             border: 1px solid rgba(255, 255, 255, 0.08);
@@ -60,10 +63,10 @@
                 </div>
                 <div>
                     <div class="flex items-center gap-2">
-                        <span class="text-sm sm:text-base font-bold text-white tracking-tight">PABRIK KONTEN <span class="text-cyan-400 font-extrabold">HUB</span></span>
-                        <span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 mono">v2.4</span>
+                        <span class="text-sm sm:text-base font-bold text-white tracking-tight">ZIQVA MUSE <span class="text-cyan-400 font-extrabold">BOT</span></span>
+                        <span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 mono">CLOUD VPS</span>
                     </div>
-                    <p class="text-[10px] text-slate-400 hidden sm:block">Pusat Kendali Batch Engine & AI Video Operator</p>
+                    <p class="text-[10px] text-slate-400 hidden sm:block">Pusat Kendali Batch Engine & Cloud Content Factory</p>
                 </div>
             </div>
 
@@ -125,7 +128,7 @@
                         <span class="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Beban CPU</span>
                         <div class="flex items-baseline gap-1.5 mt-0.5">
                             <span class="text-xl sm:text-2xl font-black text-amber-400 mono" id="stat-cpu">0%</span>
-                            <span class="text-[10px] text-slate-500">Processor</span>
+                            <span class="text-[10px] text-slate-500">VPS Core</span>
                         </div>
                     </div>
                     <div class="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-400 flex items-center justify-center text-sm">
@@ -136,9 +139,9 @@
                 <!-- Stat 4 -->
                 <div class="bg-slate-900/90 rounded-lg p-2.5 border border-slate-800 flex items-center justify-between">
                     <div>
-                        <span class="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Hardware Ready</span>
+                        <span class="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Cloud Engine</span>
                         <div class="flex items-baseline gap-1.5 mt-0.5">
-                            <span class="text-xs sm:text-sm font-bold text-emerald-400">FFmpeg GPU</span>
+                            <span class="text-xs sm:text-sm font-bold text-emerald-400">FFmpeg 24/7</span>
                         </div>
                     </div>
                     <div class="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center text-sm">
@@ -245,11 +248,11 @@
 
         </div>
 
-        <!-- ════════ SLIM COMPACT FOOTER ════════ -->
+        <!-- ════════ SLIM COMPACT FOOTER WITH ZIQVA MUSE BOT WATERMARK ════════ -->
         <footer class="glass-card rounded-xl px-4 py-2 flex items-center justify-between text-[11px] text-slate-400">
             <div class="flex items-center gap-2">
-                <i class="fa-solid fa-circle-info text-cyan-400"></i>
-                <span class="truncate">Tips Ebook: Pastikan OAuth Consent Screen di Google Cloud berstatus <strong class="text-emerald-400">In Production</strong>.</span>
+                <i class="fa-solid fa-robot text-cyan-400"></i>
+                <span class="truncate">Powered by <strong class="text-white">Ziqva Muse Bot</strong> • Autonomous Cloud Production System © 2026</span>
             </div>
             <div class="flex items-center gap-3 mono text-[10px] flex-shrink-0">
                 <a href="/factory" class="text-cyan-400 hover:underline">Factory</a>
@@ -268,7 +271,7 @@
             <div class="flex items-center justify-between mb-3 pb-2 border-b border-slate-800">
                 <div class="flex items-center gap-2">
                     <i class="fa-brands fa-telegram text-cyan-400 text-lg"></i>
-                    <h3 class="text-sm font-bold text-white">Pengaturan Bot Telegram</h3>
+                    <h3 class="text-sm font-bold text-white">Pengaturan Bot Telegram (@ziqmusebot)</h3>
                 </div>
                 <button onclick="closeTelegramModal()" class="text-slate-400 hover:text-white">
                     <i class="fa-solid fa-xmark text-lg"></i>

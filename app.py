@@ -7065,6 +7065,101 @@ def update_panel_api():
 
 
 # ============================================================
+#  🔄 RESTART BOT TELEGRAM DARI PANEL (v1.2.11)
+#  Latar: tombol Update panel me-restart panel + operator lewat
+#  ziqva.sh, tapi bila restart operator gagal/terlewat, bot Telegram
+#  diam-diam jalan dengan kode lama. Tombol ini memberi user jalan
+#  restart operator secara manual dari panel (tanpa SSH/konsol).
+#  Panel TIDAK ikut restart di sini: handler berjalan di proses
+#  panel, dan me-restart service LAIN (operator) tidak membunuh
+#  proses panel — aman.
+# ============================================================
+_OPERATOR_RESTART_LAST = {'at': 0.0}   # monotonic() restart terakhir (anti-spam 60 dtk)
+_OPERATOR_RESTART_MIN_INTERVAL = 60
+
+
+def _systemd_ts_to_wib(raw):
+    """Ubah ActiveEnterTimestamp systemd ("Wed 2026-11-18 23:09:48 UTC")
+    jadi "2026-11-19 06:09 WIB". Bila zona sudah WIB/WITA/WIT, tidak
+    digeser. Bila tidak bisa diparse, kembalikan teks aslinya."""
+    raw = (raw or '').strip()
+    if not raw or raw.lower() in ('n/a', 'none'):
+        return None
+    try:
+        parts = raw.rsplit(' ', 1)
+        zone = parts[1].upper() if len(parts) == 2 else ''
+        dt = datetime.strptime(parts[0], '%a %Y-%m-%d %H:%M:%S')
+        if zone in ('UTC', 'GMT'):
+            dt = dt + timedelta(hours=7)
+            return dt.strftime('%Y-%m-%d %H:%M WIB')
+        return dt.strftime('%Y-%m-%d %H:%M') + (f' {zone}' if zone else '')
+    except Exception:
+        return raw
+
+
+def _operator_service_state():
+    """Baca status service operator via systemctl. Mengembalikan dict
+    {active: bool, since: str|None, note: str}. Tidak pernah raise —
+    bila systemctl gagal, active=False + note berisi sebabnya."""
+    try:
+        r = subprocess.run(['systemctl', 'is-active', 'ziqva-muse-operator'],
+                           capture_output=True, text=True, timeout=10)
+        active = (r.stdout or '').strip() == 'active'
+        since = None
+        note = ''
+        if active:
+            try:
+                r2 = subprocess.run(['systemctl', 'show', '-p', 'ActiveEnterTimestamp',
+                                     '--value', 'ziqva-muse-operator'],
+                                    capture_output=True, text=True, timeout=10)
+                since = _systemd_ts_to_wib(r2.stdout)
+            except Exception:
+                since = None
+        else:
+            note = 'Service tidak aktif (' + ((r.stdout or '').strip() or 'unknown') + ').'
+        return {'active': active, 'since': since, 'note': note}
+    except Exception as e:
+        return {'active': False, 'since': None,
+                'note': f'Tidak bisa membaca status service: {e}'}
+
+
+@app.route('/api/operator_status')
+def operator_status_api():
+    """Status service operator (butuh login panel; GET saja). Dipakai
+    kartu Telegram di Settings + polling setelah restart manual."""
+    st = _operator_service_state()
+    return jsonify({"status": "success", "active": st['active'],
+                    "since": st['since'], "note": st['note'],
+                    "version": _app_version(), "commit": _git_short_hash()})
+
+
+@app.route('/api/restart_operator', methods=['POST'])
+def restart_operator_api():
+    """Restart service ziqva-muse-operator SAJA (panel tidak ikut).
+    Login + CSRF dijamin check_security (before_request). Restart
+    dijalankan detached (seperti update.sh) lalu langsung kembalikan
+    sukses — request TIDAK menunggu restart selesai. Anti-spam:
+    ditolak 429 bila restart terakhir <60 detik lalu."""
+    now_mono = time.monotonic()
+    last = _OPERATOR_RESTART_LAST.get('at', 0.0)
+    if now_mono - last < _OPERATOR_RESTART_MIN_INTERVAL:
+        wait = int(_OPERATOR_RESTART_MIN_INTERVAL - (now_mono - last))
+        return jsonify({"status": "error",
+                        "message": f"Bot baru saja di-restart. Tunggu {wait} detik lagi sebelum restart ulang."}), 429
+    try:
+        subprocess.Popen(['nohup', 'systemctl', 'restart', 'ziqva-muse-operator'],
+                         stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True, close_fds=True)
+    except Exception as e:
+        return jsonify({"status": "error",
+                        "message": f"Gagal menjalankan restart operator: {e}"}), 500
+    _OPERATOR_RESTART_LAST['at'] = now_mono
+    return jsonify({"status": "success",
+                    "message": "Restart bot Telegram dimulai — bot akan mati sebentar lalu hidup lagi dan menyapa di Telegram. Tunggu ~10–30 detik."})
+
+
+# ============================================================
 #  💾 BACKUP OTOMATIS (v1.2.8)
 #  Mesin di backup_core.py (stdlib murni): arsip tar.gz terenkripsi
 #  AES-256-CBC + PBKDF2 via openssl, retensi 7 harian + 4 mingguan,

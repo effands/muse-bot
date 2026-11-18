@@ -90,6 +90,11 @@ Cek output lengkap di Settings → UPDATE & VERSI, atau tanya Muse."
   exit 1
 fi
 
+# Restart kedua service. Urutan diatur DI DALAM ziqva.sh (operator dulu,
+# panel terakhir, dua perintah systemctl terpisah) — JANGAN digabung:
+# me-restart panel membunuh skrip ini (anak service panel) sebelum
+# operator sempat di-restart. Status "running" yang tertinggal dipulihkan
+# self-heal boot-time (v1.2.1) saat panel kembali naik.
 bash ziqva.sh restart
 RESTART_RC=$?
 if [ $RESTART_RC -ne 0 ]; then

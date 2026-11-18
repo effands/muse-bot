@@ -14,7 +14,15 @@ case "$1" in
     echo "🛑 Ziqva Muse Bot & Telegram Operator dihentikan."
     ;;
   restart)
-    systemctl restart ziqva-muse-bot ziqva-muse-operator
+    # URUTAN PENTING — JANGAN digabung jadi satu perintah
+    # `systemctl restart ziqva-muse-bot ziqva-muse-operator`!
+    # update.sh berjalan sebagai ANAK service PANEL (ziqva-muse-bot);
+    # me-restart panel membunuh seluruh cgroup service itu, termasuk
+    # skrip ini dan proses systemctl-nya sendiri. Karena itu:
+    #   1) restart OPERATOR dulu (service lain — skrip tetap hidup),
+    #   2) restart PANEL terakhir (panel mati pun operator sudah restart).
+    systemctl restart ziqva-muse-operator
+    systemctl restart ziqva-muse-bot
     echo "🔄 Ziqva Muse Bot & Telegram Operator di-restart."
     ;;
   status)

@@ -3107,30 +3107,332 @@ def get_dashboard_stats():
 
 @app.route('/api/get_youtube_analytics')
 def get_youtube_analytics():
+    """Per-channel untuk TABEL DETAIL CHANNEL di Dashboard: statistik channel
+    (channels().list part=snippet,statistics, cache 1 jam — sama seperti
+    statistik video) + delta views dari snapshot harian channel (90 hari)
+    + estimasi jam tayang + kesiapan monetisasi (helper bersama).
+
+    Kolom REVENUE sengaja TIDAK ADA di tabel — tidak ada data penghasilan
+    dari API (scope Analytics monetary tidak diizinkan di device flow);
+    estimasi RPM hanya di kartu Monetisasi. Kolom WATCH 1YR juga tidak ada
+    — snapshot hanya 90 hari. Angka views/subs/videos tetap dipertahankan
+    untuk kartu TOTAL VIEWS/SUBSCRIBERS di Dashboard."""
+    cache = _load_video_stats_cache()
+    now = time.time()
+    today_str = _wib_now().strftime("%Y-%m-%d")
+    ch_stats = cache.setdefault('channel_stats', {})
+    ch_snaps = cache.setdefault('channel_snapshots', [])
+    cached_videos = cache.get('videos', {})
+    snapshots = cache.get('snapshots', [])
+    dirty = False
+    # video_id -> (yt_id, kind) dari riwayat pabrik (untuk jalur Shorts
+    # dan durasi rata-rata blueprint). Klip Clipper TIDAK ada di sini
+    # (tercatat di clipper/clips_db.json, bukan history_tasks).
+    vid_info = {}
+    for t in history_tasks:
+        vid = _history_task_video_id(t)
+        yt = _history_task_yt_id(t)
+        if vid and yt:
+            vid_info[vid] = (yt, t.get('kind') or (t.get('blueprint') or {}).get('kind'))
+    # durasi rata-rata blueprint video long per channel (jam) — dasar
+    # estimasi jam tayang (metode sama seperti kartu Monetisasi Fase 9).
+    dur_sum = {}
+    dur_cnt = {}
+    for t in history_tasks:
+        yt = _history_task_yt_id(t)
+        if not yt:
+            continue
+        if (t.get('kind') or (t.get('blueprint') or {}).get('kind')) == SHORTS_MUSE_KIND:
+            continue
+        h = _monetization_task_hours(t)
+        if h and h > 0:
+            dur_sum[yt] = dur_sum.get(yt, 0.0) + h
+            dur_cnt[yt] = dur_cnt.get(yt, 0) + 1
+    avg_dur = {yt: dur_sum[yt] / dur_cnt[yt] for yt in dur_sum}
+    vid_snaps = {}
+    for s in snapshots:
+        vid_snaps.setdefault(s.get('video_id'), {})[s.get('date')] = int(s.get('views', 0) or 0)
     data = []
     for c in database_channel:
-        views, subs, videos = 0, 0, 0
-        # 🔥 FIX v1.3: failover antar key seperti upload — jangan cuma pakai Key #1
-        # (Key #1 yang mati bikin grafik analitik kosong walau key lain hidup).
-        creds_list = c.get('creds_list', [c.get('creds_json')])
-        for cred_str in creds_list:
-            if not cred_str:
-                continue
-            try:
-                creds = Credentials.from_authorized_user_info(json.loads(cred_str))
-                if creds.expired and creds.refresh_token: creds.refresh(Request())
-                youtube = build('youtube', 'v3', credentials=creds)
-                res = youtube.channels().list(part="statistics", id=c['yt_id']).execute()
-                if res.get('items'):
-                    stats = res['items'][0]['statistics']
-                    views = int(stats.get('viewCount', 0))
-                    subs = int(stats.get('subscriberCount', 0))
-                    videos = int(stats.get('videoCount', 0))
-                break
-            except Exception:
-                continue
-        data.append({"yt_id": c["yt_id"], "name": c["name"], "views": views, "subs": subs, "watch_hours": 0, "videos": videos})
+        yt_id = c['yt_id']
+        ent = ch_stats.get(yt_id) or {}
+        views = subs = videos = None
+        published_at = ent.get('published_at')
+        fetched_at = ent.get('fetched_at')
+        fresh = (ent.get('views') is not None and ent.get('fetched_at')
+                 and (now - float(ent.get('fetched_at', 0)) < VIDEO_STATS_CACHE_TTL))
+        if fresh:
+            views, subs, videos = ent.get('views'), ent.get('subs'), ent.get('videos')
+        else:
+            # 🔥 FIX v1.3: failover antar key seperti upload — jangan cuma pakai Key #1
+            # (Key #1 yang mati bikin grafik analitik kosong walau key lain hidup).
+            creds_list = c.get('creds_list', [c.get('creds_json')])
+            for cred_str in creds_list:
+                if not cred_str:
+                    continue
+                try:
+                    creds = Credentials.from_authorized_user_info(json.loads(cred_str))
+                    if creds.expired and creds.refresh_token:
+                        creds.refresh(Request())
+                    youtube = build('youtube', 'v3', credentials=creds)
+                    res = youtube.channels().list(part="snippet,statistics", id=yt_id).execute()
+                    if res.get('items'):
+                        item = res['items'][0]
+                        stats = item.get('statistics', {})
+                        views = int(stats.get('viewCount', 0))
+                        subs = int(stats.get('subscriberCount', 0))
+                        videos = int(stats.get('videoCount', 0))
+                        published_at = (item.get('snippet', {}) or {}).get('publishedAt', '') or published_at
+                        fetched_at = now
+                        ch_stats[yt_id] = {"views": views, "subs": subs, "videos": videos,
+                                           "published_at": published_at, "fetched_at": fetched_at}
+                        dirty = True
+                    break
+                except Exception:
+                    continue
+            if views is None and ent.get('views') is not None:
+                # API gagal — pakai cache basi supaya tabel tidak kosong mendadak.
+                views, subs, videos = ent.get('views'), ent.get('subs'), ent.get('videos')
+                fetched_at = ent.get('fetched_at')
+            elif views is None:
+                views, subs, videos = 0, 0, 0
+        # --- snapshot harian channel (satu per channel per hari, 90 hari) ---
+        if views is not None and not any(s.get('date') == today_str and s.get('yt_id') == yt_id for s in ch_snaps):
+            ch_snaps.append({"date": today_str, "yt_id": yt_id, "views": int(views),
+                             "subs": int(subs or 0), "videos": int(videos or 0)})
+            dirty = True
+        cutoff = (_wib_now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        pruned = [s for s in ch_snaps if s.get('date', '') >= cutoff]
+        if len(pruned) != len(ch_snaps):
+            ch_snaps = pruned
+            cache['channel_snapshots'] = ch_snaps
+            dirty = True
+        totals = {s['date']: int(s.get('views', 0)) for s in ch_snaps if s.get('yt_id') == yt_id}
+        v28, d28, ref = _snapshot_delta(totals, 28)
+        v48, d48, _ = _snapshot_delta(totals, 2, ref_date=ref)
+        v30, d30, _ = _snapshot_delta(totals, 30, ref_date=ref)
+        v90, d90, _ = _snapshot_delta(totals, 90, ref_date=ref)
+        # tren: views 28D terbaru vs 28 hari sebelumnya (±2% = datar)
+        trend = None
+        if v28 is not None and d28:
+            prev28, _, _ = _snapshot_delta(totals, 28, ref_date=d28)
+            if prev28 is not None:
+                if prev28 == 0:
+                    trend = "up" if v28 > 0 else "flat"
+                elif v28 > prev28 * 1.02:
+                    trend = "up"
+                elif v28 < prev28 * 0.98:
+                    trend = "down"
+                else:
+                    trend = "flat"
+        avg_views = (int(views) // int(videos)) if videos else None
+        avg_h = avg_dur.get(yt_id)
+        watch30 = round(v30 * avg_h, 1) if (v30 is not None and avg_h) else None
+        watch90 = round(v90 * avg_h, 1) if (v90 is not None and avg_h) else None
+        shorts_views, shorts_complete = _shorts_views_90d(yt_id, vid_info, vid_snaps, cached_videos, ref)
+        readiness = _channel_monetization_readiness(
+            subs=subs, watch_90d_est_hours=watch90,
+            shorts_views_90d=shorts_views, shorts_complete=shorts_complete,
+            monetized=bool(c.get('monetized')), today_str=today_str)
+        data.append({
+            "yt_id": yt_id,
+            "name": c.get('name', 'Tanpa Nama'),
+            "status": c.get('status', 'Connected'),
+            "views": views,
+            "subs": subs,
+            "videos": videos,
+            "published_at": published_at,
+            "age_label": _channel_age_label(published_at, _wib_now().date()),
+            "updated_label": _format_wib_label(fetched_at),
+            "views_28d": v28,
+            "views_48h": v48,
+            "views_30d": v30,
+            "views_90d": v90,
+            "snap_28d": d28,
+            "snap_48h": d48,
+            "snap_30d": d30,
+            "snap_ref": ref,
+            "trend": trend,
+            "avg_views": avg_views,
+            "watch_30d_est_hours": watch30,
+            "watch_90d_est_hours": watch90,
+            # watch_hours dipakai kartu WATCH TIME di atas + progress TARGET
+            # MONETISASI: estimasi jam tayang 90 hari terakhir (0 bila belum
+            # bisa dihitung — dulu field ini selalu 0).
+            "watch_hours": watch90 if watch90 is not None else 0,
+            "shorts_views_90d": shorts_views,
+            "shorts_complete": shorts_complete,
+            "monetized": bool(c.get('monetized')),
+            "monetization": readiness,
+        })
+    if dirty:
+        _save_video_stats_cache(cache)
     return jsonify(data)
+
+
+# ==========================================
+# 📊 TABEL DETAIL CHANNEL + KESIAPAN MONETISASI
+# ==========================================
+# Ambang monetisasi YouTube resmi (aturan yang berlaku saat ini; channel
+# yang SUDAH monetisasi tidak terpengaruh aturan baru):
+#  - s.d. 31 Jan 2027: 1.000 subs + 4.000 jam tayang (12 bln) ATAU
+#    10 jt views Shorts (90 hari terakhir)
+#  - mulai 1 Feb 2027: 1.000 subs + 8.000 jam tayang (365 hari) ATAU
+#    20 jt views Shorts (90 hari terakhir). Subs tetap 1.000.
+# Semua ambang di SATU tempat ini supaya mudah diubah dan bisa dipakai
+# ulang laporan Telegram pagi/sore nanti.
+MONETIZE_SUBS_REQUIRED = 1000
+MONETIZE_RULE_CHANGE_DATE = "2027-02-01"
+MONETIZE_WATCH_HOURS_BEFORE = 4000
+MONETIZE_WATCH_HOURS_FROM = 8000
+MONETIZE_SHORTS_VIEWS_BEFORE = 10_000_000
+MONETIZE_SHORTS_VIEWS_FROM = 20_000_000
+
+_ID_MONTHS = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
+
+
+def _monetization_rule_for(date_str):
+    """Ambang monetisasi yang berlaku pada tanggal WIB tertentu."""
+    if date_str >= MONETIZE_RULE_CHANGE_DATE:
+        return {"subs": MONETIZE_SUBS_REQUIRED, "watch_hours": MONETIZE_WATCH_HOURS_FROM,
+                "shorts_views_90d": MONETIZE_SHORTS_VIEWS_FROM,
+                "label": "1.000 subs + 8.000 jam tayang (365 hari) atau 20 jt views Shorts (90 hari)",
+                "rule_next": None}
+    return {"subs": MONETIZE_SUBS_REQUIRED, "watch_hours": MONETIZE_WATCH_HOURS_BEFORE,
+            "shorts_views_90d": MONETIZE_SHORTS_VIEWS_BEFORE,
+            "label": "1.000 subs + 4.000 jam tayang (12 bln) atau 10 jt views Shorts (90 hari)",
+            "rule_next": "Mulai 1 Feb 2027: 1.000 subs + 8.000 jam tayang (365 hari) atau 20 jt views Shorts (90 hari)"}
+
+
+def _channel_monetization_readiness(*, subs, watch_90d_est_hours, shorts_views_90d,
+                                   shorts_complete, monetized, today_str):
+    """SATU tempat perhitungan kesiapan monetisasi — dipakai panel dan
+    (nanti) laporan Telegram pagi/sore. PENTING: jam tayang di sini HANYA
+    ESTIMASI (snapshot views 90 hari terakhir × durasi rata-rata blueprint
+    video long channel). Jam tayang asli butuh YouTube Analytics API yang
+    tidak diizinkan di device flow; keputusan akhir monetisasi ada di
+    YouTube Studio. Jalur Shorts hanya dipakai bila shorts_complete=True
+    (baseline bisa dihitung jujur dari snapshot); bila tidak, badge tidak
+    pernah 'ready' lewat jalur Shorts."""
+    rule = _monetization_rule_for(today_str)
+    base = {"subs": subs or 0, "subs_required": rule["subs"],
+            "watch_est": watch_90d_est_hours, "watch_required": rule["watch_hours"],
+            "shorts_views": shorts_views_90d, "shorts_required": rule["shorts_views_90d"],
+            "shorts_complete": bool(shorts_complete),
+            "rule_label": rule["label"], "rule_next": rule["rule_next"]}
+    if monetized:
+        return dict(base, status="monetized", badge="💰 Monetisasi Aktif", via=None)
+    subs_ok = (subs or 0) >= rule["subs"]
+    hours_ok = watch_90d_est_hours is not None and watch_90d_est_hours >= rule["watch_hours"]
+    shorts_ok = bool(shorts_complete) and (shorts_views_90d or 0) >= rule["shorts_views_90d"]
+    ready = subs_ok and (hours_ok or shorts_ok)
+    via = None
+    if ready:
+        via = "shorts" if (shorts_ok and not hours_ok) else "hours"
+    return dict(base, status="ready" if ready else "progress",
+                badge="✅ Siap Monet (est.)" if ready else "⏳ Belum Siap", via=via)
+
+
+def _snapshot_delta(totals, days, ref_date=None):
+    """Selisih nilai snapshot: total(terbaru) − total(terdekat pada/
+    sebelum ref−days). totals: {tanggal 'YYYY-MM-DD': nilai}.
+    Kembalikan (delta, tanggal_dasar, tanggal_ref) atau (None, None,
+    tanggal_ref) bila riwayat belum cukup (mis. channel baru) — pemanggil
+    menampilkan '—', jangan karang angka."""
+    if not totals:
+        return None, None, None
+    ref = ref_date or max(totals)
+    try:
+        ref_d = datetime.strptime(ref, "%Y-%m-%d").date()
+    except Exception:
+        return None, None, ref
+    target = (ref_d - timedelta(days=days)).strftime("%Y-%m-%d")
+    cands = [d for d in totals if d <= target]
+    if not cands:
+        return None, None, ref
+    base_d = max(cands)
+    if base_d == ref:
+        return None, None, ref
+    try:
+        return int(totals[ref]) - int(totals[base_d]), base_d, ref
+    except Exception:
+        return None, None, ref
+
+
+def _shorts_views_90d(yt_id, vid_info, vid_snaps, cached_videos, ref_date):
+    """Views Shorts (90 hari) dari snapshot per-video — HANYA video Shorts
+    Muse (kind='shorts_muse'). Klip Clipper TIDAK termasuk (tidak tercatat
+    di snapshot pabrik) — jadi angka ini bisa terlalu rendah bila channel
+    punya klip Clipper tayang, dan itulah mengapa kolomnya ditandai
+    'Shorts Muse'. Kembalikan (total_views, complete): complete=False bila
+    ada video Shorts yang baseline 90 hari lalu-nya tidak bisa ditentukan
+    (dipublikasikan sebelum riwayat snapshot dan tanpa snapshot lama) —
+    jalur Shorts lalu tidak dipakai untuk badge. Tanpa video Shorts sama
+    sekali → (0, True), terhitung jujur."""
+    total = 0
+    complete = True
+    found = False
+    for vid, (yt, kind) in (vid_info or {}).items():
+        if yt != yt_id or kind != SHORTS_MUSE_KIND:
+            continue
+        found = True
+        cv = cached_videos.get(vid) or {}
+        if cv.get('missing'):
+            continue
+        cur = cv.get('views')
+        if cur is None:
+            continue  # belum pernah di-fetch — tidak bisa dihitung
+        snaps = vid_snaps.get(vid, {})
+        ref_v = max(snaps) if snaps else (ref_date or _wib_now().strftime("%Y-%m-%d"))
+        try:
+            target = (datetime.strptime(ref_v, "%Y-%m-%d").date() - timedelta(days=90)).strftime("%Y-%m-%d")
+        except Exception:
+            complete = False
+            continue
+        cands = [d for d in snaps if d <= target]
+        if cands:
+            base = max(cands)
+            total += int(cur) - int(snaps[base])
+        else:
+            pub = (cv.get('published_at', '') or '')[:10]
+            if pub and pub > target:
+                total += int(cur)  # video belum ada 90 hari lalu → semua views masuk
+            else:
+                complete = False
+    if not found:
+        return 0, True
+    return total, complete
+
+
+def _channel_age_label(published_at, today):
+    """'45 hari' / '3 bln' / '2 thn 3 bln' dari snippet.publishedAt."""
+    if not published_at:
+        return None
+    try:
+        d = datetime.strptime(str(published_at)[:10], "%Y-%m-%d").date()
+    except Exception:
+        return None
+    days = (today - d).days
+    if days < 0:
+        return None
+    if days < 60:
+        return f"{days} hari"
+    if days < 365:
+        return f"{max(1, days // 30)} bln"
+    y, m = days // 365, (days % 365) // 30
+    return f"{y} thn" + (f" {m} bln" if m else "")
+
+
+def _format_wib_label(epoch_ts):
+    """'18 Nov 21:52' (WIB) dari epoch detik; None bila tidak diketahui."""
+    if not epoch_ts:
+        return None
+    try:
+        dt = datetime.fromtimestamp(float(epoch_ts), tz=ZoneInfo("Asia/Jakarta"))
+        return f"{dt.day} {_ID_MONTHS[dt.month - 1]} {dt.hour:02d}:{dt.minute:02d}"
+    except Exception:
+        return None
+
 
 # ==========================================
 # 📊 FASE 4 STATISTIK PER VIDEO
@@ -4989,7 +5291,7 @@ def get_channels():
     # None = belum dicek) supaya panel bisa menandai channel yang tokennya
     # belum punya scope yt-analytics.readonly ("perlu taut ulang").
     _scope_cache = _load_video_stats_cache()
-    safe_c = [{"id": c["id"], "name": c["name"], "yt_id": c["yt_id"], "thumbnail": c["thumbnail"], "status": c["status"], "title_bank": c.get("title_bank", []), "title_weights": c.get("title_weights", {}), "paused": c.get("paused", False), "autopilot": c.get("autopilot", "approval"), "rpm_usd": c.get("rpm_usd"), "analytics_scope": _analytics_scope_state(_scope_cache, c.get("yt_id"))} for c in database_channel]
+    safe_c = [{"id": c["id"], "name": c["name"], "yt_id": c["yt_id"], "thumbnail": c["thumbnail"], "status": c["status"], "title_bank": c.get("title_bank", []), "title_weights": c.get("title_weights", {}), "paused": c.get("paused", False), "autopilot": c.get("autopilot", "approval"), "rpm_usd": c.get("rpm_usd"), "monetized": c.get("monetized", False), "analytics_scope": _analytics_scope_state(_scope_cache, c.get("yt_id"))} for c in database_channel]
     return jsonify(safe_c)
 
 @app.route('/api/get_project_quotas')
@@ -5022,6 +5324,7 @@ def _sanitize_channel_for_export(c):
             "paused": c.get("paused", False),
             "autopilot": c.get("autopilot", "approval"),
             "rpm_usd": c.get("rpm_usd"),
+            "monetized": c.get("monetized", False),
             "last_scheduled_date": c.get("last_scheduled_date"),
             "daily_uploads": c.get("daily_uploads", {}),
             "cooldown_until": c.get("cooldown_until", 0)}
@@ -5638,6 +5941,39 @@ def set_channel_autopilot():
     return jsonify({"status": "success", "autopilot": "approval",
                     "message": f"Channel {name} mode Approval. Batch baru menunggu persetujuan."})
 
+@app.route('/api/set_channel_monetized', methods=['POST'])
+def set_channel_monetized():
+    """📊 TABEL DETAIL CHANNEL: toggle manual 'Channel sudah monetisasi'
+    (butuh login panel — route ini TIDAK masuk allowed_routes, jadi
+    check_security mewajibkan login). TIDAK ADA field API yang menyatakan
+    status monetisasi — flag ini MANUAL (disimpan di channels_db.json)
+    dan hanya mengubah badge di tabel: channel yang ditandai mendapat
+    '💰 Monetisasi Aktif' dan tidak masuk penilaian kesiapan lagi.
+    Pola sama seperti set_channel_autopilot (db_lock + save_channels)."""
+    data = request.get_json(silent=True) or {}
+    yt_id = data.get('yt_id')
+    monetized = data.get('monetized')
+    if not yt_id:
+        return jsonify({"status": "error", "message": "yt_id wajib diisi."}), 400
+    if not isinstance(monetized, bool):
+        return jsonify({"status": "error", "message": "monetized harus true/false."}), 400
+    with db_lock:
+        target = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+        if target is None:
+            return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
+        target['monetized'] = monetized
+        name = target.get('name', yt_id)
+        try:
+            save_channels(database_channel)
+        except Exception as e:
+            print(f"Gagal simpan monetized {yt_id}: {e}", flush=True)
+            return jsonify({"status": "error", "message": "Gagal menyimpan perubahan."}), 500
+    if monetized:
+        return jsonify({"status": "success", "monetized": True,
+                        "message": f"Channel {name} ditandai SUDAH monetisasi (penanda manual). Badge 'Monetisasi Aktif' tampil di tabel."})
+    return jsonify({"status": "success", "monetized": False,
+                    "message": f"Tanda monetisasi channel {name} dihapus. Channel kembali masuk penilaian kesiapan."})
+
 @app.route('/api/check_secret')
 def check_secret():
     # Mengembalikan info file yang terupload agar Settings bisa menampilkannya
@@ -5692,6 +6028,47 @@ def upload_secret():
     except Exception as e:
         print(f"Gagal upload client_secret: {e}", flush=True)
         return jsonify({"status": "error", "message": "Gagal mengunggah API key."})
+
+@app.route('/api/device_code', methods=['POST'])
+def device_code_json():
+    """📊 SHORTCUT TAMBAH CHANNEL (Dashboard): versi JSON dari /device_login
+    untuk modal pop-up — langkah server-nya SAMA PERSIS (minta device code
+    ke Google dengan client TV + SCOPES, ikat device_code ke sesi login,
+    kedaluwarsa 15 menit). WAJIB login panel (route ini TIDAK masuk
+    allowed_routes) + CSRF (POST, dicek check_security). Polling tetap ke
+    /api/poll_device_token yang sudah ada. Bila client_secret.json belum
+    ada, kembalikan error jelas supaya modal mengarahkan ke Settings."""
+    if not os.path.exists(CLIENT_SECRETS_FILE):
+        return jsonify({"status": "error",
+                        "message": "File client_secret.json belum ada. Upload dulu di Settings."}), 400
+    try:
+        with open(CLIENT_SECRETS_FILE, 'r') as f:
+            secret_data = json.load(f)
+        client_config = secret_data.get('installed', secret_data.get('web', {}))
+        client_id = client_config.get('client_id')
+        if not client_id:
+            return jsonify({"status": "error",
+                            "message": "client_secret.json tidak berisi client_id."}), 400
+    except Exception:
+        return jsonify({"status": "error",
+                        "message": "client_secret.json tidak bisa dibaca."}), 400
+    try:
+        res = requests.post('https://oauth2.googleapis.com/device/code',
+                            data={'client_id': client_id, 'scope': ' '.join(SCOPES)}, timeout=20).json()
+    except Exception as e:
+        return jsonify({"status": "error",
+                        "message": f"Tidak bisa menghubungi Google: {e}"}), 502
+    if 'error' in res:
+        return jsonify({"status": "error", "message": f"Error Google: {res['error']}"}), 400
+    session['device_code'] = res['device_code']
+    session['device_code_at'] = time.time()
+    return jsonify({"status": "success",
+                    "verification_url": res.get('verification_url', 'https://www.google.com/device'),
+                    "user_code": res.get('user_code', ''),
+                    "device_code": res['device_code'],
+                    "expires_in": res.get('expires_in', 900),
+                    "interval": res.get('interval', 5)})
+
 
 @app.route('/api/generate_tv_link')
 def generate_tv_link():

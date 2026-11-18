@@ -1025,7 +1025,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
 
       <div class="stats-grid">
         <div class="stat s1"><div class="stat-lbl">TOTAL VIEWS</div><div class="stat-val" id="st-views" style="color:var(--accent)">0</div><div class="stat-note">All channels</div><div class="stat-ico">👁</div></div>
-        <div class="stat s2"><div class="stat-lbl">WATCH TIME (JAM)</div><div class="stat-val" id="st-watch" style="color:var(--accent2)">0</div><div class="stat-note">Estimated</div><div class="stat-ico">⏱</div></div>
+        <div class="stat s2"><div class="stat-lbl">WATCH TIME (JAM)</div><div class="stat-val" id="st-watch" style="color:var(--accent2)">0</div><div class="stat-note">Est. 90 hari</div><div class="stat-ico">⏱</div></div>
         <div class="stat s3"><div class="stat-lbl">SUBSCRIBERS</div><div class="stat-val" id="st-subs" style="color:var(--accent3)">0</div><div class="stat-note">Total</div><div class="stat-ico">👥</div></div>
         <div class="stat s4"><div class="stat-lbl">ACTIVE TASKS</div><div class="stat-val" id="st-active" style="color:var(--green)">0</div><div class="stat-note">Running</div><div class="stat-ico">⚡</div></div>
       </div>
@@ -1036,12 +1036,40 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         <div class="card-body" style="padding:6px 16px 10px"><div id="dash-channels" style="font-size:12px;color:var(--muted)">Memuat channel…</div></div>
       </div>
 
+      <!-- ════════ TABEL DETAIL CHANNEL ════════ -->
+      <div class="card" style="margin-bottom:14px">
+        <div class="card-head">
+          <span class="card-title">📊 DETAIL CHANNEL</span>
+          <span style="display:flex;gap:8px;align-items:center">
+            <span class="pill p-cyan" id="ch-detail-count">0 channel</span>
+            <button type="button" class="btn btn-p btn-sm" onclick="openAddChannelModal()" title="Tautkan channel YouTube baru (device login, sama seperti di Settings)">➕ Tambah Channel</button>
+          </span>
+        </div>
+        <div class="card-body" style="padding:6px 16px 10px">
+          <div style="overflow-x:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap">
+              <thead><tr style="text-align:left;color:var(--muted);font-family:var(--font-m);font-size:10px;border-bottom:1px solid var(--border)">
+                <th style="padding:6px 8px">CHANNEL</th><th style="padding:6px 8px">STATUS</th><th style="padding:6px 8px">UPDATED</th>
+                <th style="padding:6px 8px;text-align:right">SUBSCRIBE</th><th style="padding:6px 8px;text-align:right">VIDEOS</th>
+                <th style="padding:6px 8px;text-align:right">VIEW 28D</th><th style="padding:6px 8px;text-align:right">VIEW 48H</th>
+                <th style="padding:6px 8px">TREND</th><th style="padding:6px 8px;text-align:right">WATCH 30D (est.)</th>
+                <th style="padding:6px 8px;text-align:right">AVG</th><th style="padding:6px 8px">AGE</th>
+                <th style="padding:6px 8px">MONETISASI</th><th style="padding:6px 8px">OPEN</th>
+              </tr></thead>
+              <tbody id="ch-detail-tbody"><tr><td colspan="13" style="padding:10px 8px;color:var(--muted)">Memuat detail channel…</td></tr></tbody>
+            </table>
+          </div>
+          <div id="ch-detail-note" style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5"></div>
+          <div id="ch-monet-summary" style="margin-top:10px"></div>
+        </div>
+      </div>
+
       <div id="mon-box" class="card" style="display:none;margin-bottom:14px">
         <div class="card-head"><span class="card-title">TARGET MONETISASI</span><span id="mon-status" class="pill p-muted">Menghitung...</span></div>
         <div class="card-body">
           <div class="g2">
             <div><div style="display:flex;justify-content:space-between;font-family:var(--font-m);font-size:10px;color:var(--muted);margin-bottom:5px"><span>Subscribers (1.000)</span><span id="mon-s-pct">0%</span></div><div class="pb-bg"><div class="pb-fill" id="prog-subs" style="width:0%;background:var(--accent3)"></div></div></div>
-            <div><div style="display:flex;justify-content:space-between;font-family:var(--font-m);font-size:10px;color:var(--muted);margin-bottom:5px"><span>Watch Hours (4.000)</span><span id="mon-w-pct">0%</span></div><div class="pb-bg"><div class="pb-fill" id="prog-watch" style="width:0%;background:var(--accent)"></div></div></div>
+            <div><div style="display:flex;justify-content:space-between;font-family:var(--font-m);font-size:10px;color:var(--muted);margin-bottom:5px"><span id="mon-w-label">Watch Hours (4.000)</span><span id="mon-w-pct">0%</span></div><div class="pb-bg"><div class="pb-fill" id="prog-watch" style="width:0%;background:var(--accent)"></div></div></div>
           </div>
         </div>
       </div>
@@ -1053,7 +1081,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         <div class="card-head">
           <div>
             <span class="card-title">STATISTIK PER VIDEO</span>
-            <div class="card-sub">Views, likes &amp; komentar per video yang sudah tayang (YouTube Data API, cache 1 jam)</div>
+            <div class="card-sub">Hanya video yang di-upload pabrik (setelah Fase 4) — video lama channel tidak terlacak di sini (YouTube Data API, cache 1 jam)</div>
           </div>
           <button type="button" class="btn btn-sm" onclick="fetchVideoStats(true)" title="Ambil data terbaru dari YouTube (lewati cache)">↻ Refresh</button>
         </div>
@@ -1065,6 +1093,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
             <div><div style="font-family:var(--font-m);font-size:10px;color:var(--muted)">VIDEO TERLACAK</div><div id="vs-count" style="font-size:18px;font-weight:700;color:var(--accent)">—</div></div>
           </div>
           <div id="vs-bestworst" style="font-size:12px;color:var(--text);margin-bottom:10px"></div>
+          <div id="vs-scope-note" style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.5"></div>
           <div id="vs-error" style="font-size:12px;color:var(--red,#f43f5e);margin-bottom:10px"></div>
           <div style="overflow-x:auto">
             <table style="width:100%;border-collapse:collapse;font-size:12px">
@@ -1115,7 +1144,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         <div class="card-head">
           <div>
             <span class="card-title">MONETISASI &amp; BEBAN</span>
-            <div class="card-sub">Views dari statistik Fase 4 + riwayat tayang. Estimasi penghasilan dari RPM manual yang diisi di Settings (RPM otomatis dari YouTube Analytics tidak tersedia — login device tidak mengizinkan scope Analytics).</div>
+            <div class="card-sub">Estimasi penghasilan dari RPM per channel (diisi di Settings) — YouTube Data API tidak memberi data penghasilan.</div>
           </div>
           <button type="button" class="btn btn-sm" onclick="fetchMonetization()" title="Muat ulang data monetisasi">↻ Refresh</button>
         </div>
@@ -1903,18 +1932,16 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
           </div>
         </div>
       </div>
-
       <div class="section-head">
-  <div class="section-title">Connected Channels</div>
-  <div class="btn-row">
-    <button class="btn btn-p" onclick="exportChannels()">Export</button>
-    <button class="btn btn-g" onclick="document.getElementById('importFile').click()">Import</button>
-    <input type="file" id="importFile" accept=".json" style="display: none;" onchange="importChannels(event)">
-    
-    <button class="btn btn-p" onclick="generateTVLink()">＋ Tautkan Channel Baru</button>
-  </div>
-</div>
-      
+        <div class="section-title">Connected Channels</div>
+        <div class="btn-row">
+          <button class="btn btn-p" onclick="exportChannels()">Export</button>
+          <button class="btn btn-g" onclick="document.getElementById('importFile').click()">Import</button>
+          <input type="file" id="importFile" accept=".json" style="display: none;" onchange="importChannels(event)">
+          <button class="btn btn-p" onclick="generateTVLink()">＋ Tautkan Channel Baru</button>
+        </div>
+      </div>
+
       <div id="tv-box" style="display:none;background:rgba(0,212,255,.04);border:1px solid rgba(0,212,255,.2);border-radius:var(--r);padding:16px;margin-bottom:16px">
         <div style="font-family:var(--font-m);font-size:11px;color:var(--accent);margin-bottom:6px" id="tv-msg">Copy link ini di profil Chrome channel YouTube target:</div>
         <div style="display:flex;gap:8px">
@@ -1924,6 +1951,9 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
       </div>
 
       <div id="channels-grid"></div>
+
+
+
     </div>
 
   </div>
@@ -1955,6 +1985,19 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
 <div class="toast-wrap" id="toast-wrap"></div>
   </div>
 </main>
+
+<!-- 🔗 MODAL TAMBAH CHANNEL (Dashboard) — alur device login yang sama
+     seperti di Settings (/api/device_code + /api/poll_device_token).
+     Upload client_secret.json tetap hanya di Settings. -->
+<div id="add-ch-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closeAddChannelModal()">
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);max-width:520px;width:100%;padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.35)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div class="card-title" style="font-size:15px">🔗 TAMBAH CHANNEL</div>
+      <button type="button" class="btn btn-g btn-sm" onclick="closeAddChannelModal()" title="Tutup">✕</button>
+    </div>
+    <div id="add-ch-body" style="font-size:13px;line-height:1.6"></div>
+  </div>
+</div>
 
 <script>
 // 🔒 #12: semua fetch POST ke /api/* otomatis membawa header X-CSRF-Token.
@@ -2365,35 +2408,43 @@ function renderChannelsGrid() {
     if(g) g.innerHTML = `<div style="text-align:center;padding:30px;color:var(--muted);font-family:var(--font-m);font-size:12px;border:1px dashed var(--border);border-radius:var(--r)">Belum ada channel. Klik "Tautkan Channel Baru".</div>`;
     return;
   }
+  // Satu channel = satu baris kompak: thumbnail + nama + pill, field RPM,
+  // dan semua kontrol (autopilot / jeda / monetisasi / stop / hapus) di satu tempat.
   if(g) g.innerHTML = channels.map(c => `
-    <div class="ch-connected">
+    <div class="ch-connected" style="padding:10px 12px;flex-wrap:wrap">
       <div class="ch-con-av">${c.thumbnail ? `<img src="${escapeHtml(c.thumbnail)}">` : escapeHtml(c.name[0])}</div>
-      <div style="flex:1;min-width:0">
+      <div style="flex:1;min-width:200px">
         <div style="font-size:13px;font-weight:700;margin-bottom:3px">${escapeHtml(c.name)}</div>
-        <span class="pill p-green">${escapeHtml(c.status)}</span>
-        ${c.paused ? `<span class="pill p-yellow">⏸️ Dijeda</span>` : ''}
-        ${c.autopilot === 'auto' ? `<span class="pill p-cyan">🤖 Full-Auto</span>` : `<span class="pill p-muted">👀 Approval</span>`}
-        <span class="pill p-muted" title="RPM: USD per 1000 views — dipakai hanya untuk estimasi penghasilan di kartu Monetisasi">💵 RPM $${c.rpm_usd != null ? c.rpm_usd : '—'}</span>
-        ${c.analytics_scope === false ? `<span class="pill p-yellow" title="Token channel ini belum punya scope YouTube Analytics — taut ulang channel (kode device baru) untuk mengaktifkan subs per video & RPM otomatis">⚠️ Perlu taut ulang (Analytics)</span>` : ''}
-        <div style="margin-top:6px;display:flex;gap:6px;align-items:center;font-size:11px;color:var(--muted);flex-wrap:wrap">
-          <span>RPM $</span>
-          <input type="number" min="0" max="100" step="0.1" placeholder="isi utk estimasi" value="${c.rpm_usd != null ? c.rpm_usd : ''}" id="rpm-${c.yt_id}" style="width:100px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:11px" title="RPM: USD per 1000 views. Kosongkan untuk mematikan estimasi channel ini.">
-          <span>/1000 views</span>
-          <button class="btn btn-g btn-sm" onclick="setChannelRpm('${c.yt_id}')" title="Simpan RPM channel ini">Simpan RPM</button>
+        <div style="display:flex;gap:4px;flex-wrap:wrap">
+          <span class="pill p-green">${escapeHtml(c.status)}</span>
+          ${c.paused ? `<span class="pill p-yellow">⏸️ Dijeda</span>` : ''}
+          ${c.autopilot === 'auto' ? `<span class="pill p-cyan">🤖 Full-Auto</span>` : `<span class="pill p-muted">👀 Approval</span>`}
+          ${c.monetized ? `<span class="pill p-green">💰 Monetisasi Aktif</span>` : ''}
+          <span class="pill p-muted" title="RPM: USD per 1000 views — dipakai hanya untuk estimasi penghasilan di kartu Monetisasi">💵 RPM $${c.rpm_usd != null ? c.rpm_usd : '—'}</span>
+          ${c.analytics_scope === false ? `<span class="pill p-yellow" title="Token channel ini belum punya scope YouTube Analytics — taut ulang channel (kode device baru) untuk mengaktifkan subs per video & RPM otomatis">⚠️ Perlu taut ulang (Analytics)</span>` : ''}
         </div>
       </div>
-      <div style="display:flex; gap:6px;">
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:11px;color:var(--muted)">RPM $</span>
+        <input type="number" min="0" max="100" step="0.1" placeholder="isi utk estimasi" value="${c.rpm_usd != null ? c.rpm_usd : ''}" id="rpm-${c.yt_id}" style="width:90px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:11px" title="RPM: USD per 1000 views. Kosongkan untuk mematikan estimasi channel ini.">
+        <button class="btn btn-g btn-sm" onclick="setChannelRpm('${c.yt_id}')" title="Simpan RPM channel ini">Simpan RPM</button>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
         ${c.autopilot === 'auto'
           ? `<button class="btn btn-g btn-sm" onclick="toggleChannelAutopilot('${c.yt_id}', 'approval')" style="border-color:var(--accent); color:var(--accent);" title="Batch baru langsung jalan tanpa approval — klik untuk kembali ke mode Approval">🤖 Full-Auto</button>`
           : `<button class="btn btn-g btn-sm" onclick="toggleChannelAutopilot('${c.yt_id}', 'auto')" style="border-color:var(--muted); color:var(--muted);" title="Batch baru menunggu approval — klik untuk Full-Auto">👀 Approval</button>`}
         ${c.paused
           ? `<button class="btn btn-g btn-sm" onclick="toggleChannelPause('${c.yt_id}', false)" style="border-color:var(--green); color:var(--green);">▶️ Lanjutkan</button>`
           : `<button class="btn btn-g btn-sm" onclick="toggleChannelPause('${c.yt_id}', true)" style="border-color:var(--yellow); color:var(--yellow);">⏸️ Jeda</button>`}
+        ${c.monetized
+          ? `<button class="btn btn-g btn-sm" onclick="toggleChannelMonetized('${c.yt_id}', false)" style="border-color:var(--green); color:var(--green);" title="Penanda manual — klik untuk menghapus tanda sudah monetisasi">💰 Monetisasi Aktif</button>`
+          : `<button class="btn btn-g btn-sm" onclick="toggleChannelMonetized('${c.yt_id}', true)" style="border-color:var(--muted); color:var(--muted);" title="Tandai channel ini SUDAH monetisasi (penanda manual — tidak ada data API untuk status monetisasi)">💰 Sudah Monet?</button>`}
         <button class="btn btn-g btn-sm" onclick="stopChannelTasks('${c.yt_id}')" style="border-color:var(--accent); color:var(--accent);">🛑 Stop Antrean</button>
         <button class="btn btn-danger btn-sm" onclick="deleteChannel('${c.yt_id}')">🗑 Hapus Total</button>
       </div>
     </div>`).join('');
 }
+
 
 // 🔥 Daftar nama channel di Task Monitor & Dashboard — pakai array global
 // `channels` yang sama dengan Settings (diisi loadChannels() dari
@@ -2404,6 +2455,7 @@ function channelRowHtml(c, withMode) {
     + `<span style="font-weight:700;font-size:13px;color:var(--text)">${escapeHtml(c.name)}</span>`
     + `<span class="pill p-green">${escapeHtml(c.status || 'Connected')}</span>`
     + (c.paused ? `<span class="pill p-yellow">⏸️ Dijeda</span>` : '')
+    + (c.monetized ? `<span class="pill p-green">💰 Monetisasi Aktif</span>` : '')
     + (withMode ? (c.autopilot === 'auto' ? `<span class="pill p-cyan">🤖 Full-Auto</span>` : `<span class="pill p-muted">👀 Approval</span>`) : '')
     + `</div>`;
 }
@@ -2420,6 +2472,7 @@ function renderDashboardChannels() {
   el.innerHTML = channels.length
     ? channels.map(c => channelRowHtml(c, true)).join('')
     : `<div style="padding:10px 0;color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada channel tertaut — tautkan dari Settings.</div>`;
+  renderChannelTable();
 }
 
 function stopChannelTasks(yt_id) {
@@ -2613,6 +2666,27 @@ function toggleChannelAutopilot(yt_id, mode) {
       setTimeout(loadCalendar, 500);
     })
     .catch(() => toast('Gagal mengubah mode autopilot', 'error'));
+}
+
+// 📊 Toggle manual "Channel sudah monetisasi" — TIDAK ADA data API untuk
+// status monetisasi, jadi ini penanda manual (disimpan di channels_db.json
+// via /api/set_channel_monetized). Channel yang ditandai tampil
+// "💰 Monetisasi Aktif" di tabel & kartu channel, dan tidak masuk penilaian
+// kesiapan monetisasi lagi.
+function toggleChannelMonetized(yt_id, val) {
+  const c = (channels || []).find(x => x.yt_id === yt_id);
+  const name = c ? c.name : yt_id;
+  const msg = val
+    ? `Tandai channel "${name}" sebagai SUDAH monetisasi?\n\nIni penanda MANUAL (tidak ada data API untuk status monetisasi). Channel ini akan tampil "💰 Monetisasi Aktif" di tabel dan tidak masuk penilaian kesiapan lagi.`
+    : `Hapus tanda monetisasi channel "${name}"?\n\nChannel kembali masuk penilaian kesiapan monetisasi.`;
+  if (!confirm(msg)) return;
+  fetch('/api/set_channel_monetized', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ yt_id, monetized: val }) })
+    .then(r => r.json())
+    .then(d => {
+      toast(d.message, d.status === 'success' ? 'success' : 'error');
+      if (d.status === 'success') { loadChannels(); fetchAnalytics(); }
+    })
+    .catch(() => toast('Gagal menyimpan status monetisasi', 'error'));
 }
 
 // ────────────────────────────────────────────────────────
@@ -4440,15 +4514,22 @@ function renderAnalytics() {
   } else {
     monBox.style.display = 'block'; const d = analyticsData.find(x => x.yt_id === fv);
     if (d) {
-      tV = d.views; tS = d.subs; tW = d.watch_hours; const pS = Math.min((tS / 1000) * 100, 100); const pW = Math.min((tW / 4000) * 100, 100);
+      tV = d.views; tS = d.subs; tW = d.watch_hours;
+      // Ambang jam tayang mengikuti aturan monetisasi yang berlaku
+      // (4.000 jam s.d. 31 Jan 2027, 8.000 jam mulai 1 Feb 2027) — dari
+      // helper yang sama dengan tabel detail channel, bukan hardcode.
+      const reqW = (d.monetization && d.monetization.watch_required) || 4000;
+      const pS = Math.min((tS / 1000) * 100, 100); const pW = Math.min((tW / reqW) * 100, 100);
+      const wLbl = document.getElementById('mon-w-label'); if (wLbl) wLbl.textContent = 'Watch Hours (' + reqW.toLocaleString() + ', est.)';
       document.getElementById('prog-subs').style.width = pS + '%'; document.getElementById('prog-watch').style.width = pW + '%';
       document.getElementById('mon-s-pct').textContent = Math.round(pS) + '%'; document.getElementById('mon-w-pct').textContent = Math.round(pW) + '%';
       const sb = document.getElementById('mon-status');
-      if (tS >= 1000 && tW >= 4000) { sb.textContent = '🎉 MEMENUHI SYARAT'; sb.className = 'pill p-green'; } else { sb.textContent = '❌ BELUM SYARAT'; sb.className = 'pill p-red'; }
+      if (tS >= 1000 && tW >= reqW) { sb.textContent = '🎉 MEMENUHI SYARAT'; sb.className = 'pill p-green'; } else { sb.textContent = '❌ BELUM SYARAT'; sb.className = 'pill p-red'; }
       drawChart('Statistik: ' + d.name, ['Subscribers', 'Videos'], [d.subs, d.videos], [], 'doughnut');
     }
   }
   document.getElementById('st-views').textContent = tV.toLocaleString(); document.getElementById('st-watch').textContent = tW.toLocaleString(); document.getElementById('st-subs').textContent = tS.toLocaleString();
+  renderChannelTable();
   renderVideoStats(); renderFormulaAnalytics();
 }
 
@@ -4477,6 +4558,16 @@ function renderVideoStats() {
   document.getElementById('vs-updated').textContent = d.cache_used ? 'Data dari cache (≤1 jam)' : 'Data baru dari YouTube';
   const errs = (d.channels || []).filter(c => c.status === 'error');
   document.getElementById('vs-error').textContent = errs.length ? '⚠️ ' + errs.map(c => c.name + ': ' + c.error).join(' | ') : '';
+  // Penjelasan 0-vs-1.310: kartu ini HANYA melacak video yang di-upload
+  // pabrik (riwayat + video_id, sejak Fase 4); TOTAL VIEWS di atas adalah
+  // total semua video channel (termasuk video lama yang tidak terlacak).
+  const noteEl = document.getElementById('vs-scope-note');
+  if (noteEl) {
+    const chTotal = (analyticsData || []).reduce((a, x) => a + (x.views || 0), 0);
+    if ((s.total_videos || 0) === 0 && chTotal > 0) {
+      noteEl.textContent = 'ℹ️ Belum ada video yang di-upload pabrik, jadi angka di sini 0. Views ' + chTotal.toLocaleString() + ' pada kartu TOTAL VIEWS di atas adalah total semua video channel (termasuk video lama yang di-upload sebelum pabrik jalan) dan tidak terlacak di tabel ini.';
+    } else noteEl.textContent = '';
+  }
   const bw = s.best_worst || {};
   const bwKeys = Object.keys(bw).filter(k => fv === 'ALL' || k === fv);
   document.getElementById('vs-bestworst').innerHTML = bwKeys.length ? bwKeys.map(k => {
@@ -4543,7 +4634,7 @@ function fetchMonetization() {
     let h = '<div class="g2" style="margin-bottom:12px">'
       + '<div><div style="font-family:var(--font-m);font-size:10px;color:var(--muted)">VIDEO TAYANG</div><div style="font-size:18px;font-weight:700;color:var(--accent)">' + (t.videos || 0) + '</div></div>'
       + '<div><div style="font-family:var(--font-m);font-size:10px;color:var(--muted)">TOTAL JAM TAYANG</div><div style="font-size:18px;font-weight:700;color:var(--accent)">' + (t.total_hours || 0).toLocaleString() + ' jam</div></div>'
-      + '<div><div style="font-family:var(--font-m);font-size:10px;color:var(--muted)">VIEWS 30 HARI</div><div style="font-size:18px;font-weight:700;color:var(--accent)">' + (t.views_30d || 0).toLocaleString() + '</div></div>'
+      + '<div><div style="font-family:var(--font-m);font-size:10px;color:var(--muted)">VIEWS VIDEO BARU 30 HARI</div><div style="font-size:18px;font-weight:700;color:var(--accent)">' + (t.views_30d || 0).toLocaleString() + '</div></div>'
       + '<div><div style="font-family:var(--font-m);font-size:10px;color:var(--muted)">ESTIMASI 30 HARI (DARI RPM)</div><div style="font-size:18px;font-weight:700;color:var(--accent)">' + fmtUsd(t.est_30d_usd) + '</div></div>'
       + '</div>';
     h += '<div style="font-size:12px;margin-bottom:10px">💾 Disk: <b>' + (disk.free_gb || 0) + ' GB bebas</b> dari ' + (disk.total_gb || 0) + ' GB (' + (disk.free_pct || 0) + '%) · Uploads ' + (disk.uploads_gb || 0) + ' GB · Downloads ' + (disk.downloads_gb || 0) + ' GB · Static ' + (disk.static_gb || 0) + ' GB</div>';
@@ -4565,7 +4656,7 @@ function fetchMonetization() {
         h += '<div style="font-size:11px;color:var(--muted);margin-top:8px">📈 Proyeksi 30 hari ke depan bila views sama seperti 30 hari terakhir: <b>' + fmtUsd(t.est_projection_30d_usd) + '</b> (total semua channel ber-RPM).</div>';
       }
     }
-    h += '<div style="font-size:11px;color:var(--muted);margin-top:10px">' + escapeHtml(d.honesty_note || '') + '<br>' + escapeHtml(d.rpm_note || '') + '</div>';
+    h += '<details style="font-size:11px;color:var(--muted);margin-top:10px"><summary style="cursor:pointer">Penjelasan estimasi</summary><div style="margin-top:6px;line-height:1.5">' + escapeHtml(d.honesty_note || '') + '<br>' + escapeHtml(d.rpm_note || '') + '</div></details>';
     box.innerHTML = h;
   }).catch(() => {
     if (box) box.textContent = 'Gagal memuat monetisasi.';
@@ -4602,7 +4693,7 @@ function fetchNodeStatus() {
           + '<td style="padding:6px 8px">' + (n.last_seen_ago_sec != null ? n.last_seen_ago_sec + ' dtk lalu' : '—') + '</td></tr>').join('')
         + '</tbody></table></div>';
     }
-    h += '<div style="font-size:11px;color:var(--muted);margin-top:8px">' + escapeHtml(d.contract_note || '') + '</div>';
+    h += '<details style="font-size:11px;color:var(--muted);margin-top:8px"><summary style="cursor:pointer">Penjelasan mode multi-node</summary><div style="margin-top:6px;line-height:1.5">' + escapeHtml(d.contract_note || '') + '</div></details>';
     box.innerHTML = h;
   }).catch(() => {
     if (box) box.textContent = 'Gagal memuat status node.';
@@ -4761,6 +4852,181 @@ function copyTvUrl() {
   if (navigator.clipboard) { navigator.clipboard.writeText(inp.value).then(() => toast('Link disalin!', 'success')).catch(() => { document.execCommand('copy'); toast('Link disalin!', 'success'); }); } 
   else { document.execCommand('copy'); toast('Link disalin!', 'success'); }
 }
+
+
+// ════════════════════════════════════════════════════════════
+// 📊 TABEL DETAIL CHANNEL (Dashboard) + MODAL TAMBAH CHANNEL
+// ════════════════════════════════════════════════════════════
+function _fmtNum(v) { return (v === null || v === undefined) ? '—' : Number(v).toLocaleString(); }
+
+// Render tabel detail channel dari `analyticsData` (diisi fetchAnalytics
+// dari /api/get_youtube_analytics) digabung `channels` (nama/thumbnail/
+// status/paused dari /api/get_channels). Semua nama/angka lewat escapeHtml().
+// Dipanggil dari renderAnalytics() dan renderDashboardChannels().
+function renderChannelTable() {
+  const tb = document.getElementById('ch-detail-tbody'); if (!tb) return;
+  const rows = analyticsData || [];
+  const cnt = document.getElementById('ch-detail-count'); if (cnt) cnt.textContent = rows.length + ' channel';
+  const noteEl = document.getElementById('ch-detail-note');
+  const sumEl = document.getElementById('ch-monet-summary');
+  const chById = {}; (channels || []).forEach(c => { chById[c.yt_id] = c; });
+  if (!rows.length) {
+    const loading = (channels || []).length > 0;
+    tb.innerHTML = '<tr><td colspan="13" style="padding:10px 8px;color:var(--muted)">'
+      + (loading ? 'Memuat detail channel…'
+                 : 'Belum ada channel tertaut — tambahkan lewat tombol "➕ Tambah Channel" di atas atau dari Settings.')
+      + '</td></tr>';
+    if (noteEl) noteEl.textContent = '';
+    if (sumEl) sumEl.innerHTML = '';
+    return;
+  }
+  tb.innerHTML = rows.map(d => {
+    const c = chById[d.yt_id] || {};
+    const paused = !!c.paused;
+    const thumb = c.thumbnail ? `<img src="${escapeHtml(c.thumbnail)}" style="width:28px;height:28px;border-radius:50%;vertical-align:middle;margin-right:6px;object-fit:cover">` : '';
+    const trend = d.trend === 'up' ? '<span style="color:var(--green)">▲ Naik</span>'
+      : d.trend === 'down' ? '<span style="color:var(--red,#f43f5e)">▼ Turun</span>'
+      : d.trend === 'flat' ? '<span style="color:var(--muted)">→ Datar</span>' : '—';
+    const mon = d.monetization || {};
+    const monBadge = mon.status === 'monetized' ? '<span class="pill p-green">💰 Monetisasi Aktif</span>'
+      : mon.status === 'ready' ? '<span class="pill p-green">✅ Siap Monet (est.)</span>'
+      : '<span class="pill p-muted">⏳ ' + _fmtNum(mon.subs) + '/' + _fmtNum(mon.subs_required) + ' subs</span>';
+    const v28title = d.snap_28d ? 'Periode ' + d.snap_28d + ' → ' + (d.snap_ref || '') : 'Butuh snapshot 28 hari';
+    const v48title = d.snap_48h ? 'Periode ' + d.snap_48h + ' → ' + (d.snap_ref || '') : 'Butuh snapshot 2 hari';
+    const w30title = d.snap_30d ? 'Views 30 hari (' + d.snap_30d + ' → ' + (d.snap_ref || '') + ') × durasi rata-rata blueprint video long — estimasi kasar' : 'Butuh riwayat snapshot / video long pabrik';
+    return '<tr style="border-bottom:1px solid var(--border)">'
+      + '<td style="padding:6px 8px">' + thumb + '<b>' + escapeHtml(d.name) + '</b></td>'
+      + '<td style="padding:6px 8px"><span class="pill p-green">Connected</span>' + (paused ? ' <span class="pill p-yellow">⏸️ Dijeda</span>' : '') + '</td>'
+      + '<td style="padding:6px 8px">' + escapeHtml(d.updated_label || '—') + '</td>'
+      + '<td style="padding:6px 8px;text-align:right">' + _fmtNum(d.subs) + '</td>'
+      + '<td style="padding:6px 8px;text-align:right">' + _fmtNum(d.videos) + '</td>'
+      + '<td style="padding:6px 8px;text-align:right" title="' + escapeHtml(v28title) + '">' + _fmtNum(d.views_28d) + '</td>'
+      + '<td style="padding:6px 8px;text-align:right" title="' + escapeHtml(v48title) + '">' + _fmtNum(d.views_48h) + '</td>'
+      + '<td style="padding:6px 8px">' + trend + '</td>'
+      + '<td style="padding:6px 8px;text-align:right" title="' + escapeHtml(w30title) + '">' + (d.watch_30d_est_hours == null ? '—' : Number(d.watch_30d_est_hours).toLocaleString() + ' jam') + '</td>'
+      + '<td style="padding:6px 8px;text-align:right">' + _fmtNum(d.avg_views) + '</td>'
+      + '<td style="padding:6px 8px">' + escapeHtml(d.age_label || '—') + '</td>'
+      + '<td style="padding:6px 8px">' + monBadge + '</td>'
+      + '<td style="padding:6px 8px"><a href="https://www.youtube.com/channel/' + escapeHtml(d.yt_id) + '" target="_blank" rel="noopener" style="color:var(--accent)">Open ↗</a></td>'
+      + '</tr>';
+  }).join('');
+  // Catatan kaki: mana data API, mana estimasi, mana yang butuh riwayat.
+  const anySnap = rows.some(d => d.snap_ref);
+  if (noteEl) noteEl.innerHTML = 'Views, Subscribe, Videos, Umur channel: <b>YouTube Data API</b> (cache 1 jam). '
+    + 'VIEW 28D / 48H: selisih dari <b>snapshot harian channel</b> — kolom terisi bertahap; channel baru tampil "—" sampai riwayat snapshot cukup (butuh snapshot 28 / 2 hari). '
+    + 'TREND: views 28D terbaru vs 28 hari sebelumnya (±2% = datar). '
+    + 'WATCH 30D (est.): views 30 hari × durasi rata-rata blueprint video long channel — <b>estimasi kasar</b>, bukan data YouTube. '
+    + 'AVG: total views / jumlah video. '
+    + 'Jam tayang untuk kesiapan monetisasi adalah <b>estimasi</b> (90 hari terakhir); keputusan akhir monetisasi ada di YouTube Studio. '
+    + 'REVENUE tidak ditampilkan — tidak ada data penghasilan dari API; estimasi RPM hanya di kartu Monetisasi di bawah.'
+    + (anySnap ? '' : ' <b>Snapshot channel baru mulai tercatat hari ini</b> — kolom delta & tren akan terisi bertahap dalam 2–28 hari.');
+  // Ringkasan kesiapan monetisasi (laporan singkat per channel).
+  if (sumEl) {
+    const rule = (rows[0].monetization || {});
+    let h = '<div style="border-top:1px solid var(--border);padding-top:10px">'
+      + '<div style="font-weight:700;font-size:12px;margin-bottom:4px">💰 KESIAPAN MONETISASI</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">Syarat saat ini: ' + escapeHtml(rule.rule_label || '') + (rule.rule_next ? ' · ' + escapeHtml(rule.rule_next) : '') + '</div>';
+    rows.forEach(d => {
+      const m = d.monetization || {};
+      if (m.status === 'monetized') {
+        h += '<div style="font-size:12px;padding:3px 0"><b>' + escapeHtml(d.name) + '</b> — 💰 Monetisasi Aktif (penanda manual; tidak masuk penilaian kesiapan)</div>';
+      } else {
+        const w = m.watch_est == null ? '—' : '~' + Number(m.watch_est).toLocaleString();
+        const shorts = m.shorts_complete
+          ? Number(m.shorts_views || 0).toLocaleString() + '/' + Number(m.shorts_required || 0).toLocaleString() + ' views Shorts Muse 90 hari'
+          : 'views Shorts 90 hari belum bisa dihitung (klip Clipper tidak terlacak di snapshot pabrik)';
+        h += '<div style="font-size:12px;padding:3px 0"><b>' + escapeHtml(d.name) + '</b> — ' + escapeHtml(m.badge || '')
+          + ' · ' + _fmtNum(m.subs) + '/' + _fmtNum(m.subs_required) + ' subs'
+          + ' · ' + w + '/' + _fmtNum(m.watch_required) + ' jam (est., 90 hari)'
+          + ' · Shorts: ' + escapeHtml(shorts) + '</div>';
+      }
+    });
+    h += '</div>';
+    sumEl.innerHTML = h;
+  }
+}
+
+// ────────────────────────────────────────────────────────
+// 🔗 MODAL TAMBAH CHANNEL (Dashboard) — alur device login yang
+// sama seperti di Settings: /api/device_code (JSON, wajib login
+// panel + CSRF, device_code diikat ke sesi) lalu polling ke
+// /api/poll_device_token yang sudah ada. Upload client_secret.json
+// tetap hanya di Settings. Setelah berhasil: tutup modal, refresh
+// kartu CHANNEL TERHUBUNG + tabel detail tanpa reload halaman.
+// ────────────────────────────────────────────────────────
+let _addChTimer = null;
+let _addChPolling = false;
+
+function openAddChannelModal() {
+  const modal = document.getElementById('add-ch-modal');
+  const body = document.getElementById('add-ch-body');
+  if (!modal || !body) return;
+  modal.style.display = 'flex';
+  body.innerHTML = '<div style="color:var(--muted)">⏳ Meminta kode device dari Google…</div>';
+  fetch('/api/device_code', { method: 'POST' })
+    .then(r => r.json().then(d => ({ status: r.status, d })))
+    .then(({ status, d }) => {
+      if (d.status !== 'success') {
+        const noKey = /client_secret\.json/.test(d.message || '');
+        body.innerHTML = '<div style="color:var(--red,#f43f5e);font-weight:700;margin-bottom:8px">❌ ' + escapeHtml(d.message || 'Gagal meminta kode device.') + '</div>'
+          + (noKey
+            ? '<div style="margin-bottom:12px">Upload client_secret.json dulu di Settings — file JSON client TV dari Google Cloud.</div><button type="button" class="btn btn-p" onclick="closeAddChannelModal();go(\'settings\')">Buka Settings</button>'
+            : '<button type="button" class="btn btn-p" onclick="openAddChannelModal()">🔁 Coba Lagi</button>');
+        return;
+      }
+      _addChPolling = true;
+      body.innerHTML = '<div style="margin-bottom:12px"><b>Langkah 1:</b> Buka <a href="' + escapeHtml(d.verification_url) + '" target="_blank" rel="noopener" style="color:var(--accent)">google.com/device</a> di browser profil channel YouTube target.</div>'
+        + '<div style="margin-bottom:12px"><b>Langkah 2:</b> Masukkan kode ini:'
+        + '<div style="display:flex;gap:8px;margin-top:6px"><input type="text" id="add-ch-code" readonly value="' + escapeHtml(d.user_code) + '" style="flex:1;font-weight:700;font-size:18px;text-align:center;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"><button type="button" class="btn btn-p" onclick="copyAddChCode()">COPY</button></div></div>'
+        + '<div id="add-ch-status" style="font-weight:700;margin-top:6px">⏳ Menunggu Anda memasukkan kode… (kode kedaluwarsa 15 menit)</div>'
+        + '<div style="font-size:11px;color:var(--muted);margin-top:10px">Izin yang diminta: kelola video YouTube (upload & statistik). Jangan tutup modal ini sebelum selesai.</div>';
+      _pollDeviceModal(d.device_code, d.interval || 5);
+    })
+    .catch(() => {
+      body.innerHTML = '<div style="color:var(--red,#f43f5e);font-weight:700;margin-bottom:8px">❌ Gagal menghubungi server.</div><button type="button" class="btn btn-p" onclick="openAddChannelModal()">🔁 Coba Lagi</button>';
+    });
+}
+
+function copyAddChCode() {
+  const inp = document.getElementById('add-ch-code'); if (!inp) return;
+  inp.select();
+  if (navigator.clipboard) { navigator.clipboard.writeText(inp.value).then(() => toast('Kode disalin!', 'success')).catch(() => { document.execCommand('copy'); toast('Kode disalin!', 'success'); }); }
+  else { document.execCommand('copy'); toast('Kode disalin!', 'success'); }
+}
+
+function _pollDeviceModal(deviceCode, intervalSec) {
+  if (!_addChPolling) return;
+  fetch('/api/poll_device_token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_code: deviceCode }) })
+    .then(r => r.json())
+    .then(data => {
+      const st = document.getElementById('add-ch-status');
+      if (data.status === 'success') {
+        _addChPolling = false;
+        if (st) st.innerHTML = '<span style="color:var(--green)">🎉 Berhasil! Channel tertaut — me-refresh daftar…</span>';
+        loadChannels();
+        fetchAnalytics();
+        setTimeout(closeAddChannelModal, 2000);
+      } else if (data.status === 'pending') {
+        _addChTimer = setTimeout(() => _pollDeviceModal(deviceCode, data.interval ? data.interval / 1000 : intervalSec), data.interval || intervalSec * 1000);
+      } else {
+        _addChPolling = false;
+        if (st) st.innerHTML = '<span style="color:var(--red,#f43f5e)">❌ ' + escapeHtml(data.error || 'Gagal menautkan channel.') + '</span>';
+        const body = document.getElementById('add-ch-body');
+        if (body) body.innerHTML += '<div style="margin-top:12px"><button type="button" class="btn btn-p" onclick="openAddChannelModal()">🔁 Coba Lagi</button></div>';
+      }
+    })
+    .catch(() => {
+      _addChTimer = setTimeout(() => _pollDeviceModal(deviceCode, intervalSec), intervalSec * 1000);
+    });
+}
+
+function closeAddChannelModal() {
+  _addChPolling = false;
+  if (_addChTimer) { clearTimeout(_addChTimer); _addChTimer = null; }
+  const modal = document.getElementById('add-ch-modal');
+  if (modal) modal.style.display = 'none';
+}
+
 
 // ────────────────────────────────────────────────────────
 //  AUDIO PREVIEW REAL-TIME NODE

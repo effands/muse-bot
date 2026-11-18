@@ -828,6 +828,60 @@ body::before { display: none; }
 .stat-note { font-size: 11px; }
 .logo-name { font-size: 16px; text-shadow: none; }
 .logo-ver { font-size: 10px; }
+
+/* ── Logo baru (PNG AI) ── */
+.logo-img { width:36px; height:36px; border-radius:9px; flex-shrink:0; object-fit:contain; }
+.logo-img-light { display:none; }
+[data-theme="light"] .logo-img-dark { display:none; }
+[data-theme="light"] .logo-img-light { display:block; }
+
+/* ── Ikon SVG sidebar ── */
+.nav-ic { width:16px; height:16px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; flex-shrink:0; }
+.nav-label { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sidebar-collapse-btn { display:flex; align-items:center; gap:9px; width:100%; padding:8px 10px; border-radius:8px; border:1px solid transparent; background:transparent; color:var(--muted); font-family:var(--font-d); font-size:12px; font-weight:600; cursor:pointer; text-align:left; margin:2px 0; }
+.sidebar-collapse-btn:hover { background:var(--accent-dim); color:var(--text); }
+@media (min-width: 901px) {
+  body.sidebar-collapsed .sidebar { width:64px; min-width:64px; }
+  body.sidebar-collapsed .logo { padding:16px 8px 12px; }
+  body.sidebar-collapsed .logo-name, body.sidebar-collapsed .logo-ver { display:none; }
+  body.sidebar-collapsed .logo-mark { justify-content:center; }
+  body.sidebar-collapsed .nav-section, body.sidebar-collapsed .nav-label { display:none; }
+  body.sidebar-collapsed .nav-item { justify-content:center; padding:10px 0; }
+  body.sidebar-collapsed .nav-item.active::before { left:-10px; }
+  body.sidebar-collapsed .nav-badge { display:none; }
+  body.sidebar-collapsed .ch-mini-name, body.sidebar-collapsed .ch-status { display:none; }
+  body.sidebar-collapsed .ch-mini { justify-content:center; }
+  body.sidebar-collapsed .sidebar-collapse-btn { justify-content:center; padding:8px 0; }
+  body.sidebar-collapsed .sidebar-collapse-btn .nav-ic { transform:rotate(180deg); }
+}
+
+/* ── Grid Dashboard 2 kolom (desktop), 1 kolom (kecil) ── */
+.dash-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:14px; }
+.dash-grid > .card, .dash-grid > div { margin-bottom:0 !important; }
+.dash-grid > div { min-width:0; }
+@media (max-width: 900px) { .dash-grid { grid-template-columns:1fr; } }
+
+/* ── Catatan data (ikon info, klik untuk membuka) ── */
+.data-note { margin-top:10px; font-size:11px; color:var(--muted); line-height:1.6; }
+.data-note > summary { display:inline-flex; align-items:center; gap:5px; cursor:pointer; list-style:none; color:var(--accent); font-weight:700; padding:3px 10px; border:1px solid var(--border); border-radius:20px; }
+.data-note > summary::-webkit-details-marker { display:none; }
+.data-note > div { margin-top:8px; }
+
+/* ── Tabel kesiapan monetisasi ── */
+.monet-table { width:100%; border-collapse:collapse; font-size:12px; }
+.monet-table th { text-align:left; color:var(--muted); font-family:var(--font-m); font-size:10px; padding:4px 8px 6px 0; border-bottom:1px solid var(--border); }
+.monet-table td { padding:8px 8px 8px 0; border-bottom:1px solid var(--border); vertical-align:middle; }
+.monet-table tr:last-child td { border-bottom:none; }
+.monet-bar { display:flex; align-items:center; gap:8px; min-width:130px; }
+.monet-bar .pb-bg { flex:1; min-width:56px; }
+.monet-bar .pb-num { font-family:var(--font-m); font-size:11px; white-space:nowrap; }
+
+/* ── Baris kompak Jadwal Otomatis Short (Settings) ── */
+.as-row { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; padding:8px 10px; border:1px solid var(--border); border-radius:var(--r); margin-bottom:6px; background:var(--card2); }
+.as-row .as-name { font-size:13px; font-weight:700; min-width:120px; flex:1 1 auto; }
+.as-row select, .as-row input[type="time"] { padding:4px 6px; font-size:12px; }
+.as-row input[type="time"] { width:88px; }
+.as-row .as-next { flex-basis:100%; font-size:10px; color:var(--muted); }
 .nav-section { font-size: 11px; }
 .nav-item { font-size: 13px; }
 .nav-badge { font-size: 11px; }
@@ -928,6 +982,17 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
 </style>
 </head>
 <body>
+<!-- Ikon SVG sidebar & bottom-nav (satu sprite, dipakai lewat <use>). -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="ic-dash" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+<symbol id="ic-tasks" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></symbol>
+<symbol id="ic-cal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></symbol>
+<symbol id="ic-gallery" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></symbol>
+<symbol id="ic-title" viewBox="0 0 24 24"><polyline points="12 20 12 10"/><polyline points="18 20 18 4"/><polyline points="6 20 6 4"/></symbol>
+<symbol id="ic-batch" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="17" x2="22" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/></symbol>
+<symbol id="ic-shorts" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></symbol>
+<symbol id="ic-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+</defs></svg>
 <!-- 🔒 #12: token CSRF per-sesi (diisi server saat render; kosong bila halaman dirender tanpa login — JS lalu mengambilnya dari /api/csrf_token). -->
 <script>window.CSRF_TOKEN = "{{ csrf_token }}";</script>
 
@@ -937,7 +1002,8 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
   <a href="/hub" class="logo-link" title="Kembali ke Home">
   <div class="logo">
     <div class="logo-mark">
-      <div class="logo-sq">Z</div>
+      <img class="logo-img logo-img-dark" src="/static/ziqva-logo.png" onerror="this.onerror=null;this.src='/static/logo.png'" alt="Ziqva Muse Bot">
+      <img class="logo-img logo-img-light" src="/static/ziqva-logo-dark.png" onerror="this.onerror=null;this.src='/static/logo.png'" alt="Ziqva Muse Bot">
       <div>
         <div class="logo-name">ZIQVA MUSE BOT</div>
         <div class="logo-ver">CLOUD VPS</div>
@@ -947,17 +1013,18 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
   </a>
   <nav class="nav">
     <div class="nav-section">OVERVIEW</div>
-    <button class="nav-item active" onclick="go('dashboard',this)" id="nb-dashboard"><span class="nav-icon">⬡</span> Dashboard</button>
-    <button class="nav-item" onclick="go('tasks',this)" id="nb-tasks"><span class="nav-icon">◈</span> Task Monitor<span class="nav-badge" id="task-badge" style="display:none">0</span></button>
-    <button class="nav-item" onclick="go('calendar',this)" id="nb-calendar"><span class="nav-icon">🗓</span> Kalender Jadwal</button>
+    <button class="nav-item active" onclick="go('dashboard',this)" id="nb-dashboard" title="Dashboard"><svg class="nav-ic"><use href="#ic-dash"/></svg><span class="nav-label">Dashboard</span></button>
+    <button class="nav-item" onclick="go('tasks',this)" id="nb-tasks" title="Task Monitor"><svg class="nav-ic"><use href="#ic-tasks"/></svg><span class="nav-label">Task Monitor</span><span class="nav-badge" id="task-badge" style="display:none">0</span></button>
+    <button class="nav-item" onclick="go('calendar',this)" id="nb-calendar" title="Kalender Jadwal"><svg class="nav-ic"><use href="#ic-cal"/></svg><span class="nav-label">Kalender Jadwal</span></button>
     <div class="nav-section">STUDIO</div>
-    <button class="nav-item" onclick="go('gallery',this)" id="nb-gallery"><span class="nav-icon">▦</span> Asset Gallery</button>
-    <button class="nav-item" onclick="go('titles',this)" id="nb-titles"><span class="nav-icon">✦</span> Title Generator</button>
-    <button class="nav-item" onclick="go('batch',this)" id="nb-batch"><span class="nav-icon">◉</span> Batch Creator</button>
-    <button class="nav-item" onclick="go('shorts',this)" id="nb-shorts"><span class="nav-icon">📱</span> Shorts Muse</button>
+    <button class="nav-item" onclick="go('gallery',this)" id="nb-gallery" title="Asset Gallery"><svg class="nav-ic"><use href="#ic-gallery"/></svg><span class="nav-label">Asset Gallery</span></button>
+    <button class="nav-item" onclick="go('titles',this)" id="nb-titles" title="Title Generator"><svg class="nav-ic"><use href="#ic-title"/></svg><span class="nav-label">Title Generator</span></button>
+    <button class="nav-item" onclick="go('batch',this)" id="nb-batch" title="Batch Creator"><svg class="nav-ic"><use href="#ic-batch"/></svg><span class="nav-label">Batch Creator</span></button>
+    <button class="nav-item" onclick="go('shorts',this)" id="nb-shorts" title="Shorts Muse"><svg class="nav-ic"><use href="#ic-shorts"/></svg><span class="nav-label">Shorts Muse</span></button>
     <div class="nav-section">SYSTEM</div>
-    <button class="nav-item" onclick="go('settings',this)" id="nb-settings"><span class="nav-icon">◎</span> Settings</button>
+    <button class="nav-item" onclick="go('settings',this)" id="nb-settings" title="Settings"><svg class="nav-ic"><use href="#ic-settings"/></svg><span class="nav-label">Settings</span></button>
   </nav>
+  <button class="sidebar-collapse-btn" id="sidebar-collapse-btn" onclick="toggleSidebarCollapse()" title="Lipat/lebarkan menu"><svg class="nav-ic" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg><span class="nav-label">Ciutkan Menu</span></button>
   <div class="sidebar-footer">
     <div class="ch-mini">
       <div class="ch-mini-av" id="sb-av">–</div>
@@ -1076,6 +1143,8 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
 
       <div class="card" style="margin-bottom:18px;"><div class="card-body" style="padding:16px"><canvas id="dashChart" style="max-height:260px;width:100%"></canvas></div></div>
 
+      <!-- ════════ GRID DASHBOARD: kartu sekunder berdampingan 2 kolom (1 kolom di layar kecil) ════════ -->
+      <div class="dash-grid">
       <!-- ════════ FASE 4: STATISTIK PER VIDEO ════════ -->
       <div class="card" style="margin-bottom:18px;">
         <div class="card-head">
@@ -1124,8 +1193,10 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
           <div id="fa-body" style="font-size:12px;color:var(--muted)">Memuat lingkaran analitik…</div>
         </div>
       </div>
+      </div><!-- /dash-grid: Statistik + Lingkaran Analitik -->
 
       <!-- ════════ FASE 6: KUOTA PROJECT GOOGLE ════════ -->
+      <div class="dash-grid">
       <div class="card" style="margin-bottom:18px;">
         <div class="card-head">
           <div>
@@ -1152,8 +1223,10 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
           <div id="mz-body" style="font-size:12px;color:var(--muted)">Memuat monetisasi…</div>
         </div>
       </div>
+      </div><!-- /dash-grid: Kuota + Monetisasi -->
 
       <!-- ════════ FASE 9: NODE & SKALA ════════ -->
+      <div class="dash-grid">
       <div class="card" style="margin-bottom:18px;">
         <div class="card-head">
           <div>
@@ -1168,11 +1241,10 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
       </div>
 
       <!-- ════════ PUSAT KENDALI CEPAT (QUICK ACTIONS) ════════ -->
-      <div style="margin-bottom:18px;">
-        <div style="font-size:12px; font-weight:700; letter-spacing:.08em; color:var(--text); margin-bottom:10px; display:flex; align-items:center; gap:6px;">
-          <span style="color:var(--accent);">⚡</span> PUSAT KONTROL CEPAT
-        </div>
-        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px;">
+      <div class="card">
+        <div class="card-head"><span class="card-title">⚡ PUSAT KONTROL CEPAT</span></div>
+        <div class="card-body">
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
           
           <div class="card" onclick="go('gallery')" style="cursor:pointer; margin-bottom:0; padding:14px; border:1px solid var(--border); transition:all .2s;" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
             <div style="display:flex; align-items:center; gap:10px;">
@@ -1216,6 +1288,8 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
 
         </div>
       </div>
+      </div>
+      </div><!-- /dash-grid: Node + Kontrol Cepat -->
 
       <!-- ════════ ALUR KERJA SISTEM (SOP ZIQVA MUSE BOT) ════════ -->
       <div class="card" style="margin-bottom:18px;">
@@ -1957,8 +2031,29 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
           <span class="card-title">⏰ JADWAL OTOMATIS SHORT</span>
         </div>
         <div class="card-body">
-          <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:12px">Satu Short otomatis per channel per hari, di jam yang kamu tentukan. Judul, hook, naskah &amp; CTA dibuat otomatis dari tema dan berputar tiap hari. Bila jam tayang sudah lewat pada hari pembuatan, tayang digeser ke esok harinya. Short butuh minimal 1 background di galeri channel — bila galeri kosong, jadwal hari itu dilewati dan bot memberi tahu di Telegram. Mode Approval: short menunggu persetujuanmu dulu; Full-Auto: langsung masuk antrean.</div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Satu Short otomatis per channel per hari, di jam yang kamu tentukan.</div>
+          <details class="data-note" style="margin:0 0 10px"><summary>Penjelasan</summary><div>Judul, hook, naskah &amp; CTA dibuat otomatis dari tema dan berputar tiap hari. Bila jam tayang sudah lewat pada hari pembuatan, tayang digeser ke esok harinya. Short butuh minimal 1 background di galeri channel — bila galeri kosong, jadwal hari itu dilewati dan bot memberi tahu di Telegram. Mode Approval: short menunggu persetujuanmu dulu; Full-Auto: langsung masuk antrean.</div></details>
           <div id="auto-shorts-list"></div>
+        </div>
+      </div>
+
+      <!-- ════════ UPDATE & VERSI — update panel sekali klik (tanpa konsol VPS) ════════ -->
+      <div class="card" style="margin-bottom:16px;margin-top:16px">
+        <div class="card-head">
+          <span class="card-title">🔄 UPDATE &amp; VERSI</span>
+          <span class="pill p-muted" id="upd-ver-pill" style="font-size:11px">v—</span>
+        </div>
+        <div class="card-body">
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;font-size:12px;margin-bottom:10px">
+            <span>Versi: <b id="upd-version">…</b></span>
+            <span>Commit: <span id="upd-commit" style="font-family:var(--font-m)">…</span></span>
+            <span id="upd-status" style="color:var(--muted)">Belum dicek.</span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            <button class="btn" id="upd-check-btn" onclick="checkUpdate()">🔄 Periksa Update</button>
+            <button class="btn btn-p" id="upd-run-btn" onclick="startUpdate()">⬆️ Update &amp; Restart</button>
+          </div>
+          <details class="data-note" style="margin:10px 0 0"><summary>Penjelasan</summary><div>Update menarik kode terbaru dari GitHub lalu restart kedua service (panel + operator). Proses berjalan di latar — panel akan mati sebentar saat restart, lalu hidup lagi sendiri. Bila ada video sedang dirender/di-upload, update ditolak (coba lagi setelah selesai). Bila git pull gagal (ada perubahan lokal/konflik), update dibatalkan tanpa restart dan alasannya ditampilkan di sini. Hasil update juga dikirim ke Telegram.</div></details>
         </div>
       </div>
 
@@ -1970,26 +2065,26 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
 </main>
 <nav class="bottom-nav">
   <button class="bnav-item active" onclick="go('dashboard')" id="bn-dashboard">
-    <span class="nav-icon">⬡</span><span>Dash</span>
+    <span class="nav-icon"><svg class="nav-ic" style="width:18px;height:18px"><use href="#ic-dash"/></svg></span><span>Dash</span>
   </button>
   <button class="bnav-item" onclick="go('tasks')" id="bn-tasks">
-    <span class="nav-icon">◈</span><span>Tasks</span>
+    <span class="nav-icon"><svg class="nav-ic" style="width:18px;height:18px"><use href="#ic-tasks"/></svg></span><span>Tasks</span>
     <span class="bnav-badge" id="bn-badge" style="display:none">0</span>
   </button>
   <button class="bnav-item" onclick="go('gallery')" id="bn-gallery">
-    <span class="nav-icon">▦</span><span>Aset</span>
+    <span class="nav-icon"><svg class="nav-ic" style="width:18px;height:18px"><use href="#ic-gallery"/></svg></span><span>Aset</span>
   </button>
   <button class="bnav-item" onclick="go('titles')" id="bn-titles">
-    <span class="nav-icon">✦</span><span>Title</span>
+    <span class="nav-icon"><svg class="nav-ic" style="width:18px;height:18px"><use href="#ic-title"/></svg></span><span>Title</span>
   </button>
   <button class="bnav-item" onclick="go('batch')" id="bn-batch">
-    <span class="nav-icon">◉</span><span>Batch</span>
+    <span class="nav-icon"><svg class="nav-ic" style="width:18px;height:18px"><use href="#ic-batch"/></svg></span><span>Batch</span>
   </button>
   <button class="bnav-item" onclick="go('shorts')" id="bn-shorts">
-    <span class="nav-icon">📱</span><span>Shorts</span>
+    <span class="nav-icon"><svg class="nav-ic" style="width:18px;height:18px"><use href="#ic-shorts"/></svg></span><span>Shorts</span>
   </button>
   <button class="bnav-item" onclick="go('settings')" id="bn-settings">
-    <span class="nav-icon">◎</span><span>Set</span>
+    <span class="nav-icon"><svg class="nav-ic" style="width:18px;height:18px"><use href="#ic-settings"/></svg></span><span>Set</span>
   </button>
 </nav>
 <div class="toast-wrap" id="toast-wrap"></div>
@@ -2281,7 +2376,7 @@ function go(id, el) {
 
   document.getElementById('tb-title').textContent = PAGE_META[id].t;
   document.getElementById('tb-sub').textContent = PAGE_META[id].s;
-  if (id === 'settings') { loadTgConfig(); checkApiStatus(); }
+  if (id === 'settings') { loadTgConfig(); checkApiStatus(); loadAppVersion(); }
   if (id === 'dashboard') fetchAnalytics();
   if (id === 'calendar') loadCalendar();
   if (id === 'batch') {
@@ -2729,19 +2824,17 @@ function renderAutoShorts() {
     const cfg = c.auto_shorts || { enabled: false, theme: 'sleep', create_time: '06:00', publish_time: '19:00', duration_sec: 30 };
     const themeOpts = AUTO_SHORTS_THEMES.map(([v, l]) => `<option value="${v}"${cfg.theme === v ? ' selected' : ''}>${l}</option>`).join('');
     const durOpts = [15, 30, 60].map(d => `<option value="${d}"${cfg.duration_sec === d ? ' selected' : ''}>${d} detik</option>`).join('');
-    return `<div class="ch-connected" style="padding:10px 12px;flex-wrap:wrap;margin-bottom:8px">
-      <div style="flex:1;min-width:180px">
-        <div style="font-size:13px;font-weight:700;margin-bottom:3px">${escapeHtml(c.name)}</div>
-        <div style="font-size:11px;color:var(--muted)">${escapeHtml(autoShortsNextText(cfg))}</div>
-      </div>
-      <label style="display:flex;gap:6px;align-items:center;font-size:12px">
+    return `<div class="as-row">
+      <span class="as-name">${escapeHtml(c.name)}</span>
+      <label style="display:flex;gap:5px;align-items:center;font-size:12px;white-space:nowrap">
         <input type="checkbox" id="as-on-${c.yt_id}"${cfg.enabled ? ' checked' : ''}> Aktif
       </label>
       <select id="as-theme-${c.yt_id}" title="Tema konten Short">${themeOpts}</select>
-      <label style="font-size:11px;color:var(--muted)">Buat <input type="time" id="as-create-${c.yt_id}" value="${escapeHtml(cfg.create_time)}" style="width:92px"></label>
-      <label style="font-size:11px;color:var(--muted)">Tayang <input type="time" id="as-pub-${c.yt_id}" value="${escapeHtml(cfg.publish_time)}" style="width:92px"></label>
+      <label style="font-size:11px;color:var(--muted);white-space:nowrap">Buat <input type="time" id="as-create-${c.yt_id}" value="${escapeHtml(cfg.create_time)}"></label>
+      <label style="font-size:11px;color:var(--muted);white-space:nowrap">Tayang <input type="time" id="as-pub-${c.yt_id}" value="${escapeHtml(cfg.publish_time)}"></label>
       <select id="as-dur-${c.yt_id}" title="Durasi Short">${durOpts}</select>
       <button class="btn btn-p btn-sm" onclick="saveAutoShorts('${c.yt_id}')">Simpan</button>
+      <span class="as-next">${escapeHtml(autoShortsNextText(cfg))}</span>
     </div>`;
   }).join('');
 }
@@ -2760,6 +2853,100 @@ function saveAutoShorts(yt_id) {
       if (d.status === 'success') loadChannels();
     })
     .catch(() => toast('Gagal menyimpan jadwal otomatis', 'error'));
+}
+
+// ────────────────────────────────────────────────────────
+//  🔄 UPDATE & VERSI — kartu Settings: tampilkan versi + commit,
+//  periksa update (HEAD lokal vs remote), jalankan update di latar
+//  lalu polling /api/update_status sampai selesai/gagal. Fetch POST
+//  ke /api/* otomatis membawa X-CSRF-Token (wrapper di atas).
+// ────────────────────────────────────────────────────────
+let _updPollTimer = null;
+function _updSetStatus(txt, color) {
+  const el = document.getElementById('upd-status');
+  if (el) { el.textContent = txt; el.style.color = color || 'var(--muted)'; }
+}
+function loadAppVersion() {
+  fetch('/api/app_version').then(r => r.json()).then(d => {
+    const v = document.getElementById('upd-version');
+    const c = document.getElementById('upd-commit');
+    const p = document.getElementById('upd-ver-pill');
+    if (v) v.textContent = d.version ? 'v' + d.version : '—';
+    if (c) c.textContent = d.commit || '—';
+    if (p) p.textContent = d.version ? 'v' + d.version : 'v—';
+  }).catch(() => {});
+}
+function checkUpdate() {
+  const btn = document.getElementById('upd-check-btn');
+  if (btn) btn.disabled = true;
+  _updSetStatus('⏳ Memeriksa GitHub…');
+  fetch('/api/check_update', { method: 'POST' }).then(r => r.json()).then(d => {
+    if (d.status === 'success') {
+      if (d.update_available) _updSetStatus('⬆️ Ada update: ' + (d.remote || '?') + ' (lokal ' + (d.local || '?') + '). Tekan "Update & Restart".', 'var(--yellow)');
+      else _updSetStatus('✅ Sudah versi terbaru (' + (d.local || '?') + ').', 'var(--green)');
+    } else _updSetStatus('❌ ' + (d.message || 'Gagal memeriksa update.'), 'var(--red)');
+  }).catch(() => _updSetStatus('❌ Tidak bisa menghubungi panel.', 'var(--red)'))
+    .finally(() => { if (btn) btn.disabled = false; });
+}
+function pollUpdateStatus() {
+  fetch('/api/update_status').then(r => r.json()).then(d => {
+    const u = d.update || {};
+    if (!u.status) return;
+    if (u.status === 'running') {
+      _updSetStatus('🔄 Update sedang berjalan… (dimulai ' + (u.started_at || '') + ')', 'var(--accent)');
+      return;
+    }
+    clearInterval(_updPollTimer); _updPollTimer = null;
+    if (u.status === 'success') {
+      _updSetStatus('✅ Update selesai — ' + (u.version ? 'v' + u.version : '') + ' ' + (u.commit || '') + '. Panel sudah restart.', 'var(--green)');
+      toast('Update selesai, panel sudah restart.', 'success');
+      loadAppVersion();
+    } else {
+      _updSetStatus('❌ Update gagal: ' + ((u.output || '').split('\n').filter(Boolean).slice(-2).join(' ') || 'lihat update.log di VPS.'), 'var(--red)');
+      toast('Update gagal — panel tidak di-restart.', 'error');
+    }
+  }).catch(() => {});
+}
+function startUpdate() {
+  if (!confirm('Update panel ke versi terbaru dari GitHub lalu restart? Panel akan mati sebentar. Pastikan tidak ada video sedang dirender.')) return;
+  const btn = document.getElementById('upd-run-btn');
+  if (btn) btn.disabled = true;
+  _updSetStatus('⏳ Memulai update…');
+  fetch('/api/update_panel', { method: 'POST' }).then(r => r.json().then(d => ({ http: r.status, body: d }))).then(({ http, body }) => {
+    if (body.status === 'success') {
+      _updSetStatus('🔄 Update dimulai — panel akan restart sendiri. Tunggu 1–2 menit lalu refresh halaman.', 'var(--accent)');
+      toast(body.message || 'Update dimulai.', 'success');
+      if (_updPollTimer) clearInterval(_updPollTimer);
+      _updPollTimer = setInterval(pollUpdateStatus, 5000);
+      setTimeout(pollUpdateStatus, 8000);
+    } else {
+      _updSetStatus('❌ ' + (body.message || 'Update ditolak.'), 'var(--red)');
+      toast(body.message || 'Update ditolak.', 'error');
+      if (btn) btn.disabled = false;
+    }
+  }).catch(() => { _updSetStatus('❌ Tidak bisa menghubungi panel.', 'var(--red)'); if (btn) btn.disabled = false; });
+}
+
+// ────────────────────────────────────────────────────────
+//  SIDEBAR LIPAT/LEBAR — pilihan disimpan di localStorage
+//  ('ziqva_sidebar_collapsed'). Hanya di layar lebar (>900px);
+//  di layar kecil sidebar tetap drawer seperti sebelumnya.
+// ────────────────────────────────────────────────────────
+function restoreSidebarCollapse() {
+  try {
+    if (window.innerWidth > 900 && localStorage.getItem('ziqva_sidebar_collapsed') === '1') {
+      document.body.classList.add('sidebar-collapsed');
+      const btn = document.getElementById('sidebar-collapse-btn');
+      if (btn) btn.querySelector('.nav-label').textContent = 'Lebarkan Menu';
+    }
+  } catch (e) {}
+}
+function toggleSidebarCollapse() {
+  if (window.innerWidth <= 900) { toggleSidebarDrawer(); return; }
+  const collapsed = document.body.classList.toggle('sidebar-collapsed');
+  try { localStorage.setItem('ziqva_sidebar_collapsed', collapsed ? '1' : '0'); } catch (e) {}
+  const btn = document.getElementById('sidebar-collapse-btn');
+  if (btn) btn.querySelector('.nav-label').textContent = collapsed ? 'Lebarkan Menu' : 'Ciutkan Menu';
 }
 
 // ────────────────────────────────────────────────────────
@@ -4984,37 +5171,50 @@ function renderChannelTable() {
       + '</tr>';
   }).join('');
   // Catatan kaki: mana data API, mana estimasi, mana yang butuh riwayat.
+  // Ditampilkan sebagai chip info "ⓘ Tentang data ini" — teks lengkap
+  // tetap ada, tersembunyi sampai diklik (tidak dihapus).
   const anySnap = rows.some(d => d.snap_ref);
-  if (noteEl) noteEl.innerHTML = 'Views, Subscribe, Videos, Umur channel: <b>YouTube Data API</b> (cache 1 jam). '
+  if (noteEl) noteEl.innerHTML = '<details class="data-note"><summary>ⓘ Tentang data ini</summary><div>'
+    + 'Views, Subscribe, Videos, Umur channel: <b>YouTube Data API</b> (cache 1 jam). '
     + 'VIEW 28D / 48H: selisih dari <b>snapshot harian channel</b> — kolom terisi bertahap; channel baru tampil "—" sampai riwayat snapshot cukup (butuh snapshot 28 / 2 hari). '
     + 'TREND: views 28D terbaru vs 28 hari sebelumnya (±2% = datar). '
     + 'WATCH 30D (est.): views 30 hari × durasi rata-rata blueprint video long channel — <b>estimasi kasar</b>, bukan data YouTube. '
     + 'AVG: total views / jumlah video. '
     + 'Jam tayang untuk kesiapan monetisasi adalah <b>estimasi</b> (90 hari terakhir); keputusan akhir monetisasi ada di YouTube Studio. '
     + 'REVENUE tidak ditampilkan — tidak ada data penghasilan dari API; estimasi RPM hanya di kartu Monetisasi di bawah.'
-    + (anySnap ? '' : ' <b>Snapshot channel baru mulai tercatat hari ini</b> — kolom delta & tren akan terisi bertahap dalam 2–28 hari.');
-  // Ringkasan kesiapan monetisasi (laporan singkat per channel).
+    + (anySnap ? '' : ' <b>Snapshot channel baru mulai tercatat hari ini</b> — kolom delta & tren akan terisi bertahap dalam 2–28 hari.')
+    + '</div></details>';
+  // Ringkasan kesiapan monetisasi — TABEL + progress bar.
+  // Data dipakai ulang dari helper server _channel_monetization_readiness()
+  // (m.status / m.badge / subs / watch_est / shorts_*); persen di sini hanya
+  // cur/need dari angka helper yang sama, bukan hitungan baru.
   if (sumEl) {
     const rule = (rows[0].monetization || {});
+    const pctOf = (cur, need) => need > 0 ? Math.max(0, Math.min(100, Math.round(100 * (cur || 0) / need))) : 0;
+    const bar = (curTxt, pct) => '<div class="monet-bar"><div class="pb-bg"><div class="pb-fill" style="width:' + pct + '%"></div></div><span class="pb-num">' + curTxt + '</span></div><span class="muted" style="font-size:10px">' + pct + '%</span>';
     let h = '<div style="border-top:1px solid var(--border);padding-top:10px">'
       + '<div style="font-weight:700;font-size:12px;margin-bottom:4px">💰 KESIAPAN MONETISASI</div>'
-      + '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">Syarat saat ini: ' + escapeHtml(rule.rule_label || '') + (rule.rule_next ? ' · ' + escapeHtml(rule.rule_next) : '') + '</div>';
+      + '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">Syarat saat ini: ' + escapeHtml(rule.rule_label || '') + (rule.rule_next ? ' · ' + escapeHtml(rule.rule_next) : '') + '</div>'
+      + '<div style="overflow-x:auto"><table class="monet-table"><thead><tr><th>Channel</th><th>Subs</th><th>Jam Tayang est.</th><th>Shorts 90 hari</th><th>Status</th></tr></thead><tbody>';
     rows.forEach(d => {
       const m = d.monetization || {};
-      if (m.status === 'monetized') {
-        h += '<div style="font-size:12px;padding:3px 0"><b>' + escapeHtml(d.name) + '</b> — 💰 Monetisasi Aktif (penanda manual; tidak masuk penilaian kesiapan)</div>';
-      } else {
-        const w = m.watch_est == null ? '—' : '~' + Number(m.watch_est).toLocaleString();
-        const shorts = m.shorts_complete
-          ? Number(m.shorts_views || 0).toLocaleString() + '/' + Number(m.shorts_required || 0).toLocaleString() + ' views Shorts Muse 90 hari'
-          : 'views Shorts 90 hari belum bisa dihitung (klip Clipper tidak terlacak di snapshot pabrik)';
-        h += '<div style="font-size:12px;padding:3px 0"><b>' + escapeHtml(d.name) + '</b> — ' + escapeHtml(m.badge || '')
-          + ' · ' + _fmtNum(m.subs) + '/' + _fmtNum(m.subs_required) + ' subs'
-          + ' · ' + w + '/' + _fmtNum(m.watch_required) + ' jam (est., 90 hari)'
-          + ' · Shorts: ' + escapeHtml(shorts) + '</div>';
-      }
+      const statusBadge = m.status === 'monetized' ? '<span class="pill p-green">💰 Monetisasi Aktif</span>'
+        : m.status === 'ready' ? '<span class="pill p-green">✅ Siap Monet (est.)</span>'
+        : '<span class="pill p-yellow">⏳ Belum Siap</span>';
+      const subsTxt = _fmtNum(m.subs) + '/' + _fmtNum(m.subs_required);
+      const wTxt = (m.watch_est == null ? '—' : '~' + Number(m.watch_est).toLocaleString()) + '/' + _fmtNum(m.watch_required);
+      const shortsCell = m.shorts_complete
+        ? bar(Number(m.shorts_views || 0).toLocaleString() + '/' + Number(m.shorts_required || 0).toLocaleString(), pctOf(m.shorts_views, m.shorts_required))
+        : '<span class="muted" style="font-size:11px">belum bisa dihitung (klip Clipper tidak terlacak)</span>';
+      h += '<tr><td style="font-weight:600;white-space:nowrap">' + escapeHtml(d.name) + '</td>'
+        + '<td>' + bar(subsTxt, pctOf(m.subs, m.subs_required)) + '</td>'
+        + '<td>' + bar(wTxt, m.watch_est == null ? 0 : pctOf(m.watch_est, m.watch_required)) + '</td>'
+        + '<td>' + shortsCell + '</td>'
+        + '<td>' + statusBadge + (m.status === 'monetized' ? '<div class="muted" style="font-size:10px">penanda manual</div>' : '') + '</td></tr>';
     });
-    h += '</div>';
+    h += '</tbody></table></div>'
+      + '<div style="font-size:10px;color:var(--muted);margin-top:6px">Jam tayang adalah estimasi (Data API tidak menyediakan total 365 hari); angka pasti ada di YouTube Studio.</div>'
+      + '</div>';
     sumEl.innerHTML = h;
   }
 }
@@ -5240,6 +5440,8 @@ function init() {
   fetchAnalytics();
   loadTgConfig();
   checkApiStatus();
+  loadAppVersion();
+  restoreSidebarCollapse();
   fetch('/api/get_presets').then(r => r.json()).then(d => {
       if (d && typeof d === 'object' && !Array.isArray(d)) { visPresets = d; } else { visPresets = {}; }
       localStorage.setItem('wp_presets', JSON.stringify(visPresets)); refreshVisPresetList();

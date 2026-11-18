@@ -189,6 +189,17 @@ Jalankan dari dalam folder `~/muse-bot` (pakai `bash ziqva.sh ...` bila bit ekse
 
 ### 7.5 Cara update (setiap ada fitur/perbaikan baru dari Muse)
 
+**Cara utama — tombol Update di panel (tanpa buka konsol):**
+
+1. Di panel, buka **Settings → 🔄 UPDATE & VERSI**. Kartu ini menampilkan **versi yang sedang jalan** (mis. `v1.0.0`) dan **commit** yang sedang jalan.
+2. Tekan **🔄 Periksa Update** — panel membandingkan commit lokal vs GitHub; bila ada update, tampil "ada update: `<hash>`".
+3. Tekan **⬆️ Update & Restart** — update berjalan di latar, panel restart sendiri dalam 1–2 menit. Hasilnya juga dikirim ke Telegram.
+   - Bila ada video sedang dirender/di-upload, update **ditolak** (coba lagi setelah selesai).
+   - Bila `git pull` gagal (ada perubahan lokal/konflik), update **dibatalkan tanpa restart** dan alasannya ditampilkan di kartu.
+   - Versi juga tampil di Telegram lewat perintah `/status` (baris "Versi Panel").
+
+**Cara cadangan — konsol VPS** (bila tombol Update tidak bisa dipakai):
+
 ```bash
 cd ~/muse-bot && git pull origin main && bash ziqva.sh restart
 ```
@@ -197,6 +208,8 @@ cd ~/muse-bot && git pull origin main && bash ziqva.sh restart
 - `client_secret.json`, `config.json`, dan database channel/task **tidak ikut tertimpa** `git pull` (sudah di-`.gitignore`) — jadi tidak perlu upload ulang.
 - ⚠️ **Bila `git pull` menolak karena ada perubahan lokal di VPS, JANGAN dipaksa** (jangan `--force`, jangan `reset --hard`). Berhenti dan tanyakan ke Muse — biasanya cukup disimpan dulu dengan `git stash`, lalu pull lagi.
 - Bila lupa PIN: hapus file `config.json` di VPS secara manual, lalu buka panel lagi untuk setup PIN dari awal (lihat Troubleshooting).
+
+**Skema versi:** file `VERSION` di root repo berisi `major.minor.patch` (mis. `1.0.0`) — **minor naik untuk fitur baru, patch untuk perbaikan**. Setiap commit/push punya versi; versi + short commit hash tampil di panel (kartu UPDATE & VERSI) dan di Telegram `/status`.
 
 ---
 
@@ -302,7 +315,7 @@ Pemilik bisa meminta ke Muse, antara lain:
 - **Pagi (07:00):** baca laporan harian di Telegram — channel mana naik views/subs, kuota tersisa berapa, ada video gagal atau tidak.
 - **Siang (dari HP):** kirim `/buatshort` ke bot, jawab langkah-langkahnya, konfirmasi ✅ — video masuk antrean.
 - **Sore/malam:** cek `/jadwal` (publish 7 hari ke depan) dan `/stok` (apakah stok video & galeri masih cukup). Bila ada video gagal, tekan 🔁 Coba Lagi dari `/gagal`.
-- **Bila Muse mengirim update:** jalankan `git pull` + restart di konsol VPS, lalu uji perintah baru di Telegram.
+- **Bila Muse mengirim update:** tekan **⬆️ Update & Restart** di panel (Settings → UPDATE & VERSI) — konsol VPS hanya cadangan, lihat §7.5. Setelah itu uji perintah baru di Telegram.
 
 ---
 

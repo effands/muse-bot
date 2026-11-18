@@ -6096,6 +6096,139 @@ def set_channel_auto_shorts():
                     "message": f"Jadwal otomatis Short channel {name} disimpan." + (" Aktif — 1 Short dibuat otomatis tiap hari." if cfg['enabled'] else " Nonaktif.")})
 
 
+# ════════════════════════════════════════════════════════════
+# 🔄 UPDATE PANEL + VERSI (tombol Update di Settings)
+# ════════════════════════════════════════════════════════════
+# Skema versi: file VERSION (major.minor.patch) — minor naik untuk
+# fitur baru, patch untuk perbaikan. Tiap commit/push punya versi.
+# Short hash diambil dari git; "—" bila .git tidak tersedia.
+VERSION_FILE = os.path.join(BASE_DIR, 'VERSION')
+UPDATE_STATUS_FILE = os.path.join(BASE_DIR, 'update_status.json')
+UPDATE_SCRIPT = os.path.join(BASE_DIR, 'update.sh')
+
+def _app_version():
+    """Versi aplikasi dari file VERSION (mis. '1.0.0'); 'dev' bila tak ada."""
+    try:
+        with open(VERSION_FILE, 'r', encoding='utf-8') as f:
+            v = (f.read() or '').strip().split()
+            return v[0] if v else 'dev'
+    except Exception:
+        return 'dev'
+
+def _git_short_hash():
+    """Short commit hash HEAD lokal; None bila .git tidak tersedia."""
+    try:
+        p = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'],
+                           cwd=BASE_DIR, capture_output=True, text=True, timeout=10)
+        h = (p.stdout or '').strip()
+        return h or None
+    except Exception:
+        return None
+
+def _git_remote_head():
+    """Short hash HEAD remote (origin); None bila GitHub tak terjangkau."""
+    try:
+        p = subprocess.run(['git', 'ls-remote', 'origin', 'HEAD'],
+                           cwd=BASE_DIR, capture_output=True, text=True, timeout=20)
+        out = (p.stdout or '').strip()
+        return out.split()[0][:7] if out else None
+    except Exception:
+        return None
+
+def _read_update_status():
+    try:
+        with open(UPDATE_STATUS_FILE, 'r', encoding='utf-8') as f:
+            d = json.load(f)
+            return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+def _write_update_status(d):
+    try:
+        tmp = UPDATE_STATUS_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(d, f)
+        os.replace(tmp, UPDATE_STATUS_FILE)
+    except Exception as e:
+        print(f"Gagal tulis update_status: {e}", flush=True)
+
+# Status task yang berarti "tidak sedang diproses" (aman di-restart).
+_UPDATE_IDLE_MARKERS = ('Selesai', 'Gagal', 'Dibatalkan', 'Menunggu', 'Ditunda', 'Dijeda')
+
+def _any_task_rendering():
+    """True bila ada task aktif yang sedang diproses (render/upload/QC).
+    Task menunggu approval / menunggu jadwal / dijeda TIDAK dihitung."""
+    try:
+        for t in (active_tasks or []):
+            if t.get('approval') == 'pending':
+                continue
+            st = str(t.get('status') or '')
+            if st and not any(m in st for m in _UPDATE_IDLE_MARKERS):
+                return True
+    except Exception:
+        pass
+    return False
+
+@app.route('/api/app_version')
+def app_version_api():
+    """Versi + commit yang sedang jalan (butuh login panel; GET saja)."""
+    return jsonify({"status": "success", "version": _app_version(),
+                    "commit": _git_short_hash()})
+
+@app.route('/api/check_update', methods=['POST'])
+def check_update_api():
+    """Bandingkan HEAD lokal vs remote (butuh login + CSRF via check_security)."""
+    local = _git_short_hash()
+    remote = _git_remote_head()
+    if remote is None:
+        return jsonify({"status": "error",
+                        "message": "Tidak bisa menjangkau GitHub (cek koneksi VPS)."}), 502
+    return jsonify({"status": "success", "update_available": (local != remote),
+                    "local": local, "remote": remote, "version": _app_version()})
+
+@app.route('/api/update_status')
+def update_status_api():
+    """Status update terakhir (butuh login panel; GET saja)."""
+    st = _read_update_status()
+    return jsonify({"status": "success", "update": (st or None)})
+
+@app.route('/api/update_panel', methods=['POST'])
+def update_panel_api():
+    """Mulai update: git pull + restart di latar (update.sh). Kembalikan
+    langsung 'update dimulai' — request TIDAK menunggu restart (proses web
+    akan mati saat restart). Ditolak 409 bila: update sedang berjalan, atau
+    ada task sedang render. Pull gagal -> update.sh TIDAK restart (status
+    bisa dipolling lewat /api/update_status)."""
+    st = _read_update_status()
+    if st.get('status') == 'running':
+        return jsonify({"status": "error",
+                        "message": "Update sedang berjalan, tunggu sampai selesai."}), 409
+    if _any_task_rendering():
+        return jsonify({"status": "error",
+                        "message": "Ada video sedang dirender/di-upload. Coba lagi setelah selesai."}), 409
+    if not os.path.exists(UPDATE_SCRIPT):
+        return jsonify({"status": "error",
+                        "message": "File update.sh tidak ditemukan di server."}), 500
+    now = _wib_now().strftime('%Y-%m-%d %H:%M')
+    _write_update_status({"status": "running", "started_at": now,
+                          "version": _app_version(), "commit": _git_short_hash(),
+                          "output": ""})
+    try:
+        logf = open(os.path.join(BASE_DIR, 'update.log'), 'ab')
+        subprocess.Popen(['nohup', 'bash', 'update.sh'],
+                         cwd=BASE_DIR, stdin=subprocess.DEVNULL,
+                         stdout=logf, stderr=subprocess.STDOUT,
+                         start_new_session=True, close_fds=True)
+        logf.close()  # fd sudah di-dup ke proses anak; parent tidak perlu menahannya
+    except Exception as e:
+        _write_update_status({"status": "failed", "started_at": now,
+                              "finished_at": now,
+                              "output": f"Gagal menjalankan updater: {e}"})
+        return jsonify({"status": "error", "message": "Gagal menjalankan updater."}), 500
+    return jsonify({"status": "success",
+                    "message": "Update dimulai — panel akan restart sendiri. Pantau status di kartu ini."})
+
+
 @app.route('/api/check_secret')
 def check_secret():
     # Mengembalikan info file yang terupload agar Settings bisa menampilkannya

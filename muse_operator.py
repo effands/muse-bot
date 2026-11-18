@@ -253,6 +253,31 @@ def check_panel_online():
     except Exception:
         return False
 
+def _panel_version():
+    """Versi panel dari file VERSION (+ short hash git) — '—' bila tak ada.
+    Dipakai /status supaya pemilik selalu tahu versi apa yang sedang jalan."""
+    ver = None
+    try:
+        with open(os.path.join(BASE_DIR, 'VERSION'), encoding='utf-8') as f:
+            parts = (f.read() or '').strip().split()
+            ver = parts[0] if parts else None
+    except Exception:
+        ver = None
+    commit = None
+    try:
+        import subprocess
+        p = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'],
+                           cwd=BASE_DIR, capture_output=True, text=True, timeout=10)
+        commit = (p.stdout or '').strip() or None
+    except Exception:
+        commit = None
+    if ver and commit:
+        return f"v{ver} ({commit})"
+    if ver:
+        return f"v{ver}"
+    return "—"
+
+
 def build_status_report():
     """Ringkasan /status: channel + kuota, antrean, upload hari ini, service."""
     stats = get_system_telemetry()
@@ -274,6 +299,7 @@ def build_status_report():
         f"_{_wib_now().strftime('%d %b %Y, %H:%M')} WIB_",
         "━━━━━━━━━━━━━━━━━━━━━━",
         f"🖥️ *Panel Web (8000):* {'🟢 Online' if panel_ok else '🔴 Mati/tidak menjawab'}",
+        f"📌 *Versi Panel:* `{_panel_version()}`",
         "🤖 *Operator Telegram:* 🟢 Online",
         f"⚡ *CPU:* `{stats['cpu']}%`  🧠 *RAM:* `{stats['ram_used_gb']} GB / {stats['ram_total_gb']} GB ({stats['ram_pct']}%)`",
         f"💾 *Sisa Disk:* `{stats['disk_free_gb']} GB`",
@@ -1346,6 +1372,7 @@ def build_server_report():
         f"_{_wib_now().strftime('%d %b %Y, %H:%M')} WIB_",
         "━━━━━━━━━━━━━━━━━━━━━━",
         f"🖥️ *Panel Web (8000):* {'🟢 Online' if panel_ok else '🔴 Mati/tidak menjawab'}",
+        f"📌 *Versi Panel:* `{_panel_version()}`",
         "🤖 *Operator Telegram:* 🟢 Online",
         f"⏱️ *Uptime server:* `{uptime_sys}` • Operator jalan: `{uptime_op}`",
         f"⚡ *CPU:* `{stats['cpu']}%`",

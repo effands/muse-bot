@@ -5,6 +5,8 @@ video_stats_cache.json
 video_stats_cache.json.tmp
 auto_shorts_state.json
 auto_shorts_state.json.tmp
+update_status.json
+update.log
 nodes.json
 nodes.json.tmp
 

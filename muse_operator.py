@@ -1863,9 +1863,14 @@ def handle_callback_query(token, chat_id, callback_query):
         finally:
             _cb_in_flight.discard(data)
         return
-    # --- BUAT VIDEO: konfirmasi ✅ / batal ❌ dari ringkasan /buatshort & /buatlong ---
-    if data in ('mkshort:yes', 'mkshort:no', 'mklong:yes', 'mklong:no'):
-        kind = 'short' if data.startswith('mkshort') else 'long'
+    # --- BUAT VIDEO/PLAYLIST: konfirmasi ✅ / batal ❌ dari ringkasan
+    # /buatshort & /buatlong & /buatplaylist ---
+    if data in ('mkshort:yes', 'mkshort:no', 'mklong:yes', 'mklong:no',
+                'mkplaylist:yes', 'mkplaylist:no'):
+        kind = ('playlist' if data.startswith('mkplaylist')
+                else 'short' if data.startswith('mkshort') else 'long')
+        retry_cmd = {'short': '/buatshort', 'long': '/buatlong',
+                     'playlist': '/playlist'}[kind]
         confirm = data.endswith(':yes')
         if data in _cb_in_flight:
             answer_callback(token, cq_id, "Sabar Bos, masih saya proses 😅")
@@ -1878,14 +1883,14 @@ def handle_callback_query(token, chat_id, callback_query):
                 send_message(token, chat_id,
                              "🤖 *Eh Bos, draft-nya sudah tidak ada* 😅\n"
                              "Mungkin sudah dibuat, dibatalkan, atau hangus (>30 menit). "
-                             "Ketik /buatshort atau /buatlong untuk mulai lagi ya Bos!")
+                             f"Ketik {retry_cmd} untuk mulai lagi ya Bos!")
                 return
             if not confirm:
                 _clear_make_draft(chat_id)
                 answer_callback(token, cq_id, "Dibatalkan Bos 😌")
                 send_message(token, chat_id,
                              "😌 *Sip Bos, dibatalkan.*\nTidak ada video yang dibuat. "
-                             "Ketik /buatshort atau /buatlong kalau mau mulai lagi ya Bos!")
+                             f"Ketik {retry_cmd} kalau mau mulai lagi ya Bos!")
                 return
             answer_callback(token, cq_id, "Siap Bos, saya buatkan... 🎬")
             d = draft.get('data') or {}
@@ -1900,6 +1905,13 @@ def handle_callback_query(token, chat_id, callback_query):
                     "bg_file": d.get('bg_file', ''),
                     "bgm_file": d.get('bgm_file', 'none'),
                 })
+            elif kind == 'playlist':
+                ok, info, resp = _operator_post('/api/operator/playlist_create', {
+                    "job_id": d.get('job_id'), "video_id": d.get('video_id'),
+                    "publish_date": d.get('publish_date'), "privacy": "public",
+                    "pixabay_theme": d.get('pixabay_theme') or '',
+                })
+                resp = resp or {}
             else:
                 ok, info, resp = request_create_long({
                     "yt_id": d.get('yt_id'), "count": d.get('count', 1),
@@ -1911,11 +1923,49 @@ def handle_callback_query(token, chat_id, callback_query):
             if not ok:
                 send_message(token, chat_id,
                              f"⚠️ *Yah Bos, gagal dibuat* 😅\n{info}\n"
-                             "Coba lagi dengan /buatshort atau /buatlong ya Bos!")
+                             f"Coba lagi dengan {retry_cmd} ya Bos!")
                 return
-            _send_make_created_message(token, chat_id, kind, d, resp)
+            if kind == 'playlist':
+                _send_playlist_created_message(token, chat_id, d, resp)
+            else:
+                _send_make_created_message(token, chat_id, kind, d, resp)
         finally:
             _cb_in_flight.discard(data)
+        return
+    # --- 🎵 MUSIK PLAYLIST: menu /playlist + pilih kandidat ---
+    if data in ('pl:new', 'pl:jobs'):
+        if data == 'pl:new':
+            answer_callback(token, cq_id, "Siap, kita buat Playlist baru!")
+            _start_make_playlist(token, chat_id, '')
+            return
+        answer_callback(token, cq_id, "Siap, ini job terakhirnya.")
+        _send_playlist_jobs_message(token, chat_id)
+        return
+    if data.startswith('plpick:'):
+        try:
+            idx = int(data.split(':', 1)[1])
+        except Exception:
+            answer_callback(token, cq_id, "Pilihan tidak dikenal.")
+            return
+        draft = _load_make_draft(chat_id)
+        if not draft or draft.get('kind') != 'playlist' or draft.get('step') != 'pick':
+            answer_callback(token, cq_id, "Pilihannya sudah tidak berlaku 😅")
+            send_message(token, chat_id,
+                         "😅 *Pilihan kandidatnya sudah tidak berlaku* — ketik /playlist untuk mulai lagi ya Bos!")
+            return
+        cands = (draft.get('data') or {}).get('candidates') or []
+        if not (0 <= idx < len(cands)):
+            answer_callback(token, cq_id, "Pilihan tidak dikenal.")
+            return
+        cand = cands[idx]
+        d = draft.get('data') or {}
+        d['video_id'] = cand.get('video_id')
+        d['ref_title'] = cand.get('title', '')
+        draft['data'] = d
+        draft['step'] = _playlist_next_step(d)
+        _save_make_draft(chat_id, draft)
+        answer_callback(token, cq_id, "Sip, kandidat dipilih!")
+        _make_ask_step(token, chat_id, draft)
         return
     # --- 🧠 NLU: jawaban tombol klarifikasi (channel / niche / mode /
     # Short-vs-Long / Ya-Bukan). ---
@@ -2453,7 +2503,7 @@ _MAIN_BUTTON_TEXTS = {
     "status server", "kuota upload", "cek channel", "antrean render",
     "jadwal 7 hari", "statistik video", "monetisasi", "task gagal",
     "10 judul sleep", "ide shorts", "template deskripsi", "blueprint resep",
-    "buat short", "buat video long",
+    "buat short", "buat video long", "buat playlist",
 }
 
 def _make_short_summary(d):
@@ -2569,6 +2619,29 @@ def _make_ask_step(token, chat_id, draft):
         _ch, msg = _make_pick_channel(load_channels())
         if msg:
             send_message(token, chat_id, msg)
+        return
+    if kind == 'playlist':
+        if step == 'theme':
+            send_message(token, chat_id,
+                         "🎵 *Buat Playlist — langkah 1: Tema musik*\n\nTema musiknya apa Bos? (mis. `lagu malaysia lawas`, `lofi`, `piano santai`)")
+        elif step == 'pixabay':
+            send_message(token, chat_id,
+                         "🖼️ *Langkah 2: Tema footage Pixabay*\n\nTema footage-nya apa Bos? (mis. `autumn`, `pantai`, `kota malam`)\nKetik `lewati` untuk auto (pakai tema musik).")
+        elif step == 'research':
+            _pl_run_research(token, chat_id, draft)
+        elif step == 'pick':
+            _pl_send_candidates(token, chat_id, draft)
+        elif step == 'publish':
+            nxt = _next_slot_for_channel(next((c for c in load_channels()
+                                              if c.get('yt_id') == d.get('yt_id')), None))
+            send_message(token, chat_id,
+                         "🗓️ *Langkah 4: Jadwal tayang*\n\nKirim tanggal & jam (format `YYYY-MM-DD HH:MM`, mis. `2026-11-20 19:00`).\n"
+                         f"Ketik `lewati` atau `default` untuk jadwal berikutnya (`{nxt}`).")
+        elif step == 'confirm':
+            send_message(token, chat_id, _make_playlist_summary(d),
+                         reply_markup={"inline_keyboard": [
+                             [{"text": "✅ Buat", "callback_data": "mkplaylist:yes"},
+                              {"text": "❌ Batal", "callback_data": "mkplaylist:no"}]]})
         return
     if kind == 'short':
         if step == 'title':
@@ -2776,6 +2849,204 @@ def _start_make_long(token, chat_id, raw_cmd):
                  "Jawab tiap langkah satu per satu — ketik /batal kapan saja untuk berhenti.")
     _make_ask_step(token, chat_id, draft)
 
+
+# 🎵 MUSIK PLAYLIST LEWAT TELEGRAM — ALUR TANYA-JAWAB /playlist & /buatplaylist
+# ==========================================
+# /playlist polos → menu (Buat Baru / Lihat Job). "Buat Baru" atau
+# /playlist <teks bebas> atau /buatplaylist → bot bertanya satu per satu:
+# channel → tema musik → tema footage (lewati = auto) → riset → pilih
+# kandidat (tombol / angka) → jadwal (lewati/default = slot berikutnya)
+# → ringkasan + ✅ Buat / ❌ Batal. Draft per-chat seperti /buatshort
+# (tahan restart, hangus >30 menit, batal via /batal). /buatplaylist
+# adalah alias + one-shot (tema | channel | tema pixabay) yang memanggil
+# alur yang SAMA; slot yang belum lengkap ditanyakan, bukan digagalkan.
+def _playlist_next_step(d):
+    """Langkah pertama yang masih kosong untuk Playlist."""
+    if not d.get('yt_id'):
+        return 'channel'
+    if not d.get('theme'):
+        return 'theme'
+    if 'pixabay_theme' not in d:
+        return 'pixabay'
+    if not d.get('job_id') or not d.get('candidates'):
+        return 'research'
+    if not d.get('video_id'):
+        return 'pick'
+    if not d.get('publish_date'):
+        return 'publish'
+    return 'confirm'
+
+
+def _make_playlist_summary(d):
+    cand = next((c for c in (d.get('candidates') or [])
+                 if c.get('video_id') == d.get('video_id')), None) or {}
+    views = cand.get('views') or 0
+    views_txt = f"{views:,}".replace(',', '.')
+    return (
+        "📋 *Cek dulu ya Bos, ini playlist yang mau dibuat:* 🎵\n"
+        f"📺 Channel: *{_tg_escape(d.get('channel_name', ''))}*\n"
+        f"🎵 Tema musik: *{_tg_escape(d.get('theme', ''))}*\n"
+        f"🎬 Referensi: *{_tg_escape((cand.get('title') or '')[:80])}* "
+        f"({_tg_escape(cand.get('channel', ''))} • {views_txt} views)\n"
+        f"🖼️ Tema footage: `{_tg_escape(d.get('pixabay_theme') or 'auto (dari tema musik)')}`\n"
+        f"🗓️ Jadwal: `{_tg_escape(d.get('publish_date', ''))}`\n\n"
+        "Kalau sudah oke, pencet ✅ Buat. Kalau mau ubah, pencet ❌ Batal lalu mulai lagi dari /playlist ya Bos!"
+    )
+
+
+def _pl_send_candidates(token, chat_id, draft):
+    """Tampilkan kandidat hasil riset sebagai tombol inline (max 8)."""
+    d = draft.get('data') or {}
+    cands = d.get('candidates') or []
+    lines = ["🎵 *Langkah 3: Pilih referensi*\n\nKandidat playlist (30 hari terakhir, views >20rb) — pencet salah satu ya Bos:\n"]
+    rows = []
+    for i, c in enumerate(cands[:8]):
+        views = c.get('views') or 0
+        views_txt = f"{views:,}".replace(',', '.')
+        lines.append(f"{i + 1}. *{_tg_escape((c.get('title') or '')[:60])}* — "
+                     f"{_tg_escape(c.get('channel') or '')} ({views_txt} views)")
+        rows.append([{"text": f"{i + 1}. {(c.get('title') or '')[:40]}",
+                      "callback_data": f"plpick:{i}"}])
+    lines.append("\nAtau balas angkanya (mis. `1`).")
+    send_message(token, chat_id, "\n".join(lines),
+                 reply_markup={"inline_keyboard": rows})
+
+
+def _pl_run_research(token, chat_id, draft):
+    """Jalankan riset kandidat playlist (YouTube API, ~101 unit kuota;
+    cache panel 1 jam). Dipanggil otomatis saat draft sampai langkah
+    'research' (setelah tema + footage terisi). Gagal / kosong →
+    kembali ke langkah tema supaya Bos bisa coba tema lain."""
+    d = draft.get('data') or {}
+    send_message(token, chat_id, "🔍 *Mencari kandidat playlist...* 😎")
+    ok, msg, data = _operator_post('/api/operator/playlist_research',
+                                  {'yt_id': d.get('yt_id'), 'theme': d.get('theme', '')})
+    if not ok:
+        draft['step'] = 'theme'
+        _save_make_draft(chat_id, draft)
+        send_message(token, chat_id,
+                     f"⚠️ *Risetnya gagal Bos* 😅\n{_tg_escape(msg)}\nCoba tema musik yang lain ya.")
+        _make_ask_step(token, chat_id, draft)
+        return
+    cands = (data or {}).get('candidates') or []
+    if not cands:
+        draft['step'] = 'theme'
+        _save_make_draft(chat_id, draft)
+        send_message(token, chat_id,
+                     "😅 *Tidak ada kandidat di atas 20rb views untuk tema itu Bos* — coba tema musik yang lain ya.")
+        _make_ask_step(token, chat_id, draft)
+        return
+    d['job_id'] = (data or {}).get('job_id', '')
+    d['candidates'] = cands
+    draft['data'] = d
+    draft['step'] = 'pick'
+    _save_make_draft(chat_id, draft)
+    _pl_send_candidates(token, chat_id, draft)
+
+
+def _start_make_playlist(token, chat_id, raw_cmd):
+    """Mulai alur /playlist & /buatplaylist. Dukung sekali kirim:
+    /buatplaylist <tema> | <channel> | <tema pixabay> — slot yang sudah
+    diisi tidak ditanya lagi; slot yang kurang ditanyakan satu per satu
+    (alur yang sama seperti /playlist polos)."""
+    channels = load_channels()
+    if not channels:
+        send_message(token, chat_id,
+                     "😅 *Bos, belum ada channel yang terhubung nih*\n\n"
+                     "Tautkan channel dulu di panel (Settings → Tautkan Channel Baru), "
+                     "lalu ketik /playlist lagi ya Bos!")
+        return
+    pre = {}
+    rest = raw_cmd[len('/buatplaylist'):].strip() if raw_cmd.strip().lower().startswith('/buatplaylist') else ''
+    if rest:
+        parts = [p.strip() for p in rest.split('|')]
+        if len(parts) > 0 and parts[0]:
+            pre['theme'] = parts[0][:100]
+        if len(parts) > 1 and parts[1]:
+            matched, _all = _nlu_match_channels(_nlu_clean(parts[1]), channels)
+            if len(matched) == 1:
+                pre['yt_id'] = matched[0].get('yt_id')
+                pre['channel_name'] = _channel_display_name(matched[0])
+        if len(parts) > 2 and parts[2]:
+            pre['pixabay_theme'] = parts[2][:100]
+    draft = {"kind": "playlist", "step": "theme", "data": dict(pre)}
+    if pre.get('yt_id'):
+        draft['step'] = _playlist_next_step(draft['data'])
+        _save_make_draft(chat_id, draft)
+        send_message(token, chat_id,
+                     "🎵 *Siap Bos, kita buat Playlist bareng-bareng ya!* 😎\n"
+                     "Jawab tiap langkah satu per satu — ketik /batal kapan saja untuk berhenti.")
+        _make_ask_step(token, chat_id, draft)
+        return
+    ch, ask_msg = _make_pick_channel(channels)
+    if ch is None:
+        draft['step'] = 'channel'
+        _save_make_draft(chat_id, draft)
+        send_message(token, chat_id,
+                     "🎵 *Siap Bos, kita buat Playlist bareng-bareng ya!* 😎\n"
+                     "Jawab tiap langkah satu per satu — ketik /batal kapan saja untuk berhenti.\n\n" + ask_msg)
+        return
+    draft['data']['yt_id'] = ch.get('yt_id')
+    draft['data']['channel_name'] = _channel_display_name(ch)
+    draft['step'] = _playlist_next_step(draft['data'])
+    _save_make_draft(chat_id, draft)
+    send_message(token, chat_id,
+                 f"🎵 *Siap Bos, kita buat Playlist buat channel {_tg_escape(draft['data']['channel_name'])} ya!* 😎\n"
+                 "Jawab tiap langkah satu per satu — ketik /batal kapan saja untuk berhenti.")
+    _make_ask_step(token, chat_id, draft)
+
+
+def _send_playlist_created_message(token, chat_id, d, resp):
+    """Pesan sukses setelah job playlist dibuat — jelaskan apa yang terjadi
+    selanjutnya (menunggu approval vs langsung antre, sesuai mode channel)."""
+    ch = next((c for c in load_channels() if c.get('yt_id') == d.get('yt_id')), None)
+    auto = _autopilot_of(ch) == 'auto' if ch else False
+    cand = next((c for c in (d.get('candidates') or [])
+                 if c.get('video_id') == d.get('video_id')), None) or {}
+    lines = [
+        "✅ *Sip Bos, playlist-nya udah saya buatkan!* 🎵",
+        f"🎬 Referensi: *{_tg_escape((cand.get('title') or d.get('theme', ''))[:80])}*",
+        f"📺 Channel: *{_tg_escape(d.get('channel_name', ''))}*",
+        f"🗓️ Jadwal: `{_tg_escape(d.get('publish_date', ''))}`",
+        f"🖼️ Footage: `{_tg_escape(d.get('pixabay_theme') or 'auto (dari tema musik)')}`",
+    ]
+    if auto:
+        lines += ["",
+                  "🚀 *Langsung masuk antrean (mode Full-Auto)* — audio & footage sedang diunduh, ditunggu kabar selesainya ya Bos! 💪"]
+    else:
+        lines += ["",
+                  "⏳ *Video menunggu persetujuan Bos dulu ya* — setelah render selesai, preview-nya bakal masuk ke chat ini, "
+                  "tinggal pencet ✅ Setujui biar langsung di-upload."]
+    lines.append("\nPantau progresnya dengan `/playlist status` ya Bos! 🎵")
+    send_message(token, chat_id, "\n".join(lines))
+
+
+def _send_playlist_jobs_message(token, chat_id):
+    """Daftar 5 job playlist terakhir (dipakai /playlist status dan tombol
+    📋 Lihat Job Terakhir)."""
+    jobs = _load_playlist_jobs()
+    if not jobs:
+        send_message(token, chat_id,
+                     "🎵 *Musik Playlist*\nBelum ada job playlist. Buat baru dengan /playlist ya Bos! 😎")
+        return
+    lines = ["🎵 *Musik Playlist — Job Terakhir* 😎", "━━━━━━━━━━━━━━━━━━━━━━"]
+    for j in jobs[:5]:
+        st = {'researched': '🔍 Riset selesai', 'downloading': '⬇️ Mengunduh',
+              'preparing': '🛠️ Menyiapkan', 'queued': '⏳ Menunggu approval/antrean',
+              'done': '✅ Tayang', 'failed': '❌ Gagal'}.get(j.get('status'), j.get('status', '?'))
+        lines.append(f"• *{_tg_escape((j.get('new_title') or j.get('ref_title') or j.get('theme') or '?')[:45])}*")
+        lines.append(f"  {_tg_escape(j.get('channel_name', ''))} • {st}")
+        if j.get('progress'):
+            lines.append(f"  {_tg_escape(j['progress'][:90])}")
+        if j.get('error'):
+            lines.append(f"  Alasan: {_tg_escape(j['error'][:90])}")
+        if j.get('video_url'):
+            lines.append(f"  ▶️ {j['video_url']}")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("Buat playlist baru: /playlist (bot akan bertanya) atau /buatplaylist tema | channel.")
+    send_message(token, chat_id, "\n".join(lines))
+
+
 def _handle_make_answer(token, chat_id, draft, raw_cmd):
     """Proses SATU jawaban dalam alur terpandu. Kembalikan True bila
     pesan ditangani sebagai jawaban (bukan perintah lain)."""
@@ -2791,6 +3062,26 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
             ch = channels[idx] if 0 <= idx < len(channels) else None
         except Exception:
             ch = None
+        if ch is None and kind == 'playlist':
+            # Playlist: jawaban bebas diterima — ketik nama channel juga boleh.
+            matched, all_flag = _nlu_match_channels(_nlu_clean(ans), channels)
+            if all_flag:
+                send_message(token, chat_id,
+                             "😅 *Playlist dibuat 1 channel sekali proses Bos* — pilih 1 channel ya: balas angkanya atau ketik namanya.")
+                return True
+            if len(matched) == 1:
+                ch = matched[0]
+            elif len(matched) > 1:
+                send_message(token, chat_id,
+                             "🤔 *Ada beberapa channel yang cocok Bos* — balas angkanya ya:\n" +
+                             "\n".join(f"{i}. {_tg_escape(_channel_display_name(c))}" for i, c in enumerate(channels, 1)))
+                return True
+            else:
+                send_message(token, chat_id,
+                             "😅 *Saya nggak nemu channel itu Bos* — yang terdaftar: "
+                             + ", ".join(_channel_display_name(c) for c in channels)
+                             + ". Balas angkanya atau ketik namanya ya.")
+                return True
         if ch is None:
             send_message(token, chat_id,
                          f"😅 *Eh Bos, pilihannya nggak ada* — balas angkanya 1–{len(channels)} ya.")
@@ -2802,6 +3093,8 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
             if not _make_check_bg_or_cancel(token, chat_id, draft):
                 return True
             draft['step'] = _short_next_step(d)
+        elif kind == 'playlist':
+            draft['step'] = _playlist_next_step(d)
         else:
             draft['step'] = _long_next_step(d)
         _save_make_draft(chat_id, draft)
@@ -2903,6 +3196,63 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
         _save_make_draft(chat_id, draft)
         _make_ask_step(token, chat_id, draft)
         return True
+    if kind == 'playlist':
+        if step == 'research':
+            # Riset sedang jalan (langkah otomatis) — jangan ditimpa jawaban.
+            send_message(token, chat_id, "Sabar Bos, risetnya masih jalan 😅")
+            return True
+        if step == 'theme':
+            if not ans:
+                send_message(token, chat_id,
+                             "😅 *Temanya masih kosong Bos* — kirim tema musiknya ya (mis. `lagu malaysia lawas`).")
+                return True
+            d['theme'] = ans[:100]
+            draft['step'] = _playlist_next_step(d)
+        elif step == 'pixabay':
+            d['pixabay_theme'] = '' if low in ('lewati', '-', 'skip', 'auto') else ans[:100]
+            draft['step'] = _playlist_next_step(d)
+        elif step == 'pick':
+            try:
+                idx = int(ans) - 1
+                cands = d.get('candidates') or []
+                cand = cands[idx] if 0 <= idx < len(cands) else None
+            except Exception:
+                cand = None
+            if not cand:
+                send_message(token, chat_id,
+                             "😅 *Pilihannya nggak ada Bos* — pencet tombol kandidat di atas atau balas angkanya ya.")
+                return True
+            d['video_id'] = cand.get('video_id')
+            d['ref_title'] = cand.get('title', '')
+            draft['step'] = _playlist_next_step(d)
+        elif step == 'publish':
+            if low in ('lewati', '-', 'skip', 'default'):
+                ch = next((c for c in load_channels() if c.get('yt_id') == d.get('yt_id')), None)
+                d['publish_date'] = _next_slot_for_channel(ch)
+            else:
+                parsed = _parse_make_date(ans)
+                if not parsed:
+                    send_message(token, chat_id,
+                                 "😅 *Format tanggalnya salah Bos* — pakai `YYYY-MM-DD HH:MM` (mis. `2026-11-20 19:00`) atau ketik `default`.")
+                    return True
+                d['publish_date'] = parsed
+            draft['step'] = _playlist_next_step(d)
+        elif step == 'confirm':
+            if low in ('ya', 'buat', '✅', 'ok', 'oke', 'lanjut'):
+                _confirm_make_create(token, chat_id, draft)
+                return True
+            if low in ('batal', 'tidak', '❌', 'cancel'):
+                _clear_make_draft(chat_id)
+                send_message(token, chat_id, "😌 *Sip Bos, dibatalkan.* Tidak ada playlist yang dibuat.")
+                return True
+            send_message(token, chat_id,
+                         "👆 *Tinggal pencet tombol di atas ya Bos* — ✅ Buat atau ❌ Batal. "
+                         "Atau balas `ya` / `batal`.")
+            return True
+        draft['data'] = d
+        _save_make_draft(chat_id, draft)
+        _make_ask_step(token, chat_id, draft)
+        return True
     # --- long ---
     if step == 'count':
         try:
@@ -2972,6 +3322,8 @@ def _confirm_make_create(token, chat_id, draft):
     (jalur yang sama dengan tombol inline ✅)."""
     d = draft.get('data') or {}
     kind = draft.get('kind')
+    retry_cmd = {'short': '/buatshort', 'long': '/buatlong',
+                 'playlist': '/playlist'}.get(kind, '/buatshort')
     if kind == 'short':
         ok, info, resp = request_create_shorts({
             "yt_id": d.get('yt_id'), "title": d.get('title'),
@@ -2983,6 +3335,13 @@ def _confirm_make_create(token, chat_id, draft):
             "bg_file": d.get('bg_file', ''),
             "bgm_file": d.get('bgm_file', 'none'),
         })
+    elif kind == 'playlist':
+        ok, info, resp = _operator_post('/api/operator/playlist_create', {
+            "job_id": d.get('job_id'), "video_id": d.get('video_id'),
+            "publish_date": d.get('publish_date'), "privacy": "public",
+            "pixabay_theme": d.get('pixabay_theme') or '',
+        })
+        resp = resp or {}
     else:
         ok, info, resp = request_create_long({
             "yt_id": d.get('yt_id'), "count": d.get('count', 1),
@@ -2994,7 +3353,10 @@ def _confirm_make_create(token, chat_id, draft):
     if not ok:
         send_message(token, chat_id,
                      f"⚠️ *Yah Bos, gagal dibuat* 😅\n{info}\n"
-                     "Coba lagi dengan /buatshort atau /buatlong ya Bos!")
+                     f"Coba lagi dengan {retry_cmd} ya Bos!")
+        return
+    if kind == 'playlist':
+        _send_playlist_created_message(token, chat_id, d, resp)
         return
     _send_make_created_message(token, chat_id, kind, d, resp)
 
@@ -3423,9 +3785,45 @@ def _nlu_extract_mode(clean):
     return None
 
 
+def _nlu_extract_pixabay_theme(clean):
+    """Tema footage Pixabay dari kalimat ('... footage autumn' /
+    '... tema pixabay autumn' / '... tema footage autumn')."""
+    m = re.search(r'(?:tema\s+pixabay|tema\s+footage|footage|pixabay)\s+([a-z0-9][a-z0-9 ]*?)(?:\s+(?:di|untuk|ke|pada|channel|tema)\b|$)', clean)
+    if not m:
+        return None
+    return re.sub(r'\s+', ' ', m.group(1)).strip()[:50] or None
+
+
+def _nlu_extract_playlist_theme(clean, channels):
+    """Tema musik playlist: sisa kalimat setelah buang kata kerja, kata
+    'playlist', nama channel, segmen Pixabay, dan kata sambung.
+    'buatkan playlist lagu malaysia lawas di aruya footage autumn'
+    → 'lagu malaysia lawas'. Kosong bila tema tidak disebut."""
+    t = clean
+    m = re.search(r'(?:tema\s+pixabay|tema\s+footage|footage|pixabay)\s+[a-z0-9 ]*?(?:\s+(?:di|untuk|ke|pada|channel|tema)\b|$)', t)
+    if m:
+        t = (t[:m.start()] + ' ' + t[m.end():]).strip()
+    t = re.sub(r'\b(buatkan|bikin|buat|tolong|buatlah)\b', ' ', t)
+    t = re.sub(r'\bmusik\s+playlist\b', ' ', t)
+    t = re.sub(r'\bplaylist\b', ' ', t)
+    for c in (channels or []):
+        nm = _nlu_norm_name(_channel_display_name(c))
+        if nm:
+            t = t.replace(nm, ' ')
+            # Nama channel sering disebut sebagian saja ('Aruya', tanpa
+            # '0089') — buang juga tiap kata namanya (≥3 huruf) supaya
+            # tidak nyangkut jadi 'tema' (mis. 'lagu malaysia lawas aruya').
+            for w in nm.split():
+                if len(w) >= 3:
+                    t = re.sub(r'\b' + re.escape(w) + r'\b', ' ', t)
+    t = re.sub(r'\b(untuk|di|ke|pada|dari|channel|semua|tema)\b', ' ', t)
+    t = re.sub(r'\s+', ' ', t).strip()
+    return t[:100] or None
+
+
 def parse_natural_command(text, channels):
     """Terjemahkan pesan bebas → {intent, confidence 0-100, slots}.
-    Intent: buat_short, buat_long, status, laporan, kuota, stok, statistik,
+    Intent: buat_short, buat_long, buat_playlist, status, laporan, kuota, stok, statistik,
     monetisasi, jadwal, gagal, channel_list, bantuan, jeda_channel,
     lanjutkan_channel, perpanjang_jadwal, ubah_mode, hapus,
     hentikan_antrean, tidak_dikenali."""
@@ -3501,6 +3899,9 @@ def parse_natural_command(text, channels):
                           or 'kompilasi' in clean or re.search(r'\blong\b', clean)):
         intent = 'buat_long'
         conf = 50
+    elif create_verb and 'playlist' in clean:
+        intent = 'buat_playlist'
+        conf = 50
     elif create_verb and 'video' in clean:
         # "buatkan video" tanpa penanda short/long → tanyakan dulu.
         intent = 'buat_short'
@@ -3516,6 +3917,11 @@ def parse_natural_command(text, channels):
                                 or 'semua' in clean)):
         # Tanpa kata kerja tapi jelas ("short tema anak untuk semua channel").
         intent = 'buat_short'
+        conf = 40
+    elif ('playlist' in clean and (matched or all_flag or 'tema' in clean
+                                   or 'semua' in clean)):
+        # Tanpa kata kerja tapi jelas ("playlist lofi untuk Aruya").
+        intent = 'buat_playlist'
         conf = 40
     # --- Ubah mode channel. ---
     elif ('mode' in clean or 'autopilot' in clean or 'approval' in clean
@@ -3599,6 +4005,21 @@ def parse_natural_command(text, channels):
                 conf += 5
             if dayparts:
                 slots['dayparts'] = dayparts
+        if slots.get('channels'):
+            conf += 15
+        if create_verb:
+            conf += 5
+    elif intent == 'buat_playlist':
+        # Tema musik + tema footage Pixabay (bila disebut). Yang belum
+        # disebut TIDAK ditebak — ditanyakan lewat alur tanya-jawab.
+        px = _nlu_extract_pixabay_theme(clean)
+        if px:
+            slots['pixabay_theme'] = px
+            conf += 5
+        th = _nlu_extract_playlist_theme(clean, channels)
+        if th:
+            slots['playlist_theme'] = th
+            conf += 10
         if slots.get('channels'):
             conf += 15
         if create_verb:
@@ -3701,6 +4122,10 @@ def _nlu_describe(pending):
     if intent == 'buat_long':
         niche = _NICHES.get(slots.get('niche') or 'sleep', 'Deep Sleep Music')
         return (f"buatkan {slots.get('count') or 1} video long tema {niche} untuk {ch}")
+    if intent == 'buat_playlist':
+        th = slots.get('playlist_theme') or 'musik (tanya dulu)'
+        px = slots.get('pixabay_theme') or 'auto (dari tema musik)'
+        return f"buatkan playlist tema {th} untuk {ch} (footage: {px})"
     if intent == 'perpanjang_jadwal':
         return f"perpanjang jadwal {slots.get('days') or 30} hari untuk {ch}"
     if intent == 'ubah_mode':
@@ -3795,7 +4220,7 @@ def _nlu_advance(token, chat_id, pending):
     intent = pending.get('intent')
     chans = load_channels()
     # --- Channel: isi dari 'all' / cek apakah sudah ada. ---
-    if intent in ('buat_short', 'buat_long', 'perpanjang_jadwal', 'ubah_mode',
+    if intent in ('buat_short', 'buat_long', 'buat_playlist', 'perpanjang_jadwal', 'ubah_mode',
                   'jeda_channel', 'lanjutkan_channel', 'hapus', 'hentikan_antrean'):
         if slots.get('channels') == 'all':
             slots['channels'] = [c.get('yt_id') for c in chans]
@@ -3806,9 +4231,10 @@ def _nlu_advance(token, chat_id, pending):
                          + ". Coba sebut namanya lagi ya Bos.")
             _clear_nlu_pending(chat_id)
             return
-        if intent == 'buat_long':
-            # Video long hanya 1 channel sekali proses (sesuai /buatlong):
-            # bila disebut lebih dari 1 channel, minta pilih satu saja.
+        if intent in ('buat_long', 'buat_playlist'):
+            # Video long & playlist hanya 1 channel sekali proses (sesuai
+            # /buatlong & /buatplaylist): bila disebut lebih dari 1 channel,
+            # minta pilih satu saja.
             slots.pop('channel_count', None)
             if len(slots.get('channels') or []) > 1:
                 slots['channels'] = []
@@ -3828,6 +4254,15 @@ def _nlu_advance(token, chat_id, pending):
                                                   'jeda_channel', 'lanjutkan_channel', 'ubah_mode')
                                         and not slots.get('channel_count')))
                 return
+    # --- Tema musik (buat playlist): bila belum disebut, tanyakan dulu
+    # (tidak ditebak) — jawaban bebas ditangkap cabang 'theme' di
+    # _nlu_try_complete_pending. ---
+    if intent == 'buat_playlist' and not slots.get('playlist_theme'):
+        pending['awaiting'] = 'theme'
+        _save_nlu_pending(chat_id, pending)
+        send_message(token, chat_id,
+                     "Tema musik playlist-nya apa Bos? 🤔\n(mis. `lagu malaysia lawas`, `lofi`, `piano santai`)")
+        return
     # --- Niche (buat short/long). ---
     if intent in ('buat_short', 'buat_long'):
         if not slots.get('niche'):
@@ -3868,7 +4303,7 @@ def _nlu_advance(token, chat_id, pending):
                 pass
     # --- Konfirmasi bila aksi membuat konten / berbahaya / matikan pengaman. ---
     needs_confirm = (
-        intent in ('buat_short', 'buat_long', 'hapus', 'hentikan_antrean')
+        intent in ('buat_short', 'buat_long', 'buat_playlist', 'hapus', 'hentikan_antrean')
         or (intent == 'ubah_mode' and slots.get('mode') == 'auto')
     )
     if needs_confirm and not pending.get('confirmed'):
@@ -4084,12 +4519,41 @@ def _execute_nlu_destructive(token, chat_id, pending):
                      "atau antrean. Saya tidak hapus apa-apa sebelum Bos konfirmasi 😌")
 
 
+def _execute_nlu_create_playlist(token, chat_id, pending):
+    """NLU 'buatkan playlist ...' — masuk ke alur tanya-jawab yang SAMA
+    seperti /playlist: slot yang sudah diketahui (channel, tema, footage)
+    diisi ke draft, sisanya ditanyakan satu per satu (tidak ditebak)."""
+    slots = pending.get('slots') or {}
+    chs = [c for c in load_channels()
+           if c.get('yt_id') in (slots.get('channels') or [])]
+    ch = chs[0] if chs else None
+    if not ch:
+        send_message(token, chat_id,
+                     "😅 *Channel-nya belum ketemu Bos* — ketik /playlist lalu pilih channelnya ya.")
+        return
+    data = {'yt_id': ch.get('yt_id'),
+            'channel_name': _channel_display_name(ch),
+            'theme': slots.get('playlist_theme') or ''}
+    if slots.get('pixabay_theme'):
+        data['pixabay_theme'] = slots['pixabay_theme']
+    if not data.get('theme'):
+        data.pop('theme', None)
+    draft = {"kind": "playlist", "step": _playlist_next_step(data), "data": data}
+    _save_make_draft(chat_id, draft)
+    send_message(token, chat_id,
+                 f"🎵 *Siap Bos, kita buat Playlist buat channel {_tg_escape(data['channel_name'])} ya!* 😎\n"
+                 "Jawab tiap langkah satu per satu — ketik /batal kapan saja untuk berhenti.")
+    _make_ask_step(token, chat_id, draft)
+
+
 def _nlu_execute(token, chat_id, pending):
     kind = pending.get('intent')
     if kind == 'buat_short':
         _execute_nlu_create_shorts(token, chat_id, pending)
     elif kind == 'buat_long':
         _execute_nlu_create_long(token, chat_id, pending)
+    elif kind == 'buat_playlist':
+        _execute_nlu_create_playlist(token, chat_id, pending)
     elif kind == 'perpanjang_jadwal':
         _execute_nlu_extend(token, chat_id, pending)
     elif kind == 'ubah_mode':
@@ -4148,6 +4612,8 @@ def _nlu_suggest(clean):
         '/status': ('status', 'server', 'cek', 'kabar', 'jalan'),
         '/buatshort': ('short', 'pendek', 'buat', 'bikin', 'video'),
         '/buatlong': ('long', 'panjang', 'kompilasi', 'video', 'buat', 'bikin'),
+        '/buatplaylist': ('playlist', 'musik', 'buat', 'bikin'),
+        '/playlist': ('playlist', 'musik', 'buat', 'bikin'),
         '/laporan': ('laporan', 'report', 'pagi', 'sore'),
         '/kuota': ('kuota', 'limit', 'upload'),
         '/stok': ('stok', 'sisa', 'jadwal'),
@@ -4246,6 +4712,24 @@ def _nlu_try_complete_pending(token, chat_id, raw_cmd, clean_cmd):
             _nlu_advance(token, chat_id, pending)
             return True
         return False
+    if awaiting == 'theme':
+        # Jawaban tema playlist (bebas) — tapi jangan telan perintah
+        # baca/aksi lain; biarkan di-parse ulang sebagai perintah segar.
+        _READONLY_WORDS = {'status', 'laporan', 'kuota', 'stok', 'statistik',
+                           'monetisasi', 'jadwal', 'gagal', 'bantuan', 'channel',
+                           'judul', 'deskripsi', 'tag', 'cta', 'ide', 'backup',
+                           'mode', 'jeda', 'lanjutkan', 'perpanjang'}
+        if (set(clean_cmd.split()) & _READONLY_WORDS
+                or clean_cmd.startswith(('buat', 'bikin', 'buatkan'))):
+            return False
+        th = raw_cmd.strip()
+        th = re.sub(r'^(tema|temanya)\s+', '', th, flags=re.I).strip()
+        if not th:
+            return False
+        slots['playlist_theme'] = th[:100]
+        _save_nlu_pending(chat_id, pending)
+        _nlu_advance(token, chat_id, pending)
+        return True
     if awaiting == 'mode':
         mode = _nlu_extract_mode(clean_cmd)
         if mode:
@@ -4328,7 +4812,8 @@ _BOT_COMMANDS = [
     ('blueprint', 'Resep settingan video', 'konten', ''),
     ('buatshort', 'Buat Shorts Muse terpandu (judul, hook, naskah, CTA)', 'buat', ''),
     ('buatlong', 'Buat batch video long 60–80 menit terpandu', 'buat', ''),
-    ('playlist', 'Status job Musik Playlist', 'buat', ''),
+    ('playlist', 'Buat Playlist baru (bot bertanya satu per satu) atau /playlist status', 'buat', '[status]'),
+    ('buatplaylist', 'Buat Musik Playlist (alias /playlist, sekali kirim pakai | )', 'buat', '<tema> | [channel] | [tema pixabay]'),
     ('batal', 'Batalkan draft yang sedang dibuat', 'buat', ''),
     ('perpanjang', 'Tambah jadwal, mis. /perpanjang Aruya 0089 30 atau /perpanjang semua 30', 'atur', '[channel] [hari]'),
     ('mode', 'Ganti mode, mis. /mode Aruya 0089 auto', 'atur', '[channel] [auto|approval]'),
@@ -4352,6 +4837,7 @@ _BOT_COMMAND_SECTIONS = [
 _BOT_COMMAND_EXTRAS = {
     'buatshort': '👉 /buatshort Judul | Hook | Naskah | CTA — Sekali kirim',
     'buatlong': '👉 /buatlong 3 | 2026-11-20 19:00 | 1 — Sekali kirim (jumlah | tanggal | jeda hari)',
+    'buatplaylist': '👉 /buatplaylist lagu malaysia lawas | Aruya 0089 | autumn — Sekali kirim',
 }
 
 
@@ -4420,13 +4906,16 @@ def handle_user_command(token, chat_id, text):
         # kapan saja; /start membuka menu (draft ikut dibatalkan); tombol
         # keyboard & perintah "/" lain tetap jalan, draft tersimpan.
         if first_word in ("/batal",) or clean_cmd in ("batal", "cancel"):
-            if _load_make_draft(chat_id):
+            _d0 = _load_make_draft(chat_id)
+            if _d0:
                 _clear_make_draft(chat_id)
+                _retry = {'short': '/buatshort', 'long': '/buatlong',
+                          'playlist': '/playlist'}.get(_d0.get('kind'), '/buatshort')
                 send_message(token, chat_id,
-                             "😌 *Sip Bos, dibatalkan.* Tidak ada video yang dibuat.")
+                             f"😌 *Sip Bos, dibatalkan.* Tidak ada video yang dibuat.\nKetik {_retry} kalau mau mulai lagi ya Bos!")
             else:
                 send_message(token, chat_id,
-                             "😅 *Tidak ada yang sedang dibuat Bos* — ketik /buatshort atau /buatlong untuk mulai.")
+                             "😅 *Tidak ada yang sedang dibuat Bos* — ketik /buatshort, /buatlong, atau /playlist untuk mulai.")
             return
         _draft = _load_make_draft(chat_id)
         if isinstance(_draft, dict) and _draft.get("expired"):
@@ -4437,9 +4926,15 @@ def handle_user_command(token, chat_id, text):
         if _draft:
             if first_word in ("/start", "/help"):
                 _clear_make_draft(chat_id)
-            elif first_word in ("/buatshort", "/buatlong") or clean_cmd in ("buat short", "buat video long"):
+            elif first_word in ("/buatshort", "/buatlong", "/buatplaylist") or clean_cmd in ("buat short", "buat video long", "buat playlist"):
                 _clear_make_draft(chat_id)
-                # jatuh ke cabang /buatshort|/buatlong di bawah (mulai baru)
+                # jatuh ke cabang /buatshort|/buatlong|/buatplaylist di bawah (mulai baru)
+            elif first_word in ("/playlist",):
+                # /playlist status tidak mengganggu draft; /playlist polos /
+                # berteks memulai alur baru (draft lama dibersihkan).
+                if raw_cmd[len('/playlist'):].strip().lower() != 'status':
+                    _clear_make_draft(chat_id)
+                # jatuh ke cabang /playlist di bawah (menu / alur baru)
             elif first_word.startswith("/"):
                 pass  # perintah lain tetap jalan, draft tersimpan
             elif clean_cmd in _MAIN_BUTTON_TEXTS:
@@ -4461,6 +4956,9 @@ def handle_user_command(token, chat_id, text):
             return
         if first_word in ("/buatlong",) or clean_cmd in ("buat video long",):
             _start_make_long(token, chat_id, raw_cmd)
+            return
+        if first_word in ("/buatplaylist",) or clean_cmd in ("buat playlist",):
+            _start_make_playlist(token, chat_id, raw_cmd)
             return
 
         # --- 📅 PERPANJANG / MODE / JEDA / LANJUTKAN (aksi, bukan baca saja).
@@ -4521,29 +5019,28 @@ def handle_user_command(token, chat_id, text):
             _nlu_advance(token, chat_id, pending)
             return
 
-        # --- 🎵 MUSIK PLAYLIST: /playlist (status job) ---
+        # --- 🎵 MUSIK PLAYLIST: /playlist (pintu masuk utama, konversasional) ---
+        # /playlist polos → menu (Buat Baru / Lihat Job). /playlist status →
+        # daftar job (perilaku lama). /playlist <teks bebas> → mulai alur
+        # tanya-jawab, teksnya dipakai sebagai tema awal.
         if first_word in ("/playlist",):
-            jobs = _load_playlist_jobs()
-            if not jobs:
-                send_message(token, chat_id,
-                             "🎵 *Musik Playlist*\nBelum ada job playlist. Riset dulu dari panel (menu Musik Playlist), lalu pilih kandidat dan Buat & Upload.")
+            rest = raw_cmd[len('/playlist'):].strip()
+            if rest.lower() == 'status':
+                _send_playlist_jobs_message(token, chat_id)
                 return
-            lines = ["🎵 *Musik Playlist — Job Terakhir* 😎", "━━━━━━━━━━━━━━━━━━━━━━"]
-            for j in jobs[:5]:
-                st = {'researched': '🔍 Riset selesai', 'downloading': '⬇️ Mengunduh',
-                      'preparing': '🛠️ Menyiapkan', 'queued': '⏳ Menunggu approval/antrean',
-                      'done': '✅ Tayang', 'failed': '❌ Gagal'}.get(j.get('status'), j.get('status', '?'))
-                lines.append(f"• *{_tg_escape((j.get('new_title') or j.get('ref_title') or j.get('theme') or '?')[:45])}*")
-                lines.append(f"  {_tg_escape(j.get('channel_name', ''))} • {st}")
-                if j.get('progress'):
-                    lines.append(f"  {_tg_escape(j['progress'][:90])}")
-                if j.get('error'):
-                    lines.append(f"  Alasan: {_tg_escape(j['error'][:90])}")
-                if j.get('video_url'):
-                    lines.append(f"  ▶️ {j['video_url']}")
-            lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-            lines.append("Riset & buat playlist baru lewat panel (menu Musik Playlist).")
-            send_message(token, chat_id, "\n".join(lines))
+            if rest:
+                # Buang awalan perintah bila ada ("buatkan playlist ...").
+                rest2 = re.sub(r'^(buatkan|bikin|buat)\s+(musik\s+)?playlist\s*',
+                               '', rest, flags=re.I).strip()
+                _start_make_playlist(token, chat_id,
+                                     '/buatplaylist ' + rest2 if rest2 else '/buatplaylist')
+                return
+            send_message(token, chat_id,
+                         "🎵 *Musik Playlist* 😎\n\nMau apa Bos?",
+                         reply_markup={"inline_keyboard": [
+                             [{"text": "🎵 Buat Playlist Baru", "callback_data": "pl:new"}],
+                             [{"text": "📋 Lihat Job Terakhir", "callback_data": "pl:jobs"}],
+                         ]})
             return
 
         # --- 💾 BACKUP OTOMATIS: /backup (buat + status) ---

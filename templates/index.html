@@ -886,7 +886,7 @@ body::before { display: none; }
 .content .as-row select { width:auto; min-width:0; flex:0 0 auto; padding:4px 6px; font-size:12px; }
 .content .as-row select[id^="as-theme-"] { width:160px; flex:0 1 160px; }
 .content .as-row select[id^="as-dur-"] { width:105px; flex:0 1 105px; }
-.as-row input[type="time"] { width:88px; padding:4px 6px; font-size:12px; }
+.as-row input[type="time"] { width:128px; flex:0 0 auto; padding:4px 6px; font-size:12px; }
 .as-row .as-next { flex-basis:100%; font-size:10px; color:var(--muted); }
 
 /* ── Shorts Muse: form ringkas + kartu langkah (ikon SVG, tanpa emoji) ── */
@@ -2002,6 +2002,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
               <div class="fg"><label class="fl">Jadwal Tayang (WIB)</label><input type="datetime-local" id="pl-publish-date"></div>
               <div class="fg"><label class="fl">Privasi</label><select id="pl-privacy"><option value="public">Public</option><option value="private">Private</option><option value="unlisted">Unlisted</option></select></div>
             </div>
+            <div class="fg" style="margin-top:10px"><label class="fl">Tema Footage Pixabay (opsional)</label><input type="text" id="pl-pixabay-theme" placeholder="mis. autumn (kosong = auto dari tema musik)"></div>
             <div class="btn-row"><button class="btn btn-p" id="btn-pl-create" onclick="playlistCreate()">🎵 Buat &amp; Upload Playlist</button></div>
           </div>
         </div>
@@ -4235,7 +4236,7 @@ function playlistCreate() {
   if (!plJobId || !plSelectedVideo) return toast('Pilih satu kandidat dulu', 'error');
   const btn = document.getElementById('btn-pl-create');
   btn.disabled = true; btn.textContent = 'Memulai...';
-  fetch('/api/playlist_create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ job_id: plJobId, video_id: plSelectedVideo, publish_date: document.getElementById('pl-publish-date').value, privacy: document.getElementById('pl-privacy').value }) })
+  fetch('/api/playlist_create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ job_id: plJobId, video_id: plSelectedVideo, publish_date: document.getElementById('pl-publish-date').value, privacy: document.getElementById('pl-privacy').value, pixabay_theme: (document.getElementById('pl-pixabay-theme').value || '').trim() }) })
     .then(r => r.json()).then(d => {
       btn.disabled = false; btn.textContent = '🎵 Buat & Upload Playlist';
       if (d.status === 'success') { toast(d.message, 'success'); fetchPlaylistJobs(); }
@@ -4255,7 +4256,8 @@ function renderPlaylistJobs(jobs) {
     const link = j.video_url ? ` <a href="${escapeHtml(j.video_url)}" target="_blank" style="color:var(--accent)">[Lihat]</a>` : '';
     const err = j.error ? `<div class="task-meta" style="color:var(--accent2)">Alasan: ${escapeHtml(j.error)}</div>` : '';
     const rm = j.render_method ? ` · render ${escapeHtml(j.render_method)}` : '';
-    return `<div class="task-row"><div class="task-icon">🎵</div><div class="task-info"><div class="task-name">${escapeHtml(j.new_title || j.ref_title || j.theme || '?')}</div><div class="task-meta">${escapeHtml(j.channel_name || '')} · ${escapeHtml(j.created_at || '')}${rm}${link}</div><div class="task-meta">${escapeHtml(j.progress || '')}</div>${err}</div><span class="pill ${st[1]}" style="flex-shrink:0;max-width:220px;white-space:normal;line-height:1.3">${st[0]}</span></div>`;
+    const fb = j.pixabay_fallback ? ` · footage fallback ke tema musik` : (j.pixabay_theme_used ? ` · footage: ${escapeHtml(j.pixabay_theme_used)}` : '');
+    return `<div class="task-row"><div class="task-icon">🎵</div><div class="task-info"><div class="task-name">${escapeHtml(j.new_title || j.ref_title || j.theme || '?')}</div><div class="task-meta">${escapeHtml(j.channel_name || '')} · ${escapeHtml(j.created_at || '')}${rm}${fb}${link}</div><div class="task-meta">${escapeHtml(j.progress || '')}</div>${err}</div><span class="pill ${st[1]}" style="flex-shrink:0;max-width:220px;white-space:normal;line-height:1.3">${st[0]}</span></div>`;
   }).join('');
 }
 

@@ -336,7 +336,8 @@ _OPERATOR_ENDPOINTS = {'operator_retry_task', 'operator_approve_task',
                       'operator_set_autopilot', 'operator_set_paused',
                       'operator_pixabay_key_add', 'operator_pixabay_key_list',
                       'operator_pixabay_key_del', 'operator_backup_create',
-                      'operator_backup_status'}
+                      'operator_backup_status', 'operator_playlist_research',
+                      'operator_playlist_create'}
 _CSRF_EXEMPT_ENDPOINTS = {'login', 'setup', 'static'} | _OPERATOR_ENDPOINTS
 
 @app.before_request
@@ -8713,15 +8714,36 @@ def _playlist_build_thread(job_id):
         _playlist_job_update(job_id, status='downloading',
                              progress='Mengunduh footage Pixabay...',
                              audio_path=audio, audio_duration=audio_dur)
-        clips, masks = _pixabay_search_clips(job.get('theme', ''), count=PLAYLIST_MAX_CLIPS, job_id=job_id)
+        # Tema footage: dari field 'Tema Footage' (panel) / langkah
+        # Telegram bila diisi; kosong = auto dari tema musik. Bila tema
+        # footage mengembalikan klip 16:9 small terlalu sedikit (< min),
+        # fallback ke tema musik dan catat di job supaya jujur di UI/Telegram.
+        footage_theme = (job.get('pixabay_theme') or '').strip()
+        music_theme = job.get('theme', '')
+        use_theme = footage_theme or music_theme
+        pixabay_fallback = False
+        try:
+            clips, masks = _pixabay_search_clips(use_theme, count=PLAYLIST_MAX_CLIPS, job_id=job_id)
+        except RuntimeError as e:
+            if footage_theme and footage_theme != music_theme and 'kurang' in str(e):
+                clips, masks = _pixabay_search_clips(music_theme, count=PLAYLIST_MAX_CLIPS, job_id=job_id)
+                use_theme = music_theme
+                pixabay_fallback = True
+            else:
+                raise
         clip_paths = []
         for i, c in enumerate(clips):
             dest = os.path.join(job_dir, f"clip_{i + 1:02d}.mp4")
             _pixabay_download_clip(c['url'], dest)
             clip_paths.append(dest)
+        _prog = f"{len(clip_paths)} klip footage siap (key Pixabay {masks[0] if masks else '?'})"
+        if pixabay_fallback:
+            _prog += f" — tema footage '{footage_theme}' kurang klip, pakai tema musik."
         _playlist_job_update(job_id, status='preparing',
-                             progress=f"{len(clip_paths)} klip footage siap (key Pixabay {masks[0] if masks else '?'})",
-                             clips=clip_paths, pixabay_keys_used=masks)
+                             progress=_prog,
+                             clips=clip_paths, pixabay_keys_used=masks,
+                             pixabay_theme_used=use_theme,
+                             pixabay_fallback=pixabay_fallback)
         channel = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
         ch_name = (channel or {}).get('name', yt_id)
         new_title = _playlist_rewrite_title(job.get('ref_title', ''), ch_name)
@@ -8755,8 +8777,11 @@ def _playlist_build_thread(job_id):
             threading.Thread(target=_send_approval_previews,
                              args=(res['batch_id'], res['channel_name'], [res['preview']]),
                              daemon=True).start()
+        _prog_done = 'Task dibuat — menunggu approval/antrean.'
+        if pixabay_fallback:
+            _prog_done += f" (Footage: tema '{footage_theme}' kurang klip — pakai tema musik.)"
         _playlist_job_update(job_id, status='queued',
-                             progress='Task dibuat — menunggu approval/antrean.',
+                             progress=_prog_done,
                              task_id=res.get('task_id'),
                              approval='approved' if res.get('auto_mode') else 'pending')
         notify_event("🎵", new_title,
@@ -8765,6 +8790,83 @@ def _playlist_build_thread(job_id):
         _playlist_job_update(job_id, status='failed', error=str(e)[:300])
         notify_event("❌", job.get('ref_title') or 'Musik Playlist',
                      f"Gagal membangun playlist: {str(e)[:150]}")
+
+
+# --- Inti riset & buat playlist (dipakai endpoint panel DAN operator
+# Telegram — SATU logika, tanpa duplikasi; cache riset 1 jam yang sama). ---
+def _playlist_do_research(yt_id, theme):
+    """Riset kandidat trending 30 hari terakhir. Kembalikan
+    (ok, payload, http); payload berisi job_id + candidates + quota_note
+    bila sukses. Job riset dicatat di playlist_jobs.json (status
+    'researched') supaya langkah berikutnya bisa memakai job_id-nya."""
+    if not _valid_yt_id(yt_id):
+        return False, {"status": "error", "message": "Channel tidak valid."}, 400
+    channel = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+    if not channel:
+        return False, {"status": "error", "message": "Channel tidak ditemukan."}, 404
+    q = (theme or '').strip()
+    if not q:
+        return False, {"status": "error", "message": "Isi tema/kata kunci dulu."}, 400
+    cands, err, from_cache = _playlist_research_youtube(channel, q)
+    if err:
+        return False, {"status": "error", "message": err}, 500
+    job_id = f"pl{int(time.time() * 1000)}-{secrets.token_hex(3)}"
+    _playlist_job_add({
+        'job_id': job_id, 'yt_id': yt_id,
+        'channel_name': channel.get('name', ''), 'theme': q,
+        'status': 'researched', 'candidates': cands or [],
+        'created_at': _wib_now().strftime('%Y-%m-%d %H:%M'),
+        'progress': (f"{len(cands or [])} kandidat ditemukan"
+                     + (" (dari cache — tanpa kuota)." if from_cache else " (kuota riset ~101 unit).")),
+    })
+    return True, {"status": "success", "job_id": job_id, "candidates": cands or [],
+                  "quota_note": ("Riset dari cache (0 unit kuota)." if from_cache
+                                 else "Riset memakai ~101 unit kuota YouTube Data API (search 100 + detail 1).")}, 200
+
+
+def _playlist_do_create(job_id, video_id, publish_date='', privacy='public',
+                        pixabay_theme='', playlist_id=''):
+    """Pilih kandidat → bangun playlist di thread latar. Kembalikan
+    (ok, message, http). pixabay_theme: tema footage Pixabay (opsional,
+    '' = auto dari tema musik) — disimpan di job, dipakai build thread."""
+    job = _playlist_job_get(job_id)
+    if not job:
+        return False, "Job riset tidak ditemukan — riset ulang.", 404
+    if not re.fullmatch(r'[A-Za-z0-9_-]{11}', video_id or ''):
+        return False, "ID video referensi tidak valid.", 400
+    cand = next((c for c in job.get('candidates') or [] if c.get('video_id') == video_id), None)
+    if not cand:
+        return False, "Kandidat tidak ditemukan — riset ulang.", 404
+    if job.get('status') in ('downloading', 'preparing', 'queued'):
+        return False, "Job ini sedang berjalan.", 409
+    pub = (publish_date or '').strip()
+    if pub:
+        try:
+            pub_dt = datetime.strptime(pub, '%Y-%m-%dT%H:%M')
+            pub = pub_dt.strftime('%Y-%m-%d %H:%M')
+        except Exception:
+            try:
+                pub_dt = datetime.strptime(pub, '%Y-%m-%d %H:%M')
+                pub = pub_dt.strftime('%Y-%m-%d %H:%M')
+            except Exception:
+                return False, "Format tanggal salah (pakai YYYY-MM-DD HH:MM).", 400
+    else:
+        # Default: besok 19:00 WIB.
+        pub = (_wib_now() + timedelta(days=1)).strftime('%Y-%m-%d') + ' 19:00'
+    privacy = (privacy or 'public').strip()
+    if privacy not in ('public', 'private', 'unlisted'):
+        privacy = 'public'
+    _playlist_job_update(job_id, status='downloading', video_id=video_id,
+                         ref_title=cand.get('title', ''),
+                         ref_description=cand.get('description', ''),
+                         ref_tags=cand.get('tags') or [],
+                         ref_thumbnail_url=cand.get('thumbnail_url', ''),
+                         publish_date=pub, privacy=privacy,
+                         playlist_id=(playlist_id or '').strip(),
+                         pixabay_theme=(pixabay_theme or '').strip()[:100],
+                         progress='Memulai...')
+    threading.Thread(target=_playlist_build_thread, args=(job_id,), daemon=True).start()
+    return True, "Membangun playlist — audio & footage sedang diunduh. Pantau progres di daftar job.", 200
 
 
 # --- Endpoint panel: Musik Playlist (butuh login; CSRF via check_security) ---
@@ -8776,76 +8878,54 @@ def playlist_research():
     yt_id = (data.get('yt_id') or '').strip()
     theme = (data.get('theme') or '').strip()
     keyword = (data.get('keyword') or '').strip()
-    if not _valid_yt_id(yt_id):
-        return jsonify({"status": "error", "message": "Channel tidak valid."}), 400
-    channel = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
-    if not channel:
-        return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
-    q = keyword or theme
-    if not q:
-        return jsonify({"status": "error", "message": "Isi tema/kata kunci dulu."}), 400
-    cands, err, from_cache = _playlist_research_youtube(channel, q)
-    if err:
-        return jsonify({"status": "error", "message": err}), 500
-    job_id = f"pl{int(time.time() * 1000)}-{secrets.token_hex(3)}"
-    _playlist_job_add({
-        'job_id': job_id, 'yt_id': yt_id,
-        'channel_name': channel.get('name', ''), 'theme': q,
-        'status': 'researched', 'candidates': cands or [],
-        'created_at': _wib_now().strftime('%Y-%m-%d %H:%M'),
-        'progress': (f"{len(cands or [])} kandidat ditemukan"
-                     + (" (dari cache — tanpa kuota)." if from_cache else " (kuota riset ~101 unit).")),
-    })
-    return jsonify({"status": "success", "job_id": job_id, "candidates": cands or [],
-                    "quota_note": ("Riset dari cache (0 unit kuota)." if from_cache
-                                   else "Riset memakai ~101 unit kuota YouTube Data API (search 100 + detail 1).")})
+    ok, payload, http = _playlist_do_research(yt_id, keyword or theme)
+    return jsonify(payload), http
+
+
+@app.route('/api/operator/playlist_research', methods=['POST'])
+def operator_playlist_research():
+    """Riset kandidat playlist dari Telegram — auth HMAC operator_key.
+    Body: {key, yt_id, theme}. Memakai helper yang SAMA dengan endpoint
+    panel (cache riset 1 jam yang sama, kuota yang sama). Route ini masuk
+    _OPERATOR_ENDPOINTS di check_security."""
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    ok, payload, http = _playlist_do_research(
+        (data.get('yt_id') or '').strip(), (data.get('theme') or '').strip())
+    return jsonify(payload), http
 
 
 @app.route('/api/playlist_create', methods=['POST'])
 def playlist_create():
     """Pilih kandidat → bangun playlist di thread latar. Body: {job_id,
-    video_id, publish_date?, privacy?, playlist_id?}."""
+    video_id, publish_date?, privacy?, playlist_id?, pixabay_theme?}."""
     data = request.get_json(silent=True) or {}
-    job_id = (data.get('job_id') or '').strip()
-    video_id = (data.get('video_id') or '').strip()
-    job = _playlist_job_get(job_id)
-    if not job:
-        return jsonify({"status": "error", "message": "Job riset tidak ditemukan — riset ulang."}), 404
-    if not re.fullmatch(r'[A-Za-z0-9_-]{11}', video_id or ''):
-        return jsonify({"status": "error", "message": "ID video referensi tidak valid."}), 400
-    cand = next((c for c in job.get('candidates') or [] if c.get('video_id') == video_id), None)
-    if not cand:
-        return jsonify({"status": "error", "message": "Kandidat tidak ditemukan — riset ulang."}), 404
-    if job.get('status') in ('downloading', 'preparing', 'queued'):
-        return jsonify({"status": "error", "message": "Job ini sedang berjalan."}), 409
-    pub = (data.get('publish_date') or '').strip()
-    if pub:
-        try:
-            pub_dt = datetime.strptime(pub, '%Y-%m-%dT%H:%M')
-            pub = pub_dt.strftime('%Y-%m-%d %H:%M')
-        except Exception:
-            try:
-                pub_dt = datetime.strptime(pub, '%Y-%m-%d %H:%M')
-                pub = pub_dt.strftime('%Y-%m-%d %H:%M')
-            except Exception:
-                return jsonify({"status": "error", "message": "Format tanggal salah (pakai YYYY-MM-DD HH:MM)."}), 400
-    else:
-        # Default: besok 19:00 WIB.
-        pub = (_wib_now() + timedelta(days=1)).strftime('%Y-%m-%d') + ' 19:00'
-    privacy = (data.get('privacy') or 'public').strip()
-    if privacy not in ('public', 'private', 'unlisted'):
-        privacy = 'public'
-    _playlist_job_update(job_id, status='downloading', video_id=video_id,
-                         ref_title=cand.get('title', ''),
-                         ref_description=cand.get('description', ''),
-                         ref_tags=cand.get('tags') or [],
-                         ref_thumbnail_url=cand.get('thumbnail_url', ''),
-                         publish_date=pub, privacy=privacy,
-                         playlist_id=(data.get('playlist_id') or '').strip(),
-                         progress='Memulai...')
-    threading.Thread(target=_playlist_build_thread, args=(job_id,), daemon=True).start()
-    return jsonify({"status": "success",
-                    "message": "Membangun playlist — audio & footage sedang diunduh. Pantau progres di daftar job."})
+    ok, message, http = _playlist_do_create(
+        (data.get('job_id') or '').strip(), (data.get('video_id') or '').strip(),
+        data.get('publish_date') or '', data.get('privacy') or 'public',
+        (data.get('pixabay_theme') or '').strip(),
+        (data.get('playlist_id') or '').strip())
+    return jsonify({"status": "success" if ok else "error", "message": message}), http
+
+
+@app.route('/api/operator/playlist_create', methods=['POST'])
+def operator_playlist_create():
+    """Buat playlist dari Telegram — auth HMAC operator_key.
+    Body: {key, job_id, video_id, publish_date?, privacy?, pixabay_theme?}.
+    Memakai helper yang SAMA dengan endpoint panel (thread build, gates
+    worker, approval/autopilot yang sama). Route ini masuk
+    _OPERATOR_ENDPOINTS di check_security."""
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    ok, message, http = _playlist_do_create(
+        (data.get('job_id') or '').strip(), (data.get('video_id') or '').strip(),
+        data.get('publish_date') or '', data.get('privacy') or 'public',
+        (data.get('pixabay_theme') or '').strip())
+    return jsonify({"status": "success" if ok else "error", "message": message}), http
 
 
 @app.route('/api/playlist_jobs')
@@ -8858,7 +8938,8 @@ def playlist_jobs():
             'job_id', 'yt_id', 'channel_name', 'theme', 'status', 'progress',
             'error', 'created_at', 'updated_at', 'task_id', 'approval',
             'video_id', 'video_url', 'ref_title', 'new_title',
-            'audio_duration', 'render_method', 'pixabay_keys_used')})
+            'audio_duration', 'render_method', 'pixabay_keys_used',
+            'pixabay_theme', 'pixabay_theme_used', 'pixabay_fallback')})
     return jsonify({"status": "success", "jobs": jobs})
 
 

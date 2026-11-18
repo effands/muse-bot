@@ -103,7 +103,7 @@ def save_monitor_state(state):
 # (kunci "make_drafts", per chat_id) supaya tahan restart. Draft yang
 # tidak ada kabar > 30 menit dianggap hangus.
 _MAKE_DRAFT_TTL = 1800  # 30 menit (detik)
-_BG_EXTS = ('.mp4', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.mov')
+_BG_EXTS = ('.mp4', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.mov', '.webm')
 _AUDIO_EXTS = ('.mp3', '.wav')
 
 def _load_make_draft(chat_id):
@@ -2380,6 +2380,15 @@ _MAIN_BUTTON_TEXTS = {
 def _make_short_summary(d):
     hook = (d.get('hook') or '—')
     script = (d.get('script') or '—')
+    bg_label = d.get('bg_file') or ''
+    if not bg_label:
+        n_vid = d.get('bg_video_count') or 0
+        if n_vid:
+            bg_label = f"semua klip video ({n_vid} klip, disambung)"
+        elif d.get('bg_options'):
+            bg_label = "acak dari galeri"
+        else:
+            bg_label = "gradien otomatis"
     return (
         "📋 *Cek dulu ya Bos, ini Shorts yang mau dibuat:* 🎬\n"
         f"📺 Channel: *{_tg_escape(d.get('channel_name', ''))}*\n"
@@ -2389,7 +2398,7 @@ def _make_short_summary(d):
         f"📣 CTA: {_tg_escape(d.get('cta', 'Subscribe'))}\n"
         f"⏱️ Durasi: `{d.get('duration_sec', 30)} detik`\n"
         f"🗓️ Jadwal: `{_tg_escape(d.get('publish_date', ''))}`\n"
-        f"🖼️ Background: `{_tg_escape(d.get('bg_file') or 'gradien otomatis')}`\n"
+        f"🖼️ Background: `{_tg_escape(bg_label)}`\n"
         f"🎵 Musik: `{_tg_escape(d.get('bgm_file', 'none'))}`\n\n"
         "Kalau sudah oke, pencet ✅ Buat. Kalau mau ubah, pencet ❌ Batal lalu mulai lagi dari /buatshort ya Bos!"
     )
@@ -2423,6 +2432,10 @@ def _send_make_created_message(token, chat_id, kind, d, resp):
             f"🗓️ Jadwal: `{_tg_escape((resp or {}).get('publish_date') or d.get('publish_date', ''))}`",
             f"⏱️ Durasi: `{d.get('duration_sec', 30)} detik`",
         ]
+        if (resp or {}).get('bg_video'):
+            lines.append(f"🎬 Background: video ({(resp or {}).get('bg_video_count', 0)} klip, disambung)")
+        elif (resp or {}).get('bg_auto'):
+            lines.append("🖼️ Background: gradien otomatis (galeri masih kosong — upload gambar sendiri di panel bila mau yang lebih bagus)")
     else:
         tasks = (resp or {}).get('tasks') or []
         lines = [
@@ -2462,6 +2475,8 @@ def _make_check_bg_or_cancel(token, chat_id, draft):
     d = draft.get('data') or {}
     bgs = _gallery_files(d.get('yt_id', ''), 'backgrounds', _BG_EXTS)
     d['bg_options'] = bgs
+    d['bg_video_count'] = sum(1 for f in bgs
+                              if f.lower().endswith(('.mp4', '.mov', '.webm')))
     draft['data'] = d
     return True
 
@@ -2504,11 +2519,14 @@ def _make_ask_step(token, chat_id, draft):
                 send_message(token, chat_id, "\n".join(lines))
                 return
             lines = ["🖼️ *Langkah 7 dari 7: Background*\n\nPilih gambar/video background dari galeri:\n"]
+            vids = d.get('bg_video_count') or 0
+            if vids:
+                lines.append(f"🎬 Galeri ini punya {vids} klip video — balas `lewati` untuk pakai SEMUA klip disambung jadi background bergerak, atau pilih 1 file di bawah untuk pakai file itu saja.\n")
             for i, f in enumerate(opts[:10], 1):
                 lines.append(f"{i}. `{_tg_escape(f)}`")
             if len(opts) > 10:
                 lines.append(f"_…dan {len(opts) - 10} file lainnya_")
-            lines.append("\nBalas angkanya. Ketik `lewati` untuk pakai yang pertama.")
+            lines.append("\nBalas angkanya untuk pakai 1 file itu saja. Ketik `lewati` untuk pakai semua klip video disambung (atau gambar acak bila tidak ada video).")
             send_message(token, chat_id, "\n".join(lines))
         elif step == 'bgm':
             opts = _gallery_files(d.get('yt_id', ''), 'audios', _AUDIO_EXTS)
@@ -2757,7 +2775,10 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
         elif step == 'bg':
             opts = d.get('bg_options') or []
             if low in ('lewati', '-', 'skip'):
-                d['bg_file'] = opts[0] if opts else ''
+                # Tanpa pilihan eksplisit → panel yang memutuskan: semua klip
+                # video disambung bila ada, gambar acak bila tidak ada video,
+                # gradien otomatis bila galeri kosong.
+                d['bg_file'] = ''
             else:
                 try:
                     idx = int(ans) - 1
@@ -3617,6 +3638,7 @@ def _execute_nlu_create_shorts(token, chat_id, pending):
         last_resp = {}
         err = ''
         used_auto_bg = False
+        used_video = 0
         for k in range(count):
             idx = (day_idx + k) % len(bank['hooks'])
             pub = base_slot
@@ -3639,14 +3661,24 @@ def _execute_nlu_create_shorts(token, chat_id, pending):
                 last_resp = resp
                 if (resp or {}).get('bg_auto'):
                     used_auto_bg = True
+                if (resp or {}).get('bg_video'):
+                    try:
+                        used_video = max(used_video, int((resp or {}).get('bg_video_count') or 0))
+                    except Exception:
+                        used_video = max(used_video, 1)
             else:
                 err = info
                 break
         if made:
             appr = (last_resp or {}).get('approval')
             stat = 'menunggu approval Bos' if appr == 'pending' else 'masuk antrean'
-            note = (" 🖼️ Background otomatis (gradien) karena galeri masih kosong — "
-                    "upload gambar sendiri di panel bila mau yang lebih bagus.") if used_auto_bg else ""
+            if used_video:
+                note = f" 🎬 Background video ({used_video} klip, disambung)."
+            elif used_auto_bg:
+                note = (" 🖼️ Background otomatis (gradien) karena galeri masih kosong — "
+                        "upload gambar sendiri di panel bila mau yang lebih bagus.")
+            else:
+                note = ""
             lines.append(f"✅ *{name}* — {made} Short dibuat, {stat}.{note}")
         else:
             lines.append(f"❌ *{name}* — {err or 'gagal dibuat'}.")

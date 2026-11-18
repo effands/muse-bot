@@ -1193,7 +1193,7 @@ def get_channel_folder(yt_id, sub):
 
 def get_multi_backgrounds(yt_id, count=1):
     path = get_channel_folder(yt_id, "backgrounds")
-    files = [os.path.join(path, f) for f in os.listdir(path) if f.lower().endswith(('.mp4', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.mov'))]
+    files = [os.path.join(path, f) for f in os.listdir(path) if f.lower().endswith(('.mp4', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.mov', '.webm'))]
     if not files: return []
     random.shuffle(files)
     
@@ -2394,6 +2394,54 @@ def _shorts_muse_ensure_auto_bg(yt_id, theme):
         print(f"[auto-bg] gagal buat gradien tema {theme}: {e}", flush=True)
         return None, False
 
+# Ekstensi klip video yang bisa jadi background Shorts Muse.
+_SHORTS_VIDEO_BG_EXTS = ('.mp4', '.mov', '.webm')
+
+def _shorts_muse_list_bg_videos(yt_id):
+    """Nama file klip video di folder backgrounds channel, URUT NAMA FILE
+    (deterministik — ini urutan sambungnya saat render). Hanya mp4/mov/webm."""
+    try:
+        folder = get_channel_folder(yt_id, "backgrounds")
+    except Exception:
+        return []
+    try:
+        return sorted(f for f in os.listdir(folder)
+                      if f.lower().endswith(_SHORTS_VIDEO_BG_EXTS)
+                      and os.path.isfile(os.path.join(folder, f)))
+    except Exception:
+        return []
+
+def _shorts_muse_build_bg_concat(clip_paths, out_path):
+    """Sambung klip-klip video jadi SATU file background 1080x1920/30fps:
+    tiap klip di-scale+crop ke 1080x1920, fps diseragamkan 30, tanpa audio.
+    Dipakai bila Short memakai ≥2 klip video (hasilnya di-loop + dipotong
+    ke durasi target oleh render utama). Mengembalikan True bila berhasil;
+    False bila FFmpeg gagal (pemanggil memakai klip pertama saja sebagai
+    fallback)."""
+    try:
+        n = len(clip_paths)
+        cmd = [get_ffmpeg_path(), '-y']
+        for p in clip_paths:
+            cmd += ['-i', p]
+        chains = []
+        for i in range(n):
+            chains.append(f"[{i}:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+                          f"crop=1080:1920,fps=30,format=yuv420p,setsar=1[v{i}]")
+        chains.append("".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[out]")
+        cmd += ['-filter_complex', ";".join(chains), '-map', '[out]',
+                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
+                '-an', '-movflags', '+faststart', out_path]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if r.returncode != 0:
+            print(f"[shorts-video-bg] concat {n} klip gagal (exit {r.returncode}): {(r.stderr or '')[-300:]}", flush=True)
+            return False
+        if not os.path.isfile(out_path) or os.path.getsize(out_path) <= 0:
+            return False
+        return True
+    except Exception as e:
+        print(f"[shorts-video-bg] concat gagal: {e}", flush=True)
+        return False
+
 def _shorts_muse_pick_bg(yt_id, filename, theme=None):
     """Background Shorts: file pilihan form (uploads/<yt_id>/backgrounds)
     kalau ada & valid; kalau tidak, 1 background acak dari galeri.
@@ -2445,6 +2493,34 @@ def render_shorts_muse_core(task_id, task, yt_id):
     bg_path = _shorts_muse_pick_bg(yt_id, task.get('shorts_bg'), task.get('shorts_theme'))
     if not bg_path:
         raise Exception("Gallery Background Kosong! Upload gambar background ke tab Asset Gallery dulu.")
+    # 🎬 Background video multi-klip: ≥2 klip → sambung jadi satu file
+    # 1080x1920 (di-loop + dipotong ke durasi target oleh render utama).
+    # Concat gagal → fallback klip pertama saja (diloop seperti video tunggal).
+    concat_path = None
+    clips = [f for f in (task.get('shorts_bg_clips') or []) if isinstance(f, str) and f.strip()]
+    if len(clips) >= 2:
+        try:
+            bg_folder = get_channel_folder(yt_id, "backgrounds")
+        except Exception:
+            bg_folder = None
+        if bg_folder:
+            clip_paths = []
+            for f in clips:
+                p = os.path.join(bg_folder, os.path.basename(f))
+                if os.path.isfile(p) and p.lower().endswith(_SHORTS_VIDEO_BG_EXTS):
+                    clip_paths.append(p)
+            if len(clip_paths) >= 2:
+                concat_path = os.path.join(BASE_UPLOAD, f"shorts_bgconcat_{task_id}.mp4")
+                if _shorts_muse_build_bg_concat(clip_paths, concat_path):
+                    bg_path = concat_path
+                else:
+                    try:
+                        if os.path.isfile(concat_path):
+                            os.remove(concat_path)
+                    except Exception:
+                        pass
+                    concat_path = None
+                    bg_path = clip_paths[0]
     bgm_path = _shorts_muse_pick_bgm(yt_id, task.get('shorts_bgm'))
     # Tandai di blueprint supaya QC Fase 5 tahu: tanpa musik = audio hening
     # itu disengaja, bukan cacat render.
@@ -2497,6 +2573,9 @@ def render_shorts_muse_core(task_id, task, yt_id):
     finally:
         try: os.remove(ass_path)
         except Exception: pass
+        if concat_path:
+            try: os.remove(concat_path)
+            except Exception: pass
 
 def background_worker():
     global channel_cooldowns
@@ -5718,7 +5797,7 @@ def delete_preset():
 _GALLERY_EXTS = {
     'audios': {'.mp3', '.wav'},
     'special_songs': {'.mp3', '.wav'},
-    'backgrounds': {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4', '.mov'},
+    'backgrounds': {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4', '.mov', '.webm'},
     'thumbnails': {'.jpg', '.jpeg', '.png'},
     'base_videos': {'.mp4', '.mov', '.webm', '.mkv'},
     'overlays': {'.mp4', '.mov', '.webm', '.mkv'},
@@ -6733,7 +6812,10 @@ def shorts_muse_create():
     if res.get("preview"):
         threading.Thread(target=_send_approval_previews,
                          args=(res["batch_id"], res["channel_name"], [res["preview"]]), daemon=True).start()
-    return jsonify({"status": "success", "message": res["message"], "task_id": res["task_id"]})
+    return jsonify({"status": "success", "message": res["message"], "task_id": res["task_id"],
+                    "bg_auto": res.get("bg_auto", False),
+                    "bg_video": res.get("bg_video", False),
+                    "bg_video_count": res.get("bg_video_count", 0)})
 
 
 def _create_shorts_muse_task(data):
@@ -6776,28 +6858,59 @@ def _create_shorts_muse_task(data):
     if not re.fullmatch(r'#[0-9A-Fa-f]{6}', text_color):
         text_color = '#FFFFFF'
     bg_file = (data.get('bg_file') or '').strip()
-    if bg_file:
+    # 🎬 Daftar klip video eksplisit (panel: checkbox "semua klip video").
+    bg_files = data.get('bg_files') or []
+    if isinstance(bg_files, str):
+        bg_files = [bg_files]
+    bg_clips = []
+    bg_video_count = 0
+    if bg_files:
+        folder = get_channel_folder(yt_id, "backgrounds")
+        for f in bg_files:
+            if not isinstance(f, str) or not f.strip():
+                continue
+            p = os.path.join(folder, os.path.basename(f.strip()))
+            if os.path.isfile(p) and p.lower().endswith(_SHORTS_VIDEO_BG_EXTS):
+                bg_clips.append(os.path.basename(f.strip()))
+        if not bg_clips:
+            return {"ok": False, "message": "Klip video background tidak ditemukan di galeri channel.", "http": 400}
+        bg_file = bg_clips[0]
+        bg_video_count = len(bg_clips)
+    elif bg_file:
         bg_path = os.path.join(get_channel_folder(yt_id, "backgrounds"), os.path.basename(bg_file))
         if not os.path.isfile(bg_path):
             return {"ok": False, "message": f"Background '{bg_file}' tidak ditemukan di galeri channel.", "http": 400}
+        if bg_path.lower().endswith(_SHORTS_VIDEO_BG_EXTS):
+            bg_clips = [os.path.basename(bg_file)]
+            bg_video_count = 1
     # Tema untuk fallback gradien otomatis (panel: tidak ada field tema →
     # default 'sleep'; operator/penjadwal mengirim tema yang dipilih).
     theme = _shorts_muse_norm_theme(data.get('theme') or data.get('niche'))
     bg_auto = False
     if not bg_file:
-        try:
-            has_bg = bool(get_multi_backgrounds(yt_id, 1))
-        except Exception:
-            has_bg = False
-        if not has_bg:
-            # Galeri kosong → buat gradien otomatis sekali (dipakai ulang).
-            # HANYA bila pembuatan gradien ini gagal, Short ditolak karena
-            # background kosong.
-            auto_path, _auto_created = _shorts_muse_ensure_auto_bg(yt_id, theme)
-            if not auto_path:
-                return {"ok": False, "message": "Galeri background kosong dan background otomatis gagal dibuat — upload background dulu di panel.", "http": 500}
-            bg_file = os.path.basename(auto_path)
-            bg_auto = True
+        # Tanpa pilihan eksplisit: galeri berisi klip video → pakai SEMUA
+        # klip (urut nama file, disambung saat render); bila tidak ada video
+        # tapi ada gambar → perilaku lama (acak saat render); bila kosong
+        # total → gradien otomatis.
+        videos = _shorts_muse_list_bg_videos(yt_id)
+        if videos:
+            bg_clips = videos
+            bg_file = videos[0]
+            bg_video_count = len(videos)
+        else:
+            try:
+                has_bg = bool(get_multi_backgrounds(yt_id, 1))
+            except Exception:
+                has_bg = False
+            if not has_bg:
+                # Galeri kosong → buat gradien otomatis sekali (dipakai ulang).
+                # HANYA bila pembuatan gradien ini gagal, Short ditolak karena
+                # background kosong.
+                auto_path, _auto_created = _shorts_muse_ensure_auto_bg(yt_id, theme)
+                if not auto_path:
+                    return {"ok": False, "message": "Galeri background kosong dan background otomatis gagal dibuat — upload background dulu di panel.", "http": 500}
+                bg_file = os.path.basename(auto_path)
+                bg_auto = True
     bgm_file = (data.get('bgm_file') or '').strip()
     if bgm_file and bgm_file.lower() != 'none':
         bgm_path = os.path.join(get_channel_folder(yt_id, "audios"), os.path.basename(bgm_file))
@@ -6830,6 +6943,7 @@ def _create_shorts_muse_task(data):
         "shorts_duration_sec": duration_sec,
         "shorts_hook": hook, "shorts_script": script, "shorts_cta": cta_text,
         "shorts_bg": bg_file, "shorts_bgm": bgm_file,
+        "shorts_bg_clips": bg_clips,
         "shorts_text_color": text_color,
         "shorts_theme": theme,
         # target_duration_hours dipakai estimasi disk & QC lama — isi dari
@@ -6892,14 +7006,14 @@ def _create_shorts_muse_task(data):
         return {"ok": True, "message": "Shorts Muse dibuat dan langsung masuk antrean (mode Full-Auto)!",
                 "http": 200, "task_id": t_id, "auto_mode": True, "batch_id": batch_id,
                 "preview": None, "channel_name": channel_name, "publish_date": v_date_str,
-                "bg_auto": bg_auto}
+                "bg_auto": bg_auto, "bg_video": bg_video_count > 0, "bg_video_count": bg_video_count}
     preview = {"id": t_id, "title": title, "publish_date": v_date_str,
                "duration_label": f"{duration_sec} detik (Shorts Muse)",
                "description": description, "privacy": "private"}
     return {"ok": True, "message": "Shorts Muse dibuat dan menunggu approval di Telegram!",
             "http": 200, "task_id": t_id, "auto_mode": False, "batch_id": batch_id,
             "preview": preview, "channel_name": channel_name, "publish_date": v_date_str,
-            "bg_auto": bg_auto}
+            "bg_auto": bg_auto, "bg_video": bg_video_count > 0, "bg_video_count": bg_video_count}
 
 
 @app.route('/api/operator/create_shorts', methods=['POST'])
@@ -6927,7 +7041,9 @@ def operator_create_shorts():
                     "task_id": res["task_id"],
                     "approval": "approved" if res["auto_mode"] else "pending",
                     "publish_date": res.get("publish_date"),
-                    "bg_auto": res.get("bg_auto", False)})
+                    "bg_auto": res.get("bg_auto", False),
+                    "bg_video": res.get("bg_video", False),
+                    "bg_video_count": res.get("bg_video_count", 0)})
 
 
 @app.route('/api/get_shorts_muse')
@@ -7796,8 +7912,13 @@ def _auto_shorts_tick(now_wib=None):
                 threading.Thread(target=_send_approval_previews,
                                  args=(res['batch_id'], res['channel_name'], [res['preview']]), daemon=True).start()
             status_txt = 'menunggu approval Bos di Telegram 👀' if not res.get('auto_mode') else 'sudah masuk antrean render ✅'
-            bg_note = ("\n🖼️ Background: gradien otomatis (galeri masih kosong — "
-                       "upload gambar sendiri di panel bila mau yang lebih bagus)") if res.get('bg_auto') else ""
+            if res.get('bg_auto'):
+                bg_note = ("\n🖼️ Background: gradien otomatis (galeri masih kosong — "
+                           "upload gambar sendiri di panel bila mau yang lebih bagus)")
+            elif res.get('bg_video'):
+                bg_note = (f"\n🎬 Background: video ({res.get('bg_video_count', 0)} klip, disambung)")
+            else:
+                bg_note = ""
             send_tg_message(
                 f"⏰ *Jadwal Otomatis Short — sudah saya buatkan* 🤖\n"
                 f"📺 Channel: *{_tg_escape(ch_name)}*\n"

@@ -1062,12 +1062,12 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
             <table style="width:100%;border-collapse:collapse;font-size:12px">
               <thead><tr style="text-align:left;color:var(--muted);font-family:var(--font-m);font-size:10px;border-bottom:1px solid var(--border)">
                 <th style="padding:6px 8px">VIDEO</th><th style="padding:6px 8px">CHANNEL</th><th style="padding:6px 8px">TAYANG</th>
-                <th style="padding:6px 8px;text-align:right">VIEWS</th><th style="padding:6px 8px;text-align:right">LIKES</th><th style="padding:6px 8px;text-align:right">KOMENTAR</th>
+                <th style="padding:6px 8px;text-align:right">VIEWS</th><th style="padding:6px 8px;text-align:right">LIKES</th><th style="padding:6px 8px;text-align:right">KOMENTAR</th><th style="padding:6px 8px;text-align:right">SUBS</th>
               </tr></thead>
-              <tbody id="vs-tbody"><tr><td colspan="6" style="padding:10px 8px;color:var(--muted)">Memuat statistik…</td></tr></tbody>
+              <tbody id="vs-tbody"><tr><td colspan="7" style="padding:10px 8px;color:var(--muted)">Memuat statistik…</td></tr></tbody>
             </table>
           </div>
-          <div style="font-size:11px;color:var(--muted);margin-top:10px"><span id="vs-updated">—</span> · Subscriber per video tidak tersedia via YouTube Data API (butuh scope YouTube Analytics — token saat ini tidak memilikinya); subs channel ada di statistik channel di atas.</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:10px"><span id="vs-updated">—</span> · Subs per video dari YouTube Analytics API (butuh token channel dengan scope Analytics — channel lama perlu ditaut ulang); subs channel ada di statistik channel di atas.</div>
         </div>
       </div>
 
@@ -1107,7 +1107,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         <div class="card-head">
           <div>
             <span class="card-title">MONETISASI &amp; BEBAN</span>
-            <div class="card-sub">Views dari statistik Fase 4 + riwayat tayang. Estimasi uang HANYA dari RPM yang kamu isi sendiri per channel (Settings) — bukan data penghasilan YouTube.</div>
+            <div class="card-sub">Views dari statistik Fase 4 + riwayat tayang. RPM diutamakan dari YouTube Analytics API (otomatis, bila token channel punya scope Analytics); RPM manual di Settings hanya cadangan.</div>
           </div>
           <button type="button" class="btn btn-sm" onclick="fetchMonetization()" title="Muat ulang data monetisasi">↻ Refresh</button>
         </div>
@@ -2287,6 +2287,7 @@ function renderChannelsGrid() {
         ${c.paused ? `<span class="pill p-yellow">⏸️ Dijeda</span>` : ''}
         ${c.autopilot === 'auto' ? `<span class="pill p-cyan">🤖 Full-Auto</span>` : `<span class="pill p-muted">👀 Approval</span>`}
         <span class="pill p-muted" title="RPM: USD per 1000 views — dipakai hanya untuk estimasi penghasilan di kartu Monetisasi">💵 RPM $${c.rpm_usd != null ? c.rpm_usd : '—'}</span>
+        ${c.analytics_scope === false ? `<span class="pill p-yellow" title="Token channel ini belum punya scope YouTube Analytics — taut ulang channel (kode device baru) untuk mengaktifkan subs per video & RPM otomatis">⚠️ Perlu taut ulang (Analytics)</span>` : ''}
         <div style="margin-top:6px;display:flex;gap:6px;align-items:center;font-size:11px;color:var(--muted);flex-wrap:wrap">
           <span>RPM $</span>
           <input type="number" min="0" max="100" step="0.1" placeholder="isi utk estimasi" value="${c.rpm_usd != null ? c.rpm_usd : ''}" id="rpm-${c.yt_id}" style="width:100px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:11px" title="RPM: USD per 1000 views. Kosongkan untuk mematikan estimasi channel ini.">
@@ -4344,13 +4345,13 @@ function fetchVideoStats(force) {
   const url = '/api/get_video_stats' + (force ? '?force=1' : '');
   fetch(url).then(r => r.json()).then(data => { videoStatsData = data; renderVideoStats(); }).catch(() => {
     const tb = document.getElementById('vs-tbody');
-    if (tb) tb.innerHTML = '<tr><td colspan="6" style="padding:10px 8px;color:var(--muted)">Gagal memuat statistik video.</td></tr>';
+    if (tb) tb.innerHTML = '<tr><td colspan="7" style="padding:10px 8px;color:var(--muted)">Gagal memuat statistik video.</td></tr>';
   });
 }
 function renderVideoStats() {
   const tb = document.getElementById('vs-tbody'); if (!tb) return;
   const d = videoStatsData;
-  if (!d) { tb.innerHTML = '<tr><td colspan="6" style="padding:10px 8px;color:var(--muted)">Memuat statistik…</td></tr>'; return; }
+  if (!d) { tb.innerHTML = '<tr><td colspan="7" style="padding:10px 8px;color:var(--muted)">Memuat statistik…</td></tr>'; return; }
   const fv = document.getElementById('analytics_filter') ? document.getElementById('analytics_filter').value : 'ALL';
   const s = d.summary || {};
   document.getElementById('vs-7d').textContent = (s.views_7d || 0).toLocaleString();
@@ -4368,7 +4369,7 @@ function renderVideoStats() {
   }).join('<br>') : '';
   const rows = (d.videos || []).filter(v => fv === 'ALL' || v.yt_id === fv);
   if (!rows.length) {
-    tb.innerHTML = '<tr><td colspan="6" style="padding:10px 8px;color:var(--muted)">Belum ada video yang tayang / belum ada data statistik. Video yang di-upload setelah Fase 4 akan terlacak otomatis.</td></tr>';
+    tb.innerHTML = '<tr><td colspan="7" style="padding:10px 8px;color:var(--muted)">Belum ada video yang tayang / belum ada data statistik. Video yang di-upload setelah Fase 4 akan terlacak otomatis.</td></tr>';
     return;
   }
   tb.innerHTML = rows.map(v => '<tr style="border-bottom:1px solid var(--border)">'
@@ -4377,7 +4378,8 @@ function renderVideoStats() {
     + '<td style="padding:6px 8px">' + escapeHtml(v.publish_date || '—') + '</td>'
     + '<td style="padding:6px 8px;text-align:right">' + (v.views || 0).toLocaleString() + '</td>'
     + '<td style="padding:6px 8px;text-align:right">' + (v.likes || 0).toLocaleString() + '</td>'
-    + '<td style="padding:6px 8px;text-align:right">' + (v.comments || 0).toLocaleString() + '</td></tr>').join('');
+    + '<td style="padding:6px 8px;text-align:right">' + (v.comments || 0).toLocaleString() + '</td>'
+    + '<td style="padding:6px 8px;text-align:right">' + (v.subs == null ? '—' : v.subs.toLocaleString()) + '</td></tr>').join('');
 }
 
 // ────────────────────────────────────────────────────────
@@ -4439,7 +4441,7 @@ function fetchMonetization() {
           + '<td style="padding:6px 8px;text-align:right">' + c.videos + '</td>'
           + '<td style="padding:6px 8px;text-align:right">' + (c.views_30d || 0).toLocaleString() + '</td>'
           + '<td style="padding:6px 8px;text-align:right">' + (c.total_views || 0).toLocaleString() + '</td>'
-          + '<td style="padding:6px 8px;text-align:right">' + (c.rpm_usd != null ? '$' + c.rpm_usd : '—') + '</td>'
+          + '<td style="padding:6px 8px;text-align:right">' + (c.rpm_usd != null ? '$' + c.rpm_usd + (c.rpm_source === 'api' ? ' <span style="color:var(--muted);font-size:10px">(API)</span>' : c.rpm_source === 'manual' ? ' <span style="color:var(--muted);font-size:10px">(Manual)</span>' : '') : '—') + '</td>'
           + '<td style="padding:6px 8px;text-align:right"><b>' + fmtUsd(c.est_30d_usd) + '</b></td>'
           + '<td style="padding:6px 8px">' + (c.best ? escapeHtml((c.best.title || '').slice(0, 40)) + ' (' + (c.best.views || 0).toLocaleString() + ')' : '—') + '</td></tr>').join('')
         + '</tbody></table></div>';

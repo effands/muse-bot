@@ -179,7 +179,12 @@ DB_FILE = os.path.join(BASE_DIR, 'channels_db.json')
 TASKS_FILE = os.path.join(BASE_DIR, 'tasks_db.json')
 PRESETS_FILE = os.path.join(BASE_DIR, 'presets.json')
 CLIENT_SECRETS_FILE = os.path.join(BASE_DIR, 'client_secret.json')
-SCOPES = ['https://www.googleapis.com/auth/youtube', 'https://www.googleapis.com/auth/youtube.upload']
+SCOPES = ['https://www.googleapis.com/auth/youtube', 'https://www.googleapis.com/auth/youtube.upload',
+          'https://www.googleapis.com/auth/youtubeAnalytics.readonly']  # 🔥 FASE 10: scope Analytics
+# ditambah supaya token baru membawa izin baca YouTube Analytics (subs per
+# video + RPM otomatis). Token LAMA tanpa scope ini tetap jalan normal —
+# panggilan Analytics yang ditolak 403 dicatat per channel dan panel
+# menampilkan "perlu taut ulang" (lihat blok FASE 10).
 
 os.makedirs(BASE_UPLOAD, exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, 'static'), exist_ok=True)
@@ -2768,10 +2773,10 @@ def get_youtube_analytics():
 # ==========================================
 # Per-video: views/likes/komentar via YouTube Data API v3 videos().list
 # (biaya 1 unit kuota per panggilan, maks 50 video/panggilan).
-# Jujur soal batas API: Data API TIDAK menyediakan subscriber per video —
-# itu hanya ada di YouTube Analytics API yang butuh scope
-# 'youtubeAnalytics.readonly' (token lama tidak punya scope itu, jadi
-# tidak dipanggil). Subs channel tetap dari channels().list (endpoint lama).
+# Subs per video dari YouTube Analytics API (blok FASE 10): hanya bila
+# token channel punya scope 'youtubeAnalytics.readonly'; bila belum,
+# subs tampil '—' dan channel ditandai perlu taut ulang. Subs channel
+# tetap dari channels().list (endpoint lama).
 # video_id disimpan di task saat upload sukses (field baru); riwayat lama
 # di-backfill dari link youtu.be di status. Cache 1 jam/channel di
 # video_stats_cache.json (di-gitignore) + snapshot harian {tanggal,
@@ -2948,6 +2953,38 @@ def get_video_stats():
                                                       "published_at": "", "fetched_at": time.time(),
                                                       "missing": True}
                         _save_video_stats_cache(cache)
+        # --- FASE 10: subs per video via Analytics API ---
+        # Diambil untuk video yang cache-nya belum punya field 'subs'
+        # (video baru di-fetch Data API + video lama yang di-cache sebelum
+        # Fase 10). Video tombstone (missing) dilewati. Bila token
+        # diketahui belum punya scope Analytics, API tidak dipanggil
+        # sama sekali — subs tetap None dan channel ditandai di entry.
+        subs_needed = [vid for vid in ids
+                       if 'subs' not in (cached_videos.get(vid) or {})
+                       and not (cached_videos.get(vid) or {}).get('missing')]
+        if subs_needed:
+            if _analytics_scope_state(cache, yt_id) is False:
+                pass  # scope diketahui belum ada — jangan panggil API
+            else:
+                _ch = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+                if _ch is not None:
+                    subs_map, _scope = _fetch_video_subs(_ch, yt_id, subs_needed)
+                    if _scope is not None:
+                        _set_analytics_scope_state(cache, yt_id, _scope)
+                    for _vid in subs_needed:
+                        _subs_val = subs_map.get(_vid)
+                        cached_videos.setdefault(_vid, {})['subs'] = _subs_val
+                        # 🔥 FIX: 'fetched' berisi dict ASLI dari
+                        # _fetch_channel_video_stats, sedangkan cache
+                        # menyimpan salinannya — subs harus ditulis ke
+                        # keduanya supaya baris respons (dibangun dari
+                        # fresh/fetched di bawah) ikut melihatnya.
+                        if _vid in fetched:
+                            fetched[_vid]['subs'] = _subs_val
+                        if _vid in fresh:
+                            fresh[_vid]['subs'] = _subs_val
+                    _save_video_stats_cache(cache)
+        entry["analytics_scope"] = _analytics_scope_state(cache, yt_id)
         stats = dict(fresh)
         stats.update(fetched)
         for vid, t in tasks.items():
@@ -2957,6 +2994,7 @@ def get_video_stats():
                 "video_id": vid, "title": t.get('title', '?'), "channel": ch_name, "yt_id": yt_id,
                 "publish_date": pub, "views": int((st or {}).get('views', 0)),
                 "likes": int((st or {}).get('likes', 0)), "comments": int((st or {}).get('comments', 0)),
+                "subs": (st or {}).get('subs'),  # 🔥 FASE 10: None = belum ada data / token tanpa scope Analytics
                 "url": f"https://youtu.be/{vid}", "has_stats": bool(st) and not st.get('missing'),
             })
         channels_out.append(entry)
@@ -2975,14 +3013,174 @@ def get_video_stats():
         vs = [v for v in videos_out if v['yt_id'] == yt_id and v['has_stats']]
         if vs:
             best_worst[yt_id] = {"best": max(vs, key=lambda x: x['views']), "worst": min(vs, key=lambda x: x['views'])}
+    # 🔥 FASE 10: catatan subs dinamis mengikuti status scope Analytics.
+    _scope_states = [c.get("analytics_scope") for c in channels_out]
+    if _scope_states and all(s is True for s in _scope_states):
+        subs_note = "Subscriber per video dari YouTube Analytics API (token channel sudah punya scope youtubeAnalytics.readonly)."
+    elif any(s is False for s in _scope_states):
+        subs_note = "Subscriber per video hanya untuk channel yang tokennya punya scope YouTube Analytics. Channel yang ditandai 'perlu taut ulang' harus ditautkan ulang (kode device baru) supaya tokennya mendapat scope baru — RPM otomatis juga ikut aktif."
+    else:
+        subs_note = "Subscriber per video dari YouTube Analytics API bila token channel punya scope youtubeAnalytics.readonly; bila belum, tampil '—' — taut ulang channel (kode device baru) untuk mengaktifkannya."
     return jsonify({
         "videos": sorted(videos_out, key=lambda x: x['publish_date'], reverse=True),
         "summary": {"total_videos": len(videos_out), "total_views": sum(v['views'] for v in videos_out),
                     "views_7d": views_7d, "views_30d": views_30d, "best_worst": best_worst},
         "channels": channels_out,
         "cache_used": cache_used,
-        "subs_note": "Subscriber per video tidak tersedia via YouTube Data API — butuh scope YouTube Analytics (token saat ini tidak memilikinya). Subs channel ada di statistik channel di atas.",
+        "subs_note": subs_note,
     })
+
+# ==========================================
+# 📈 FASE 10 SCOPE ANALYTICS API (RPM + SUBS OTOMATIS)
+# ==========================================
+# Token lama hanya punya scope youtube + youtube.upload, jadi subs per
+# video (Fase 4) dan RPM otomatis (Fase 9) tidak tersedia. Mulai Fase 10,
+# SCOPES ditambah 'youtubeAnalytics.readonly' — token yang dibuat /
+# diperbarui setelah deploy ini sudah membawa scope Analytics.
+# Token LAMA tetap jalan normal: panggilan Analytics yang ditolak 403
+# (insufficientPermissions) dicatat per channel di cache (TTL 1 jam) dan
+# panel menampilkan "perlu taut ulang" — data lama tidak rusak, dan
+# RPM manual tetap jadi fallback bila API tidak mengembalikan RPM
+# (mis. channel belum monetisasi). Data Analytics terlambat ~48 jam;
+# video tanpa baris data = subs None (tampil '—', bukan 0).
+# YouTube Analytics API (googleapiclient, pola get_fresh_credentials +
+# failover kredensial yang sama seperti Data API; tanpa dependensi baru):
+#  - subs per video: reports.query ids=channel==MINE,
+#    metrics=subscribersGained, dimensions=video, filters=video==id,...
+#  - RPM channel: reports.query ids=channel==MINE, metrics=rpm,
+#    30 hari terakhir.
+ANALYTICS_SCOPE = 'https://www.googleapis.com/auth/youtubeAnalytics.readonly'
+ANALYTICS_EARLIEST_DATE = '2005-02-14'  # tanggal paling awal yang diizinkan API
+
+
+def _analytics_insufficient_permissions(exc):
+    """True bila error ini adalah 403 insufficientPermissions (token
+    tidak punya scope youtubeAnalytics.readonly). Dicek duck-typing
+    supaya tidak perlu import HttpError baru."""
+    try:
+        text = str(exc).lower()
+        if 'insufficientpermissions' not in text:
+            return False
+        resp = getattr(exc, 'resp', None)
+        status = getattr(resp, 'status', None)
+        return status in (None, 403)
+    except Exception:
+        return False
+
+
+def _analytics_scope_state(cache, yt_id):
+    """Status scope Analytics channel dari cache: True/False/None
+    (None = belum pernah dicek / kadaluarsa > 1 jam)."""
+    st = (cache.get('analytics_scope') or {}).get(yt_id) or {}
+    if not st:
+        return None
+    if time.time() - float(st.get('at', 0)) >= VIDEO_STATS_CACHE_TTL:
+        return None
+    return bool(st.get('has_scope'))
+
+
+def _set_analytics_scope_state(cache, yt_id, has_scope):
+    cache.setdefault('analytics_scope', {})[yt_id] = {"has_scope": bool(has_scope), "at": time.time()}
+
+
+def _query_analytics(channel, metrics, start_date, end_date, dimensions=None, filters=None):
+    """Satu panggilan YouTube Analytics API reports.query dengan failover
+    antar kredensial (pola sama seperti _build_youtube_client_for_channel).
+    Kembalikan (rows, has_scope): rows [] bila sukses tanpa data,
+    None bila gagal; has_scope True bila ada kredensial yang berhasil,
+    False bila semua kredensial ditolak 403 insufficientPermissions,
+    None bila gagal karena sebab lain (jaringan/dll — status scope
+    tidak diubah). Fungsi ini murni: tidak membaca/menulis file cache,
+    pemanggil yang menyimpan state scope."""
+    creds_list = channel.get('creds_list', [channel.get('creds_json')])
+    saw_403 = False
+    for cred_str in creds_list:
+        if not cred_str:
+            continue
+        try:
+            creds = Credentials.from_authorized_user_info(json.loads(cred_str))
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            client = build('youtubeAnalytics', 'v2', credentials=creds)
+            kwargs = {"ids": "channel==MINE", "startDate": start_date,
+                      "endDate": end_date, "metrics": metrics}
+            if dimensions:
+                kwargs["dimensions"] = dimensions
+            if filters:
+                kwargs["filters"] = filters
+            res = client.reports().query(**kwargs).execute()
+            return res.get('rows') or [], True
+        except Exception as e:
+            if _analytics_insufficient_permissions(e):
+                saw_403 = True
+            continue
+    if saw_403:
+        return None, False
+    return None, None
+
+
+def _fetch_video_subs(channel, yt_id, video_ids):
+    """Subs per video (subscribersGained, bisa negatif = net) via
+    Analytics API, chunk 50 id. Kembalikan ({video_id: subs}, has_scope).
+    Video tanpa baris data tidak ada di dict (subs None, bukan 0)."""
+    out = {}
+    has_scope = None
+    today = _wib_now().strftime("%Y-%m-%d")
+    for i in range(0, len(video_ids), 50):
+        chunk = video_ids[i:i + 50]
+        rows, scope = _query_analytics(channel, 'subscribersGained',
+                                       ANALYTICS_EARLIEST_DATE, today,
+                                       dimensions='video',
+                                       filters='video==' + ','.join(chunk))
+        if scope is True:
+            has_scope = True
+        elif scope is False and has_scope is None:
+            has_scope = False
+        if not rows:
+            continue
+        for row in rows:
+            try:
+                out[row[0]] = int(row[1])
+            except Exception:
+                continue
+    return out, has_scope
+
+
+def _fetch_channel_rpm(channel, yt_id, cache):
+    """RPM channel 30 hari terakhir dari Analytics API (cache 1 jam di
+    video_stats_cache.json, kunci 'analytics_rpm').
+    Kembalikan (rpm_atau_None, has_scope). Channel belum monetisasi /
+    belum ada data → rpm None (dicache 1 jam supaya tidak menghantam
+    API tiap buka halaman). Scope yang ditolak 403 TIDAK dicache sebagai
+    'tidak ada RPM' — dicek ulang setelah TTL lewat."""
+    rpm_cache = cache.setdefault('analytics_rpm', {})
+    ent = rpm_cache.get(yt_id) or {}
+    if ent and ent.get('rpm') is not None and (time.time() - float(ent.get('at', 0)) < VIDEO_STATS_CACHE_TTL):
+        return float(ent['rpm']), _analytics_scope_state(cache, yt_id)
+    end = _wib_now().strftime("%Y-%m-%d")
+    start = (_wib_now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    rows, scope = _query_analytics(channel, 'rpm', start, end)
+    if rows:
+        try:
+            rpm = float(rows[0][0])
+        except Exception:
+            rpm = None
+        if rpm is not None and rpm > 0:
+            rpm_cache[yt_id] = {"rpm": rpm, "at": time.time()}
+            if scope is not None:
+                _set_analytics_scope_state(cache, yt_id, scope)
+            _save_video_stats_cache(cache)
+            return rpm, True
+    if scope is False:
+        _set_analytics_scope_state(cache, yt_id, False)
+        _save_video_stats_cache(cache)
+        return None, False
+    rpm_cache[yt_id] = {"rpm": None, "at": time.time()}
+    if scope is not None:
+        _set_analytics_scope_state(cache, yt_id, scope)
+    _save_video_stats_cache(cache)
+    return None, scope
+
 
 # ==========================================
 # 🔁 FASE 7 LINGKARAN ANALITIK OTOMATIS
@@ -3386,19 +3584,17 @@ def _monetization_task_hours(t):
 
 def _monetization_data():
     """Hitung dashboard monetisasi dari cache Fase 4 + riwayat tayang.
-    TIDAK memanggil YouTube API. Estimasi uang HANYA bila channel punya
-    rpm_usd (> 0); tanpa RPM, estimasi = None (tidak ditampilkan)."""
+    🔥 FASE 10: RPM diutamakan dari YouTube Analytics API (otomatis,
+    cache 1 jam) — hanya untuk channel yang punya video tayang; RPM
+    manual yang diisi owner tetap jadi fallback bila API tidak
+    mengembalikan RPM (token lama tanpa scope / channel belum
+    monetisasi). Estimasi uang HANYA bila ada RPM (> 0); tanpa RPM,
+    estimasi = None (tidak ditampilkan)."""
     cache = _load_video_stats_cache()
     cached = cache.get('videos', {})
     now_wib = _wib_now()
     today = now_wib.date()
     name_by_yt = {c.get('yt_id'): c.get('name', c.get('yt_id')) for c in database_channel}
-    rpm_by_yt = {}
-    for c in database_channel:
-        try:
-            rpm_by_yt[c.get('yt_id')] = float(c.get('rpm_usd') or 0)
-        except Exception:
-            rpm_by_yt[c.get('yt_id')] = 0.0
 
     def _in_days(pub, days):
         try:
@@ -3434,6 +3630,30 @@ def _monetization_data():
             e["best"] = {"title": t.get('title', '?'), "views": views, "video_id": vid,
                          "url": f"https://youtu.be/{vid}"}
 
+    # 🔥 FASE 10: RPM efektif per channel — API Analytics dulu (hanya
+    # channel yang punya video tayang), lalu fallback RPM manual owner.
+    rpm_by_yt = {}
+    rpm_source_by_yt = {}
+    for yt_id in per_channel:
+        rpm = None
+        source = None
+        ch = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+        if ch is not None:
+            try:
+                api_rpm, _scope = _fetch_channel_rpm(ch, yt_id, cache)
+            except Exception:
+                api_rpm = None
+            if api_rpm and api_rpm > 0:
+                rpm, source = api_rpm, 'api'
+        if rpm is None and ch is not None:
+            try:
+                manual = float(ch.get('rpm_usd') or 0)
+            except Exception:
+                manual = 0.0
+            if manual > 0:
+                rpm, source = manual, 'manual'
+        rpm_by_yt[yt_id] = rpm or 0.0
+        rpm_source_by_yt[yt_id] = source
     channels_out = []
     totals = {"videos": 0, "total_views": 0, "views_7d": 0, "views_30d": 0, "total_hours": 0.0,
               "est_30d_usd": None, "est_total_usd": None, "est_projection_30d_usd": None,
@@ -3442,6 +3662,7 @@ def _monetization_data():
         e = per_channel[yt_id]
         rpm = rpm_by_yt.get(yt_id, 0.0)
         e["rpm_usd"] = rpm if rpm > 0 else None
+        e["rpm_source"] = rpm_source_by_yt.get(yt_id) if rpm > 0 else None  # 'api' / 'manual' / None
         e["total_hours"] = round(e["total_hours"], 2)
         if rpm > 0:
             totals["any_rpm"] = True
@@ -3465,8 +3686,8 @@ def _monetization_data():
         totals["est_projection_30d_usd"] = totals["est_30d_usd"]
     return {"channels": channels_out, "totals": totals, "disk": _disk_usage_info(),
             "currency": "USD",
-            "honesty_note": "Estimasi penghasilan dihitung dari RPM (USD per 1000 views) yang diisi sendiri per channel di Settings — BUKAN data penghasilan dari YouTube. YouTube Data API tidak menyediakan data penghasilan; data asli butuh YouTube Analytics API + channel yang sudah monetisasi. Channel tanpa RPM tidak menampilkan estimasi sama sekali.",
-            "rpm_note": "Isi RPM per channel di Settings (kartu channel) untuk mengaktifkan estimasi. Contoh: RPM $2 berarti setiap 1000 views ≈ $2."}
+            "honesty_note": "Estimasi penghasilan dihitung dari RPM (USD per 1000 views) — diutamakan dari YouTube Analytics API (otomatis, bila token channel punya scope Analytics), atau dari RPM yang diisi sendiri per channel di Settings bila API tidak mengembalikan RPM. YouTube Data API tidak menyediakan data penghasilan; data asli butuh YouTube Analytics API + channel yang sudah monetisasi. Channel tanpa RPM tidak menampilkan estimasi sama sekali.",
+            "rpm_note": "RPM 'API' = diambil otomatis dari YouTube Analytics (butuh channel ditaut ulang dengan scope Analytics bila token lama). RPM 'Manual' = yang diisi sendiri di Settings, dipakai sebagai cadangan bila API tidak mengembalikan RPM (mis. channel belum monetisasi). Isi RPM manual per channel di Settings (kartu channel) bila ingin estimasi tanpa menunggu API."}
 
 @app.route('/api/get_monetization')
 def get_monetization():
@@ -4313,7 +4534,11 @@ def clear_history():
 
 @app.route('/api/get_channels')
 def get_channels():
-    safe_c = [{"id": c["id"], "name": c["name"], "yt_id": c["yt_id"], "thumbnail": c["thumbnail"], "status": c["status"], "title_bank": c.get("title_bank", []), "title_weights": c.get("title_weights", {}), "paused": c.get("paused", False), "autopilot": c.get("autopilot", "approval"), "rpm_usd": c.get("rpm_usd")} for c in database_channel]
+    # 🔥 FASE 10: sertakan status scope Analytics per channel (True/False/
+    # None = belum dicek) supaya panel bisa menandai channel yang tokennya
+    # belum punya scope youtubeAnalytics.readonly ("perlu taut ulang").
+    _scope_cache = _load_video_stats_cache()
+    safe_c = [{"id": c["id"], "name": c["name"], "yt_id": c["yt_id"], "thumbnail": c["thumbnail"], "status": c["status"], "title_bank": c.get("title_bank", []), "title_weights": c.get("title_weights", {}), "paused": c.get("paused", False), "autopilot": c.get("autopilot", "approval"), "rpm_usd": c.get("rpm_usd"), "analytics_scope": _analytics_scope_state(_scope_cache, c.get("yt_id"))} for c in database_channel]
     return jsonify(safe_c)
 
 @app.route('/api/get_project_quotas')
@@ -4849,6 +5074,7 @@ def device_login():
     </style></head><body>
         <div class="box">
             <h2 style="margin-top:0;">🔗 Tautkan Channel Baru</h2>
+            <div style="font-size:13px;color:#64748b;margin-bottom:20px">Izin yang diminta: kelola video YouTube (upload &amp; statistik) + <b>baca YouTube Analytics</b> (untuk subs per video &amp; RPM otomatis). Channel yang sudah tertaut sebelum ini perlu ditaut ulang supaya tokennya mendapat izin Analytics.</div>
             <div class="step"><b>Langkah 1:</b> Copy link ini dan Paste di browser target:
                 <div class="input-group"><input type="text" id="glink" value="{res['verification_url']}" readonly><button onclick="document.getElementById('glink').select();document.execCommand('copy');">Copy Link</button></div>
             </div>

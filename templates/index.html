@@ -1952,6 +1952,16 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
 
       <div id="channels-grid"></div>
 
+      <div class="card" style="margin-bottom:16px;margin-top:16px">
+        <div class="card-head">
+          <span class="card-title">⏰ JADWAL OTOMATIS SHORT</span>
+        </div>
+        <div class="card-body">
+          <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:12px">Satu Short otomatis per channel per hari, di jam yang kamu tentukan. Judul, hook, naskah &amp; CTA dibuat otomatis dari tema dan berputar tiap hari. Bila jam tayang sudah lewat pada hari pembuatan, tayang digeser ke esok harinya. Short butuh minimal 1 background di galeri channel — bila galeri kosong, jadwal hari itu dilewati dan bot memberi tahu di Telegram. Mode Approval: short menunggu persetujuanmu dulu; Full-Auto: langsung masuk antrean.</div>
+          <div id="auto-shorts-list"></div>
+        </div>
+      </div>
+
 
 
     </div>
@@ -2396,6 +2406,7 @@ function loadChannels() {
     }
     data.forEach(c => { if (c.title_bank) titleBankData[c.yt_id] = c.title_bank; if (c.title_weights) titleWeightsData[c.yt_id] = c.title_weights; });
     renderChannelsGrid();
+    renderAutoShorts();
     renderTaskChannels();
     renderDashboardChannels();
     updateCenterLogo(); 
@@ -2687,6 +2698,68 @@ function toggleChannelMonetized(yt_id, val) {
       if (d.status === 'success') { loadChannels(); fetchAnalytics(); }
     })
     .catch(() => toast('Gagal menyimpan status monetisasi', 'error'));
+}
+
+// ────────────────────────────────────────────────────────
+//  ⏰ JADWAL OTOMATIS SHORT — pengaturan per channel (Settings).
+//  Konfigurasi ikut /api/get_channels (field auto_shorts per channel).
+// ────────────────────────────────────────────────────────
+const AUTO_SHORTS_THEMES = [['sleep', 'Musik Tidur'], ['lofi', 'Lofi'], ['piano', 'Piano'], ['hujan', 'Suara Hujan'], ['meditasi', 'Meditasi'], ['fokus', 'Musik Fokus']];
+function autoShortsNextText(cfg) {
+  if (!cfg || !cfg.enabled) return 'Nonaktif — nyalakan toggle untuk mengaktifkan jadwal otomatis.';
+  const now = new Date();
+  const [ch, cm] = cfg.create_time.split(':').map(Number);
+  const [ph, pm] = cfg.publish_time.split(':').map(Number);
+  const mk = (d, h, m) => { const x = new Date(d); x.setHours(h, m, 0, 0); return x; };
+  let createD = mk(now, ch, cm);
+  if (createD <= now) createD = new Date(createD.getTime() + 86400000);
+  let pubD = mk(createD, ph, pm);
+  if (ph * 60 + pm <= ch * 60 + cm) pubD = new Date(pubD.getTime() + 86400000);
+  const fmt = d => d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }) + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  return 'Jadwal berikutnya: dibuat ' + fmt(createD) + ' · tayang ' + fmt(pubD) + ' WIB';
+}
+function renderAutoShorts() {
+  const el = document.getElementById('auto-shorts-list');
+  if (!el) return;
+  if (!channels.length) {
+    el.innerHTML = `<div style="text-align:center;padding:20px;color:var(--muted);font-family:var(--font-m);font-size:12px;border:1px dashed var(--border);border-radius:var(--r)">Belum ada channel. Tautkan channel dulu.</div>`;
+    return;
+  }
+  el.innerHTML = channels.map(c => {
+    const cfg = c.auto_shorts || { enabled: false, theme: 'sleep', create_time: '06:00', publish_time: '19:00', duration_sec: 30 };
+    const themeOpts = AUTO_SHORTS_THEMES.map(([v, l]) => `<option value="${v}"${cfg.theme === v ? ' selected' : ''}>${l}</option>`).join('');
+    const durOpts = [15, 30, 60].map(d => `<option value="${d}"${cfg.duration_sec === d ? ' selected' : ''}>${d} detik</option>`).join('');
+    return `<div class="ch-connected" style="padding:10px 12px;flex-wrap:wrap;margin-bottom:8px">
+      <div style="flex:1;min-width:180px">
+        <div style="font-size:13px;font-weight:700;margin-bottom:3px">${escapeHtml(c.name)}</div>
+        <div style="font-size:11px;color:var(--muted)">${escapeHtml(autoShortsNextText(cfg))}</div>
+      </div>
+      <label style="display:flex;gap:6px;align-items:center;font-size:12px">
+        <input type="checkbox" id="as-on-${c.yt_id}"${cfg.enabled ? ' checked' : ''}> Aktif
+      </label>
+      <select id="as-theme-${c.yt_id}" title="Tema konten Short">${themeOpts}</select>
+      <label style="font-size:11px;color:var(--muted)">Buat <input type="time" id="as-create-${c.yt_id}" value="${escapeHtml(cfg.create_time)}" style="width:92px"></label>
+      <label style="font-size:11px;color:var(--muted)">Tayang <input type="time" id="as-pub-${c.yt_id}" value="${escapeHtml(cfg.publish_time)}" style="width:92px"></label>
+      <select id="as-dur-${c.yt_id}" title="Durasi Short">${durOpts}</select>
+      <button class="btn btn-p btn-sm" onclick="saveAutoShorts('${c.yt_id}')">Simpan</button>
+    </div>`;
+  }).join('');
+}
+function saveAutoShorts(yt_id) {
+  const cfg = {
+    enabled: !!document.getElementById('as-on-' + yt_id).checked,
+    theme: document.getElementById('as-theme-' + yt_id).value,
+    create_time: document.getElementById('as-create-' + yt_id).value,
+    publish_time: document.getElementById('as-pub-' + yt_id).value,
+    duration_sec: parseInt(document.getElementById('as-dur-' + yt_id).value, 10)
+  };
+  fetch('/api/set_channel_auto_shorts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ yt_id, auto_shorts: cfg }) })
+    .then(r => r.json())
+    .then(d => {
+      toast(d.message, d.status === 'success' ? 'success' : 'error');
+      if (d.status === 'success') loadChannels();
+    })
+    .catch(() => toast('Gagal menyimpan jadwal otomatis', 'error'));
 }
 
 // ────────────────────────────────────────────────────────

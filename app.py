@@ -840,6 +840,83 @@ SHORTS_MUSE_MAX_SEC = 180             # batas atas durasi (Shorts maks 3 menit)
 SHORTS_MUSE_HOOK_SEC = 4.0            # hook tampil di awal video
 SHORTS_MUSE_CTA_SEC = 5.0             # kartu CTA di akhir video
 SHORTS_MUSE_DEFAULT_CTA = 'Subscribe' # CTA bila form dikosongkan
+# ⏰ JADWAL OTOMATIS SHORT — 1 short per channel per hari, jam buat & jam
+# tayang bisa diatur user per channel (Settings → JADWAL OTOMATIS SHORT).
+# Konten (hook/naskah/CTA/judul) dibuat otomatis dari bank per niche yang
+# berputar berdasarkan tanggal, supaya tidak sama terus. Bila bank judul
+# channel ada, judul diambil dari sana secara bergiliran; bila kosong,
+# judul dibuat dari label tema + tanggal (tanpa klaim palsu).
+AUTO_SHORTS_NICHES = ('sleep', 'lofi', 'piano', 'hujan', 'meditasi', 'fokus')
+AUTO_SHORTS_NICHE_LABELS = {
+    'sleep': 'Musik Tidur', 'lofi': 'Lofi', 'piano': 'Piano',
+    'hujan': 'Suara Hujan', 'meditasi': 'Meditasi', 'fokus': 'Musik Fokus',
+}
+AUTO_SHORTS_DEFAULTS = {
+    'enabled': False, 'theme': 'sleep',
+    'create_time': '06:00', 'publish_time': '19:00', 'duration_sec': 30,
+}
+AUTO_SHORTS_STATE_FILE = os.path.join(BASE_DIR, 'auto_shorts_state.json')
+AUTO_SHORTS_TITLE_LABELS = {
+    'sleep': 'Musik Tidur Nyenyak', 'lofi': 'Lofi Santai untuk Fokus',
+    'piano': 'Piano Menenangkan', 'hujan': 'Suara Hujan Menenangkan',
+    'meditasi': 'Meditasi Tenang', 'fokus': 'Musik Fokus & Konsentrasi',
+}
+AUTO_SHORTS_BANK = {
+    'sleep': {
+        'hooks': ['Tidur nyenyak malam ini', 'Pejamkan mata, tenangkan pikiran',
+                  'Musik tidur untuk malam yang tenang', 'Saatnya istirahat yang nyenyak'],
+        'scripts': ['Musik lembut ini menemani tidurmu malam ini.',
+                    'Tarik napas dalam-dalam… hembuskan perlahan…',
+                    'Biarkan nada-nada tenang ini membawamu ke tidur yang nyenyak.',
+                    'Selamat beristirahat, sampai jumpa di pagi yang segar.'],
+        'ctas': ['Subscribe untuk musik tidur setiap malam', 'Subscribe'],
+    },
+    'lofi': {
+        'hooks': ['Lofi santai untuk harimu', 'Nada chill untuk fokus belajar',
+                  'Beat lembut untuk menemani kerja', 'Santai dulu, dengerin lofi ini'],
+        'scripts': ['Lofi lembut ini cocok untuk belajar, kerja, atau sekadar bersantai.',
+                    'Pasang headphone-mu dan nikmati alunannya.',
+                    'Satu lagu lofi untuk menemani harimu.',
+                    'Biarkan beat-nya mengalir pelan-pelan.'],
+        'ctas': ['Subscribe untuk lofi baru setiap hari', 'Subscribe'],
+    },
+    'piano': {
+        'hooks': ['Piano lembut untuk hatimu', 'Melodi piano yang menenangkan',
+                  'Dengarkan piano ini sejenak', 'Nada piano untuk sore yang tenang'],
+        'scripts': ['Melodi piano ini menemani harimu yang tenang.',
+                    'Tutup mata sejenak dan dengarkan nadanya.',
+                    'Piano lembut untuk istirahat dan refleksi.',
+                    'Biarkan setiap nada menenangkan pikiranmu.'],
+        'ctas': ['Subscribe untuk piano baru setiap hari', 'Subscribe'],
+    },
+    'hujan': {
+        'hooks': ['Suara hujan yang menenangkan', 'Dengarkan hujan turun pelan-pelan',
+                  'Hujan rintik untuk tidur nyenyak', 'Suara hujan untuk relaksasi'],
+        'scripts': ['Suara hujan ini membantu pikiranmu rileks.',
+                    'Bayangkan hujan turun di luar jendela…',
+                    'Rintik hujan untuk tidur yang lebih nyenyak.',
+                    'Biarkan suara hujan menenangkan harimu.'],
+        'ctas': ['Subscribe untuk suara hujan setiap hari', 'Subscribe'],
+    },
+    'meditasi': {
+        'hooks': ['Tarik napas… tenangkan pikiran', 'Meditasi sejenak untuk harimu',
+                  'Hening sejenak, dengarkan dirimu', 'Waktu untuk bermeditasi'],
+        'scripts': ['Tarik napas dalam… dan hembuskan perlahan.',
+                    'Fokus pada napasmu, lepaskan semua beban.',
+                    'Satu menit tenang untuk memulai harimu.',
+                    'Biarkan pikiranmu mengalir seperti air.'],
+        'ctas': ['Subscribe untuk meditasi harian', 'Subscribe'],
+    },
+    'fokus': {
+        'hooks': ['Fokus penuh untuk kerjamu', 'Musik fokus untuk produktivitas',
+                  'Konsentrasi penuh, tanpa distraksi', 'Musik untuk fokus belajar dan kerja'],
+        'scripts': ['Musik ini membantumu fokus tanpa distraksi.',
+                    'Pasang headphone dan mulai kerjamu.',
+                    'Fokus sebentar, istirahat sejenak, lalu lanjut lagi.',
+                    'Biarkan musik ini menemani jam fokusmu.'],
+        'ctas': ['Subscribe untuk musik fokus harian', 'Subscribe'],
+    },
+}
 # Aturan umur bersih-bersih disk (lihat cleanup_old_files):
 CLEANUP_TEMP_MAX_AGE = 6 * 3600      # temp render > 6 jam
 CLEANUP_FINAL_MAX_AGE = 24 * 3600    # final render > 1 hari & task tidak aktif
@@ -5291,7 +5368,7 @@ def get_channels():
     # None = belum dicek) supaya panel bisa menandai channel yang tokennya
     # belum punya scope yt-analytics.readonly ("perlu taut ulang").
     _scope_cache = _load_video_stats_cache()
-    safe_c = [{"id": c["id"], "name": c["name"], "yt_id": c["yt_id"], "thumbnail": c["thumbnail"], "status": c["status"], "title_bank": c.get("title_bank", []), "title_weights": c.get("title_weights", {}), "paused": c.get("paused", False), "autopilot": c.get("autopilot", "approval"), "rpm_usd": c.get("rpm_usd"), "monetized": c.get("monetized", False), "analytics_scope": _analytics_scope_state(_scope_cache, c.get("yt_id"))} for c in database_channel]
+    safe_c = [{"id": c["id"], "name": c["name"], "yt_id": c["yt_id"], "thumbnail": c["thumbnail"], "status": c["status"], "title_bank": c.get("title_bank", []), "title_weights": c.get("title_weights", {}), "paused": c.get("paused", False), "autopilot": c.get("autopilot", "approval"), "rpm_usd": c.get("rpm_usd"), "monetized": c.get("monetized", False), "auto_shorts": _auto_shorts_cfg(c), "analytics_scope": _analytics_scope_state(_scope_cache, c.get("yt_id"))} for c in database_channel]
     return jsonify(safe_c)
 
 @app.route('/api/get_project_quotas')
@@ -5325,6 +5402,7 @@ def _sanitize_channel_for_export(c):
             "autopilot": c.get("autopilot", "approval"),
             "rpm_usd": c.get("rpm_usd"),
             "monetized": c.get("monetized", False),
+            "auto_shorts": _auto_shorts_cfg(c),
             "last_scheduled_date": c.get("last_scheduled_date"),
             "daily_uploads": c.get("daily_uploads", {}),
             "cooldown_until": c.get("cooldown_until", 0)}
@@ -5375,6 +5453,10 @@ def _sanitize_imported_channel(entry, idx):
            "paused": bool(entry.get('paused', False)),
            "autopilot": autopilot,
            "rpm_usd": rpm,
+           # ⏰ Jadwal otomatis Short: konfigurasi (bukan kredensial) — bila
+           # ada tapi tidak valid, pakai default (nonaktif) daripada
+           # menolak seluruh file import.
+           "auto_shorts": _auto_shorts_cfg({'auto_shorts': entry.get('auto_shorts')}),
            "last_scheduled_date": entry.get('last_scheduled_date') if isinstance(entry.get('last_scheduled_date'), str) else None,
            "daily_uploads": entry.get('daily_uploads') if isinstance(entry.get('daily_uploads'), dict) else {},
            "cooldown_until": 0}
@@ -5973,6 +6055,46 @@ def set_channel_monetized():
                         "message": f"Channel {name} ditandai SUDAH monetisasi (penanda manual). Badge 'Monetisasi Aktif' tampil di tabel."})
     return jsonify({"status": "success", "monetized": False,
                     "message": f"Tanda monetisasi channel {name} dihapus. Channel kembali masuk penilaian kesiapan."})
+
+@app.route('/api/set_channel_auto_shorts', methods=['POST'])
+def set_channel_auto_shorts():
+    """⏰ JADWAL OTOMATIS SHORT: simpan konfigurasi per channel (butuh login
+    panel — route ini TIDAK masuk allowed_routes, jadi check_security
+    mewajibkan login + CSRF). Field yang dikirim digabung dengan konfigurasi
+    tersimpan, lalu SELURUH hasil gabungan divalidasi — bila ada satu field
+    tidak valid, TIDAK ADA yang disimpan (jangan simpan setengah-setengah).
+    Terima objek 'auto_shorts' atau field datar (enabled/theme/create_time/
+    publish_time/duration_sec) di level atas."""
+    data = request.get_json(silent=True) or {}
+    yt_id = data.get('yt_id')
+    if not yt_id:
+        return jsonify({"status": "error", "message": "yt_id wajib diisi."}), 400
+    provided = data.get('auto_shorts')
+    if provided is None:
+        provided = {k: data.get(k) for k in ('enabled', 'theme', 'create_time', 'publish_time', 'duration_sec') if data.get(k) is not None}
+    if not isinstance(provided, dict):
+        return jsonify({"status": "error", "message": "auto_shorts harus berupa objek."}), 400
+    with db_lock:
+        target = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+        if target is None:
+            return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
+        merged = dict(_auto_shorts_cfg(target))
+        for k in ('enabled', 'theme', 'create_time', 'publish_time', 'duration_sec'):
+            if k in provided:
+                merged[k] = provided[k]
+        cfg, err = _validate_auto_shorts_cfg(merged)
+        if err:
+            return jsonify({"status": "error", "message": err}), 400
+        target['auto_shorts'] = cfg
+        name = target.get('name', yt_id)
+        try:
+            save_channels(database_channel)
+        except Exception as e:
+            print(f"Gagal simpan auto_shorts {yt_id}: {e}", flush=True)
+            return jsonify({"status": "error", "message": "Gagal menyimpan perubahan."}), 500
+    return jsonify({"status": "success", "auto_shorts": cfg,
+                    "message": f"Jadwal otomatis Short channel {name} disimpan." + (" Aktif — 1 Short dibuat otomatis tiap hari." if cfg['enabled'] else " Nonaktif.")})
+
 
 @app.route('/api/check_secret')
 def check_secret():
@@ -6894,6 +7016,250 @@ def scheduled_task_activator():
             send_tg_message(msg)
 
 threading.Thread(target=scheduled_task_activator, daemon=True).start()
+
+# ============================================================
+# ⏰ JADWAL OTOMATIS SHORT — 1 short per channel per hari,
+# jam buat & jam tayang diatur user per channel (Settings).
+# ============================================================
+_AUTO_SHORTS_TIME_RE = re.compile(r'^([01]\d|2[0-3]):[0-5]\d$')
+_AUTO_SHORTS_MONTHS_ID = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+                          'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember']
+
+
+def _auto_shorts_cfg(channel):
+    """Konfigurasi auto-shorts satu channel, selalu lengkap (default bila
+    field belum ada / tidak valid). Tidak pernah raise."""
+    raw = (channel or {}).get('auto_shorts') or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    theme = str(raw.get('theme') or '').strip().lower()
+    if theme not in AUTO_SHORTS_NICHES:
+        theme = AUTO_SHORTS_DEFAULTS['theme']
+
+    def _hhmm(val, default):
+        s = str(val or '').strip()
+        return s if _AUTO_SHORTS_TIME_RE.match(s) else default
+
+    try:
+        dur = int(raw.get('duration_sec') or 0)
+    except Exception:
+        dur = 0
+    if dur not in SHORTS_MUSE_DURATIONS:
+        dur = AUTO_SHORTS_DEFAULTS['duration_sec']
+    return {
+        'enabled': bool(raw.get('enabled', False)),
+        'theme': theme,
+        'create_time': _hhmm(raw.get('create_time'), AUTO_SHORTS_DEFAULTS['create_time']),
+        'publish_time': _hhmm(raw.get('publish_time'), AUTO_SHORTS_DEFAULTS['publish_time']),
+        'duration_sec': dur,
+    }
+
+
+def _validate_auto_shorts_cfg(cfg):
+    """Validasi konfigurasi LENGKAP (hasil gabungan tersimpan + yang dikirim).
+    Kembalikan (cfg_ternormalisasi, error) — error None bila valid."""
+    if not isinstance(cfg, dict):
+        return None, "Konfigurasi jadwal otomatis harus berupa objek."
+    enabled = cfg.get('enabled')
+    if not isinstance(enabled, bool):
+        return None, "enabled harus true/false."
+    theme = str(cfg.get('theme') or '').strip().lower()
+    if theme not in AUTO_SHORTS_NICHES:
+        return None, "Tema tidak dikenal (pilih: sleep, lofi, piano, hujan, meditasi, fokus)."
+    for key in ('create_time', 'publish_time'):
+        val = str(cfg.get(key) or '').strip()
+        if not _AUTO_SHORTS_TIME_RE.match(val):
+            return None, f"Jam {key} tidak valid — pakai format HH:MM (00:00–23:59)."
+    try:
+        dur = int(cfg.get('duration_sec'))
+    except Exception:
+        return None, "Durasi harus 15, 30, atau 60 detik."
+    if dur not in SHORTS_MUSE_DURATIONS:
+        return None, "Durasi harus 15, 30, atau 60 detik."
+    return {'enabled': enabled, 'theme': theme,
+            'create_time': str(cfg.get('create_time')).strip(),
+            'publish_time': str(cfg.get('publish_time')).strip(),
+            'duration_sec': dur}, None
+
+
+def _auto_shorts_pick_content(channel, theme, for_date):
+    """Konten short hari itu: judul, hook, naskah, CTA. Rotasi berdasarkan
+    tanggal (ordinal) supaya tiap hari berbeda; offset berbeda per bagian
+    supaya kombinasinya tidak berulang berbarengan. Judul dari bank judul
+    channel bila ada, bila kosong dari label tema + tanggal (tanpa klaim)."""
+    bank = AUTO_SHORTS_BANK.get(theme) or AUTO_SHORTS_BANK['sleep']
+    ordinal = for_date.toordinal()
+
+    def _pick(items, offset):
+        items = [s for s in (items or []) if isinstance(s, str) and s.strip()]
+        if not items:
+            return ''
+        return items[(ordinal + offset) % len(items)]
+
+    hook = _pick(bank.get('hooks'), 1)
+    script = _pick(bank.get('scripts'), 2)
+    cta = _pick(bank.get('ctas'), 3) or SHORTS_MUSE_DEFAULT_CTA
+    titles = [t for t in (channel.get('title_bank') or []) if isinstance(t, str) and t.strip()]
+    if titles:
+        title = titles[ordinal % len(titles)]
+    else:
+        label = AUTO_SHORTS_TITLE_LABELS.get(theme, 'Musik Santai')
+        title = f"{label} — {for_date.day} {_AUTO_SHORTS_MONTHS_ID[for_date.month - 1]} {for_date.year}"
+    return title, hook, script, cta
+
+
+def _auto_shorts_window(cfg, now_wib):
+    """Jendela jadwal untuk 'hari jadwal' D yang sedang berjalan.
+    D = hari ini bila sekarang sudah lewat create_time, kalau belum → kemarin
+    (jendela kemarin masih bisa terbuka bila publish_time besok pagi).
+    publish_dt = hari D jam publish_time bila publish_time > create_time,
+    kalau tidak → keesokan harinya. Kembalikan (for_date, create_dt,
+    publish_dt) — semua aware WIB."""
+    hh, mm = (int(x) for x in cfg['create_time'].split(':'))
+    ph, pm = (int(x) for x in cfg['publish_time'].split(':'))
+    wib = ZoneInfo("Asia/Jakarta")
+    today = now_wib.date()
+    if (now_wib.hour, now_wib.minute) >= (hh, mm):
+        for_date = today
+    else:
+        for_date = today - timedelta(days=1)
+    create_dt = datetime(for_date.year, for_date.month, for_date.day, hh, mm, tzinfo=wib)
+    if (ph, pm) > (hh, mm):
+        publish_dt = datetime(for_date.year, for_date.month, for_date.day, ph, pm, tzinfo=wib)
+    else:
+        nxt = for_date + timedelta(days=1)
+        publish_dt = datetime(nxt.year, nxt.month, nxt.day, ph, pm, tzinfo=wib)
+    return for_date, create_dt, publish_dt
+
+
+def _auto_shorts_state_load():
+    """State dedupe {yt_id: {for_date, status, ...}} — file khusus, BUKAN
+    monitor_state.json (dipakai operator Telegram) supaya tidak bentrok."""
+    try:
+        if os.path.exists(AUTO_SHORTS_STATE_FILE):
+            with open(AUTO_SHORTS_STATE_FILE, 'r') as f:
+                d = json.load(f)
+            if isinstance(d, dict):
+                return d
+    except Exception:
+        pass
+    return {}
+
+
+def _auto_shorts_state_save(state):
+    try:
+        tmp = AUTO_SHORTS_STATE_FILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(state, f)
+        os.replace(tmp, AUTO_SHORTS_STATE_FILE)
+    except Exception as e:
+        print(f"Gagal simpan auto_shorts_state: {e}", flush=True)
+
+
+def _auto_shorts_tick(now_wib=None):
+    """Satu putaran jadwal otomatis: cek tiap channel yang aktif, buat short
+    bila jendelanya jatuh tempo. Satu short per channel per hari jadwal
+    (dedupe di auto_shorts_state.json). Error per channel ditangkap supaya
+    satu channel gagal tidak mematikan jadwal channel lain. Pembuatan WAJIB
+    lewat _create_shorts_muse_task — semua gerbang (stagger, autopilot,
+    dijeda, antrean penuh, QC) berlaku persis seperti panel/Telegram."""
+    now_wib = now_wib or _wib_now()
+    state = _auto_shorts_state_load()
+    changed = False
+    for channel in list(database_channel):
+        yt_id = channel.get('yt_id')
+        if not yt_id:
+            continue
+        try:
+            cfg = _auto_shorts_cfg(channel)
+            if not cfg['enabled']:
+                continue
+            for_date, create_dt, publish_dt = _auto_shorts_window(cfg, now_wib)
+            key = str(yt_id)
+            entry = state.get(key) or {}
+            if entry.get('for_date') == for_date.isoformat():
+                continue  # sudah dibuat / dilewati pada hari jadwal ini
+            if now_wib < create_dt:
+                continue  # belum waktunya
+            ch_name = channel.get('name', yt_id)
+            if now_wib > publish_dt:
+                state[key] = {'for_date': for_date.isoformat(), 'status': 'skipped',
+                              'reason': 'Lewat jam tayang', 'at': now_wib.isoformat()}
+                changed = True
+                print(f"[auto-shorts] lewati {ch_name}: sudah lewat jam tayang {cfg['publish_time']}", flush=True)
+                continue
+            # --- dalam jendela [create_time, publish_time]: coba buat ---
+            if _channel_paused(yt_id):
+                state[key] = {'for_date': for_date.isoformat(), 'status': 'skipped',
+                              'reason': 'Channel dijeda', 'at': now_wib.isoformat()}
+                changed = True
+                print(f"[auto-shorts] lewati {ch_name}: channel dijeda", flush=True)
+                continue
+            try:
+                bgs = get_multi_backgrounds(yt_id, 1)
+            except Exception:
+                bgs = []
+            if not bgs:
+                state[key] = {'for_date': for_date.isoformat(), 'status': 'skipped',
+                              'reason': 'Galeri background kosong', 'at': now_wib.isoformat()}
+                changed = True
+                print(f"[auto-shorts] lewati {ch_name}: galeri background kosong", flush=True)
+                send_tg_message(f"⏰ *Jadwal Otomatis Short — dilewati hari ini* 😌\n📺 Channel: *{_tg_escape(ch_name)}*\nGaleri background channel ini kosong — upload background dulu di panel (Asset Gallery), besok saya buatkan lagi 🙏")
+                continue
+            title, hook, script, cta = _auto_shorts_pick_content(channel, cfg['theme'], for_date)
+            res = _create_shorts_muse_task({
+                'yt_id': yt_id, 'title': title, 'hook': hook, 'script': script,
+                'cta': cta, 'duration_sec': cfg['duration_sec'],
+                'publish_date': publish_dt.strftime('%Y-%m-%d %H:%M'),
+                'text_color': '#FFFFFF', 'bg_file': '', 'bgm_file': 'none',
+                'description': '', 'tags': '#shorts',
+            })
+            if not res.get('ok'):
+                reason = res.get('message', 'Gagal membuat task')
+                state[key] = {'for_date': for_date.isoformat(), 'status': 'skipped',
+                              'reason': reason, 'at': now_wib.isoformat()}
+                changed = True
+                print(f"[auto-shorts] gagal {ch_name}: {reason}", flush=True)
+                continue
+            state[key] = {'for_date': for_date.isoformat(), 'status': 'created',
+                          'task_id': res.get('task_id'),
+                          'publish_date': res.get('publish_date'),
+                          'title': title, 'at': now_wib.isoformat()}
+            changed = True
+            if res.get('preview'):
+                threading.Thread(target=_send_approval_previews,
+                                 args=(res['batch_id'], res['channel_name'], [res['preview']]), daemon=True).start()
+            status_txt = 'menunggu approval Bos di Telegram 👀' if not res.get('auto_mode') else 'sudah masuk antrean render ✅'
+            send_tg_message(
+                f"⏰ *Jadwal Otomatis Short — sudah saya buatkan* 🤖\n"
+                f"📺 Channel: *{_tg_escape(ch_name)}*\n"
+                f"🎬 Judul: *{_tg_escape(title)}*\n"
+                f"🗓️ Tayang: `{_tg_escape(res.get('publish_date') or publish_dt.strftime('%Y-%m-%d %H:%M'))}`\n"
+                f"Status: {status_txt}")
+        except Exception as e:
+            print(f"[auto-shorts] error channel {yt_id}: {e}", flush=True)
+            continue
+    if changed:
+        _auto_shorts_state_save(state)
+
+
+def auto_shorts_scheduler_loop():
+    """Loop latar: bangun tiap 60 detik, cek jadwal yang jatuh tempo.
+    Tick pertama langsung saat start (supaya restart di tengah jendela
+    tetap membuat short hari itu, selama belum lewat jam tayang)."""
+    try:
+        _auto_shorts_tick()
+    except Exception as e:
+        print(f"[auto-shorts] tick awal gagal: {e}", flush=True)
+    while True:
+        time.sleep(60)
+        try:
+            _auto_shorts_tick()
+        except Exception as e:
+            print(f"[auto-shorts] tick gagal: {e}", flush=True)
+
+
+threading.Thread(target=auto_shorts_scheduler_loop, daemon=True).start()
 
 # --- Endpoint Telegram Settings ---
 @app.route('/api/save_telegram', methods=['POST'])

@@ -3,6 +3,8 @@ monitor_state.json
 monitor_state.json.tmp
 video_stats_cache.json
 video_stats_cache.json.tmp
+auto_shorts_state.json
+auto_shorts_state.json.tmp
 nodes.json
 nodes.json.tmp
 

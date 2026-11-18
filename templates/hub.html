@@ -7,25 +7,82 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
     <style>
+        /* ══════════════════════════════════════════════════════════
+           ZIQVA MUSE BOT — HUB DESIGN SYSTEM (redesain 2026-11-18)
+           Font: Inter / system-ui (konsisten dengan panel).
+           Palet: cyan #38bdf8, hijau #22c55e, amber #f59e0b,
+           danger #f43f5e, ungu #8b5cf6 (sekunder).
+           Animasi: halus & pelan (fade/slide, drift, sheen) —
+           tanpa neon menyala / glow berlebihan.
+           ══════════════════════════════════════════════════════════ */
         body {
             font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
             background: #030712;
             color: #f3f4f6;
         }
         .mono { font-family: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace; }
+
+        /* ── Latar: grid halus + aurora bergerak pelan ── */
         .bg-mesh {
             position: fixed;
             inset: 0;
-            background-image: 
-                radial-gradient(circle at 15% 15%, rgba(0, 229, 255, 0.08) 0%, transparent 40%),
-                radial-gradient(circle at 85% 85%, rgba(139, 92, 246, 0.09) 0%, transparent 40%),
-                radial-gradient(circle at 50% 50%, rgba(16, 185, 129, 0.04) 0%, transparent 50%),
+            background-image:
                 linear-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 1px),
                 linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
-            background-size: 100% 100%, 100% 100%, 100% 100%, 32px 32px, 32px 32px;
+            background-size: 32px 32px, 32px 32px;
             pointer-events: none;
             z-index: 0;
         }
+        .aurora {
+            position: fixed;
+            border-radius: 9999px;
+            filter: blur(90px);
+            pointer-events: none;
+            z-index: 0;
+        }
+        .aurora-a {
+            width: 480px; height: 480px;
+            top: -160px; left: -80px;
+            background: rgba(56, 189, 248, 0.16);
+            animation: drift-a 26s ease-in-out infinite alternate;
+        }
+        .aurora-b {
+            width: 420px; height: 420px;
+            bottom: -180px; right: -60px;
+            background: rgba(139, 92, 246, 0.14);
+            animation: drift-b 32s ease-in-out infinite alternate;
+        }
+        .aurora-c {
+            width: 300px; height: 300px;
+            top: 38%; left: 55%;
+            background: rgba(34, 197, 94, 0.07);
+            animation: drift-a 38s ease-in-out infinite alternate-reverse;
+        }
+        @keyframes drift-a {
+            from { transform: translate(0, 0) scale(1); }
+            to   { transform: translate(60px, 36px) scale(1.12); }
+        }
+        @keyframes drift-b {
+            from { transform: translate(0, 0) scale(1.05); }
+            to   { transform: translate(-56px, -40px) scale(0.95); }
+        }
+
+        /* ── Animasi masuk (staggered) ── */
+        @keyframes fade-up {
+            from { opacity: 0; transform: translateY(14px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        .reveal { animation: fade-up 0.6s cubic-bezier(0.22, 0.61, 0.36, 1) both; }
+        .d1 { animation-delay: 0.05s; }
+        .d2 { animation-delay: 0.15s; }
+        .d3 { animation-delay: 0.25s; }
+        .d4 { animation-delay: 0.35s; }
+        .d5 { animation-delay: 0.45s; }
+        @media (prefers-reduced-motion: reduce) {
+            .reveal, .aurora-a, .aurora-b, .aurora-c, .float-soft, .grad-text { animation: none !important; }
+        }
+
+        /* ── Kartu kaca ── */
         .glass-card {
             background: rgba(15, 23, 42, 0.82);
             backdrop-filter: blur(16px);
@@ -33,35 +90,144 @@
             border: 1px solid rgba(255, 255, 255, 0.08);
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
         }
+
+        /* ── Logo: gradien cyan→biru yang bergeser pelan ── */
+        .logo-mark {
+            background: linear-gradient(135deg, #38bdf8, #2563eb, #38bdf8);
+            background-size: 200% 200%;
+            animation: gradient-shift 9s ease infinite;
+        }
+        @keyframes gradient-shift {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+        .grad-text {
+            background: linear-gradient(90deg, #38bdf8, #818cf8, #38bdf8);
+            background-size: 200% auto;
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            animation: gradient-shift 7s ease infinite;
+        }
+        .float-soft { animation: float-y 5s ease-in-out infinite; }
+        @keyframes float-y {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-4px); }
+        }
+
+        /* ── Hero ── */
+        .hero {
+            background:
+                linear-gradient(120deg, rgba(56, 189, 248, 0.10), rgba(139, 92, 246, 0.08) 55%, rgba(34, 197, 94, 0.06)),
+                rgba(15, 23, 42, 0.82);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+            overflow: hidden;
+            position: relative;
+        }
+        .hero::after {
+            content: "";
+            position: absolute;
+            inset: auto 0 0 0;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, #38bdf8, #8b5cf6, transparent);
+            opacity: 0.8;
+        }
+        .hero-badge {
+            border: 1px solid rgba(255, 255, 255, 0.10);
+            background: rgba(2, 6, 23, 0.55);
+            transition: border-color 0.2s ease, transform 0.2s ease;
+        }
+        .hero-badge:hover { border-color: rgba(56, 189, 248, 0.45); transform: translateY(-1px); }
+
+        /* ── Kartu statistik ── */
+        .stat-card { transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease; }
+        .stat-card:hover {
+            transform: translateY(-2px);
+            border-color: rgba(56, 189, 248, 0.35);
+            box-shadow: 0 10px 22px -10px rgba(56, 189, 248, 0.25);
+        }
+
+        /* ── Kartu modul: garis aksen gradien di atas, hover lift ── */
         .module-box {
             background: linear-gradient(180deg, rgba(17, 24, 39, 0.85) 0%, rgba(15, 23, 42, 0.95) 100%);
             border: 1px solid rgba(255, 255, 255, 0.08);
-            transition: all 0.25s ease;
+            transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        .module-box::before {
+            content: "";
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #38bdf8, #2563eb);
+            opacity: 0.9;
+        }
+        .module-clipper::before {
+            background: linear-gradient(90deg, #8b5cf6, #c084fc);
         }
         .module-box:hover {
-            transform: translateY(-2px);
-            border-color: rgba(0, 229, 255, 0.4);
-            box-shadow: 0 15px 35px -10px rgba(0, 229, 255, 0.15);
+            transform: translateY(-4px);
+            border-color: rgba(56, 189, 248, 0.45);
+            box-shadow: 0 18px 36px -12px rgba(56, 189, 248, 0.28);
         }
         .module-clipper:hover {
-            border-color: rgba(168, 85, 247, 0.4);
-            box-shadow: 0 15px 35px -10px rgba(168, 85, 247, 0.15);
+            border-color: rgba(139, 92, 246, 0.45);
+            box-shadow: 0 18px 36px -12px rgba(139, 92, 246, 0.28);
         }
-        .btn-glow-cyan {
-            box-shadow: 0 0 18px rgba(0, 229, 255, 0.45);
-            transition: all 0.2s ease;
+        .module-icon { transition: transform 0.25s ease; }
+        .module-box:hover .module-icon { transform: scale(1.08) rotate(-3deg); }
+        .feature-chip { transition: transform 0.2s ease, border-color 0.2s ease; }
+        .feature-chip:hover { transform: translateY(-1px); border-color: rgba(56, 189, 248, 0.4); }
+        .module-clipper .feature-chip:hover { border-color: rgba(139, 92, 246, 0.4); }
+        .module-arrow { transition: transform 0.2s ease; }
+        a:hover .module-arrow { transform: translateX(4px); }
+
+        /* ── Tombol modul: kilau (sheen) menyapu saat hover, bayangan lembut ── */
+        .btn-glow-cyan, .btn-glow-purple {
+            position: relative;
+            overflow: hidden;
+            transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
         }
+        .btn-glow-cyan { box-shadow: 0 8px 20px -6px rgba(56, 189, 248, 0.45); }
         .btn-glow-cyan:hover {
-            box-shadow: 0 0 28px rgba(0, 229, 255, 0.8);
+            box-shadow: 0 12px 26px -6px rgba(56, 189, 248, 0.55);
             transform: translateY(-1px);
         }
-        .btn-glow-purple {
-            box-shadow: 0 0 18px rgba(168, 85, 247, 0.45);
-            transition: all 0.2s ease;
-        }
+        .btn-glow-purple { box-shadow: 0 8px 20px -6px rgba(139, 92, 246, 0.45); }
         .btn-glow-purple:hover {
-            box-shadow: 0 0 28px rgba(168, 85, 247, 0.8);
+            box-shadow: 0 12px 26px -6px rgba(139, 92, 246, 0.55);
             transform: translateY(-1px);
+        }
+        .btn-glow-cyan::after, .btn-glow-purple::after {
+            content: "";
+            position: absolute;
+            top: 0; left: -80%;
+            width: 50%; height: 100%;
+            background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+            transform: skewX(-20deg);
+            transition: left 0.55s ease;
+            pointer-events: none;
+        }
+        .btn-glow-cyan:hover::after, .btn-glow-purple:hover::after { left: 130%; }
+
+        /* ── Titik status dengan cincin berdenyut lembut ── */
+        .status-dot { position: relative; }
+        .status-dot::after {
+            content: "";
+            position: absolute;
+            inset: -4px;
+            border-radius: 9999px;
+            border: 1px solid rgba(52, 211, 153, 0.55);
+            animation: pulse-ring 2.4s ease-out infinite;
+        }
+        @keyframes pulse-ring {
+            0% { transform: scale(0.6); opacity: 0.9; }
+            100% { transform: scale(1.9); opacity: 0; }
         }
 
         /* LIGHT THEME RULES */
@@ -70,17 +236,28 @@
             color: #0f172a;
         }
         [data-theme="light"] .bg-mesh {
-            background-image: 
-                radial-gradient(circle at 15% 15%, rgba(2, 132, 199, 0.09) 0%, transparent 40%),
-                radial-gradient(circle at 85% 85%, rgba(124, 58, 237, 0.09) 0%, transparent 40%),
-                radial-gradient(circle at 50% 50%, rgba(16, 185, 129, 0.04) 0%, transparent 50%),
+            background-image:
                 linear-gradient(rgba(0, 0, 0, 0.03) 1px, transparent 1px),
                 linear-gradient(90deg, rgba(0, 0, 0, 0.03) 1px, transparent 1px);
         }
+        [data-theme="light"] .aurora-a { background: rgba(2, 132, 199, 0.14); }
+        [data-theme="light"] .aurora-b { background: rgba(124, 58, 237, 0.12); }
+        [data-theme="light"] .aurora-c { background: rgba(16, 185, 129, 0.08); }
         [data-theme="light"] .glass-card {
             background: rgba(255, 255, 255, 0.92);
             border-color: rgba(203, 213, 225, 0.8);
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.06);
+        }
+        [data-theme="light"] .hero {
+            background:
+                linear-gradient(120deg, rgba(2, 132, 199, 0.08), rgba(124, 58, 237, 0.06) 55%, rgba(16, 185, 129, 0.05)),
+                rgba(255, 255, 255, 0.94);
+            border-color: rgba(203, 213, 225, 0.8);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.06);
+        }
+        [data-theme="light"] .hero-badge {
+            background: rgba(255, 255, 255, 0.85);
+            border-color: rgba(203, 213, 225, 0.8);
         }
         [data-theme="light"] .module-box {
             background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
@@ -89,8 +266,9 @@
         }
         [data-theme="light"] .module-box:hover {
             border-color: rgba(2, 132, 199, 0.5);
-            box-shadow: 0 15px 35px -10px rgba(2, 132, 199, 0.2);
+            box-shadow: 0 16px 32px -12px rgba(2, 132, 199, 0.22);
         }
+        [data-theme="light"] .stat-card:hover { border-color: rgba(2, 132, 199, 0.4); box-shadow: 0 10px 22px -10px rgba(2, 132, 199, 0.2); }
         [data-theme="light"] .text-white {
             color: #0f172a !important;
         }
@@ -118,17 +296,33 @@
         [data-theme="light"] .border-slate-700 {
             border-color: #cbd5e1 !important;
         }
+
+        /* ── Responsif layar kecil (360–520px) ── */
+        @media (max-width: 520px) {
+            body { overflow-y: auto; }
+            .hero-title { font-size: 1.25rem !important; line-height: 1.3; }
+            .hero-sub { font-size: 0.75rem !important; }
+            .hero-badges { display: none; }
+            .module-box { padding: 1rem !important; }
+            .feature-grid { grid-template-columns: 1fr 1fr; }
+        }
+        @media (max-height: 760px) {
+            body { overflow-y: auto; }
+        }
     </style>
 </head>
-<body class="h-screen w-screen overflow-hidden flex flex-col justify-between p-3 sm:p-5 select-none relative">
+<body class="min-h-screen w-screen overflow-x-hidden flex flex-col justify-between p-3 sm:p-5 select-none relative">
     <div class="bg-mesh"></div>
+    <div class="aurora aurora-a"></div>
+    <div class="aurora aurora-b"></div>
+    <div class="aurora aurora-c"></div>
 
     <div class="relative z-10 w-full max-w-6xl mx-auto flex-1 flex flex-col justify-between gap-3 sm:gap-4">
-        
+
         <!-- ════════ COMPACT HEADER ════════ -->
-        <header class="glass-card rounded-xl px-4 py-2.5 sm:px-5 sm:py-3 flex items-center justify-between gap-3">
+        <header class="glass-card rounded-xl px-4 py-2.5 sm:px-5 sm:py-3 flex items-center justify-between gap-3 reveal d1">
             <div class="flex items-center gap-3">
-                <div class="w-9 h-9 rounded-lg bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center text-slate-950 font-black shadow-md shadow-cyan-500/20">
+                <div class="logo-mark w-9 h-9 rounded-lg flex items-center justify-center text-slate-950 font-black shadow-md shadow-cyan-500/20">
                     <i class="fa-solid fa-cube text-base"></i>
                 </div>
                 <div>
@@ -136,14 +330,14 @@
                         <span class="text-sm sm:text-base font-bold text-white tracking-tight">ZIQVA MUSE <span class="text-cyan-400 font-extrabold">BOT</span></span>
                         <span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 mono">CLOUD VPS</span>
                     </div>
-                    <p class="text-[10px] text-slate-400 hidden sm:block">Pusat Kendali Batch Engine & Cloud Content Factory</p>
+                    <p class="text-[10px] text-slate-400 hidden sm:block">Pusat Kendali Batch Engine &amp; Cloud Content Factory</p>
                 </div>
             </div>
 
             <div class="flex items-center gap-2">
                 <!-- Status Node -->
                 <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 text-[11px] text-slate-300">
-                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span class="status-dot w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
                     <span class="text-slate-400 hidden md:inline">Server:</span>
                     <span class="font-semibold text-emerald-400 mono">Port 8000</span>
                 </div>
@@ -167,11 +361,35 @@
             </div>
         </header>
 
+        <!-- ════════ HERO ════════ -->
+        <section class="hero rounded-xl px-4 py-4 sm:px-6 sm:py-5 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-6 reveal d2">
+            <div class="flex-1 min-w-0">
+                <p class="text-[10px] font-bold tracking-[0.22em] text-cyan-400 mono mb-1">COMMAND CENTER &bull; ONLINE 24/7</p>
+                <h1 class="hero-title text-xl sm:text-2xl font-black text-white tracking-tight leading-snug">
+                    Pabrik Konten Anda, <span class="grad-text">Siap Berproduksi.</span>
+                </h1>
+                <p class="hero-sub text-xs sm:text-sm text-slate-400 mt-1 leading-relaxed">
+                    Pilih modul di bawah untuk meracik video kompilasi panjang atau memotong klip viral — semua berjalan otomatis di VPS.
+                </p>
+            </div>
+            <div class="hero-badges flex items-center gap-2 flex-shrink-0">
+                <span class="hero-badge flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold text-slate-300">
+                    <i class="fa-solid fa-server text-emerald-400 text-xs"></i> VPS Aktif
+                </span>
+                <span class="hero-badge flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold text-slate-300">
+                    <i class="fa-solid fa-bolt text-amber-400 text-xs"></i> FFmpeg 24/7
+                </span>
+                <span class="hero-badge flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold text-slate-300">
+                    <i class="fa-brands fa-telegram text-cyan-400 text-xs"></i> Operator Siaga
+                </span>
+            </div>
+        </section>
+
         <!-- ════════ SLIM TELEMETRY BOARD (NO SCROLL) ════════ -->
-        <div class="glass-card rounded-xl p-3 sm:p-4">
+        <div class="glass-card rounded-xl p-3 sm:p-4 reveal d3">
             <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
                 <!-- Stat 1 -->
-                <div class="bg-slate-900/90 rounded-lg p-2.5 border border-slate-800 flex items-center justify-between">
+                <div class="stat-card bg-slate-900/90 rounded-lg p-2.5 border border-slate-800 flex items-center justify-between">
                     <div>
                         <span class="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Factory Render</span>
                         <div class="flex items-baseline gap-1.5 mt-0.5">
@@ -185,7 +403,7 @@
                 </div>
 
                 <!-- Stat 2 -->
-                <div class="bg-slate-900/90 rounded-lg p-2.5 border border-slate-800 flex items-center justify-between">
+                <div class="stat-card bg-slate-900/90 rounded-lg p-2.5 border border-slate-800 flex items-center justify-between">
                     <div>
                         <span class="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Clipper Jobs</span>
                         <div class="flex items-baseline gap-1.5 mt-0.5">
@@ -199,7 +417,7 @@
                 </div>
 
                 <!-- Stat 3 -->
-                <div class="bg-slate-900/90 rounded-lg p-2.5 border border-slate-800 flex items-center justify-between">
+                <div class="stat-card bg-slate-900/90 rounded-lg p-2.5 border border-slate-800 flex items-center justify-between">
                     <div>
                         <span class="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Beban CPU</span>
                         <div class="flex items-baseline gap-1.5 mt-0.5">
@@ -213,7 +431,7 @@
                 </div>
 
                 <!-- Stat 4 -->
-                <div class="bg-slate-900/90 rounded-lg p-2.5 border border-slate-800 flex items-center justify-between">
+                <div class="stat-card bg-slate-900/90 rounded-lg p-2.5 border border-slate-800 flex items-center justify-between">
                     <div>
                         <span class="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Cloud Engine</span>
                         <div class="flex items-baseline gap-1.5 mt-0.5">
@@ -228,19 +446,19 @@
         </div>
 
         <!-- ════════ TWO MAIN MODULE CARDS (BALANCED FIT) ════════ -->
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-5 flex-1 items-stretch">
-            
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-5 flex-1 items-stretch reveal d4">
+
             <!-- 1. FACTORY CARD -->
             <div class="module-box rounded-xl p-4 sm:p-6 flex flex-col justify-between">
                 <div>
                     <div class="flex items-center justify-between mb-3">
                         <div class="flex items-center gap-3">
-                            <div class="w-11 h-11 rounded-xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400 text-xl shadow-md">
+                            <div class="module-icon float-soft w-11 h-11 rounded-xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400 text-xl shadow-md">
                                 <i class="fa-solid fa-industry"></i>
                             </div>
                             <div>
                                 <h2 class="text-lg sm:text-xl font-bold text-white tracking-tight">Pabrik Konten (Factory)</h2>
-                                <span class="text-[10px] text-cyan-400 mono font-semibold">KOMPILASI MUSIK 60-80 MENIT & YOUTUBE BATCH</span>
+                                <span class="text-[10px] text-cyan-400 mono font-semibold">KOMPILASI MUSIK 60-80 MENIT &amp; YOUTUBE BATCH</span>
                             </div>
                         </div>
                     </div>
@@ -250,20 +468,20 @@
                     </p>
 
                     <!-- Feature Matrix -->
-                    <div class="grid grid-cols-2 gap-2 text-[11px] text-slate-300 mb-4">
-                        <div class="flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
+                    <div class="feature-grid grid grid-cols-2 gap-2 text-[11px] text-slate-300 mb-4">
+                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
                             <i class="fa-solid fa-sliders text-cyan-400 text-xs"></i>
-                            <span>Resep Durasi & Preset</span>
+                            <span>Resep Durasi &amp; Preset</span>
                         </div>
-                        <div class="flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
+                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
                             <i class="fa-solid fa-wave-square text-cyan-400 text-xs"></i>
                             <span>Visualizer Waveform</span>
                         </div>
-                        <div class="flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
+                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
                             <i class="fa-brands fa-youtube text-red-400 text-xs"></i>
                             <span>OAuth Device Flow</span>
                         </div>
-                        <div class="flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
+                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
                             <i class="fa-solid fa-calendar-days text-cyan-400 text-xs"></i>
                             <span>Jadwal 30 Hari Sekali Klik</span>
                         </div>
@@ -272,7 +490,7 @@
 
                 <a href="/factory" class="w-full py-3 px-4 rounded-xl font-bold text-slate-950 bg-cyan-400 hover:bg-cyan-300 flex items-center justify-center gap-2 text-xs sm:text-sm uppercase tracking-wider transition-all btn-glow-cyan">
                     <span>Masuk ke Dashboard Factory</span>
-                    <i class="fa-solid fa-arrow-right"></i>
+                    <i class="fa-solid fa-arrow-right module-arrow"></i>
                 </a>
             </div>
 
@@ -281,35 +499,35 @@
                 <div>
                     <div class="flex items-center justify-between mb-3">
                         <div class="flex items-center gap-3">
-                            <div class="w-11 h-11 rounded-xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-purple-400 text-xl shadow-md">
+                            <div class="module-icon float-soft w-11 h-11 rounded-xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-purple-400 text-xl shadow-md">
                                 <i class="fa-solid fa-scissors"></i>
                             </div>
                             <div>
                                 <h2 class="text-lg sm:text-xl font-bold text-white tracking-tight">Clipper Pro (Auto-Viral)</h2>
-                                <span class="text-[10px] text-purple-400 mono font-semibold">POTONG KLIP AI & AUTO-SUBTITLE WHISPER</span>
+                                <span class="text-[10px] text-purple-400 mono font-semibold">POTONG KLIP AI &amp; AUTO-SUBTITLE WHISPER</span>
                             </div>
                         </div>
                     </div>
 
                     <p class="text-slate-400 text-xs sm:text-sm leading-relaxed mb-4">
-                        Ekstrak klip video viral langsung dari tautan YouTube tanpa download manual. AI Whisper otomatis membuat subtitle kata per kata dalam format vertikal 9:16 untuk Shorts & TikTok.
+                        Ekstrak klip video viral langsung dari tautan YouTube tanpa download manual. AI Whisper otomatis membuat subtitle kata per kata dalam format vertikal 9:16 untuk Shorts &amp; TikTok.
                     </p>
 
                     <!-- Feature Matrix -->
-                    <div class="grid grid-cols-2 gap-2 text-[11px] text-slate-300 mb-4">
-                        <div class="flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
+                    <div class="feature-grid grid grid-cols-2 gap-2 text-[11px] text-slate-300 mb-4">
+                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
                             <i class="fa-solid fa-wand-magic-sparkles text-purple-400 text-xs"></i>
                             <span>Whisper AI Auto Subtitle</span>
                         </div>
-                        <div class="flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
+                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
                             <i class="fa-solid fa-mobile-screen-button text-purple-400 text-xs"></i>
                             <span>Format Shorts Vertikal (9:16)</span>
                         </div>
-                        <div class="flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
+                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
                             <i class="fa-solid fa-cloud-arrow-down text-purple-400 text-xs"></i>
                             <span>yt-dlp Direct Stream</span>
                         </div>
-                        <div class="flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
+                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
                             <i class="fa-solid fa-share-nodes text-purple-400 text-xs"></i>
                             <span>Ekspor Multi-Platform</span>
                         </div>
@@ -318,14 +536,14 @@
 
                 <a href="/clipper" class="w-full py-3 px-4 rounded-xl font-bold text-white bg-purple-600 hover:bg-purple-500 flex items-center justify-center gap-2 text-xs sm:text-sm uppercase tracking-wider transition-all btn-glow-purple">
                     <span>Masuk ke Dashboard Clipper</span>
-                    <i class="fa-solid fa-arrow-right"></i>
+                    <i class="fa-solid fa-arrow-right module-arrow"></i>
                 </a>
             </div>
 
         </div>
 
         <!-- ════════ SLIM COMPACT FOOTER WITH ZIQVA MUSE BOT WATERMARK ════════ -->
-        <footer class="glass-card rounded-xl px-4 py-2 flex items-center justify-between text-[11px] text-slate-400">
+        <footer class="glass-card rounded-xl px-4 py-2 flex items-center justify-between text-[11px] text-slate-400 reveal d5">
             <div class="flex items-center gap-2">
                 <i class="fa-solid fa-robot text-cyan-400"></i>
                 <span class="truncate">Powered by <strong class="text-white">Ziqva Muse Bot</strong> • Autonomous Cloud Production System © 2026</span>
@@ -365,7 +583,7 @@
                 <div id="tg-msg" class="text-xs hidden p-2 rounded-lg"></div>
                 <div class="flex items-center gap-2 pt-2">
                     <button type="button" onclick="closeTelegramModal()" class="w-1/2 py-2 rounded-lg bg-slate-800 text-slate-300">Batal</button>
-                    <button type="submit" class="w-1/2 py-2 rounded-lg font-bold text-slate-950 bg-cyan-400">Simpan & Uji</button>
+                    <button type="submit" class="w-1/2 py-2 rounded-lg font-bold text-slate-950 bg-cyan-400">Simpan &amp; Uji</button>
                 </div>
             </form>
         </div>

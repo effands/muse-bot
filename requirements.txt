@@ -12,3 +12,5 @@ psutil>=5.9.0
 faster-whisper
 Pillow>=10.0.0
 yt-dlp==2026.10.26
+edge-tts>=6.1.0
+gTTS>=2.5.0

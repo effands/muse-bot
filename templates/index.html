@@ -1967,7 +1967,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
           </div>
           <div class="g2">
             <div class="fg"><label class="fl"><svg class="nav-ic" style="width:13px;height:13px"><use href="#ic-gallery"/></svg>Background <small>(galeri channel — kosong = acak / semua klip video)</small></label><select id="sm-bg"><option value="">-- Acak dari galeri --</option></select><label id="sm-bg-all-wrap" style="display:none;font-family:var(--font-m);font-size:11px;color:var(--muted);margin-top:6px;cursor:pointer"><input type="checkbox" id="sm-bg-all-videos" style="vertical-align:-2px"> Pakai semua klip video di galeri, disambung berurutan <span id="sm-bg-all-count"></span></label></div>
-            <div class="fg"><label class="fl"><svg class="nav-ic" style="width:13px;height:13px"><use href="#ic-music"/></svg>Musik Latar <small>(galeri channel)</small></label><select id="sm-bgm"><option value="none">Tanpa musik</option></select></div>
+            <div class="fg"><label class="fl"><svg class="nav-ic" style="width:13px;height:13px"><use href="#ic-music"/></svg>Musik Latar <small>(galeri channel)</small></label><select id="sm-bgm"><option value="none">Musik bawaan</option></select></div>
           </div>
           <div class="fg"><label class="fl">Deskripsi <small>(opsional — kosong = dibuat otomatis dari naskah)</small></label><textarea id="sm-description" rows="2" placeholder="Kosongkan untuk deskripsi otomatis"></textarea></div>
           <div class="fg"><label class="fl"><svg class="nav-ic" style="width:13px;height:13px"><use href="#ic-tag"/></svg>Tag</label><input type="text" id="sm-tags" value="#shorts" maxlength="200"></div>
@@ -3928,7 +3928,7 @@ function onSmChannelChange() {
   const bgSel = document.getElementById('sm-bg');
   const bgmSel = document.getElementById('sm-bgm');
   bgSel.innerHTML = '<option value="">-- Acak dari galeri --</option>';
-  bgmSel.innerHTML = '<option value="none">Tanpa musik</option>';
+  bgmSel.innerHTML = '<option value="none">Musik bawaan</option>';
   smBgVideos = [];
   const allWrap = document.getElementById('sm-bg-all-wrap');
   if (allWrap) allWrap.style.display = 'none';

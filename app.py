@@ -1,4 +1,4 @@
-import os, time, queue, threading, subprocess, random, json, shutil, math, re, hmac
+import os, sys, time, queue, threading, subprocess, random, json, shutil, math, re, hmac, wave
 import html as _html
 import numpy as np
 import cv2, librosa, imageio
@@ -2487,11 +2487,354 @@ def _shorts_muse_pick_bgm(yt_id, filename):
         return cand
     return None
 
+# ==========================================
+# 🔊 AUDIO LENGKAP SHORTS MUSE — voiceover (TTS) + FX + musik latar
+# (v1.2.6) Shorts yang tayang selama ini BISU: galeri musik kosong,
+# audio klip dibuang saat render, naskah hanya teks di layar. Sejak
+# versi ini setiap Short SELALU bersuara: voiceover membacakan
+# Hook+Naskah+CTA, FX singkat di transisi, musik latar di bawah suara.
+# Aturan mixing (permintaan user 01:24 WIB): voiceover PALING DOMINAN
+# — BGM & FX tidak boleh menutupi suara (ducking sidechain + level
+# statis rendah). Bila TTS gagal total, render DIGAGALKAN dengan pesan
+# jelas — tidak pernah lagi Short bisu lolos diam-diam.
+# ==========================================
+_SHORTS_TTS_VOICES = {
+    'anak': 'id-ID-GadisNeural',        # perempuan, ceria — untuk anak-anak
+    'sleep': 'id-ID-DamayantiNeural',   # perempuan, tenang
+    'meditasi': 'id-ID-DamayantiNeural',
+    'asmr': 'id-ID-DamayantiNeural',    # lembut
+    'default': 'id-ID-ArdiNeural',      # laki-laki netral
+}
+_SHORTS_TTS_TIMEOUT = 120              # detik per panggilan TTS
+_SHORTS_TTS_MAX_RETRY = 1              # ulangi edge-tts 1x sebelum fallback
+
+
+def _shorts_tts_voice_for_theme(theme):
+    """Suara TTS per tema (edge-tts id-ID)."""
+    t = _shorts_muse_norm_theme(theme)
+    return _SHORTS_TTS_VOICES.get(t, _SHORTS_TTS_VOICES['default'])
+
+
+def _shorts_audio_duration(path):
+    """Durasi (detik) file audio, atau None bila tidak terbaca."""
+    try:
+        out = subprocess.run(
+            [get_ffprobe_path(), '-v', 'error', '-show_entries',
+             'format=duration', '-of', 'csv=p=0', path],
+            capture_output=True, text=True, timeout=30)
+        return float((out.stdout or '').strip())
+    except Exception:
+        return None
+
+
+def _shorts_audio_ok(path, min_bytes=1024, min_dur=0.3):
+    """File audio layak: ada, cukup besar, durasi terbaca."""
+    try:
+        if not path or not os.path.isfile(path):
+            return False
+        if os.path.getsize(path) < min_bytes:
+            return False
+        d = _shorts_audio_duration(path)
+        return d is not None and d >= min_dur
+    except Exception:
+        return False
+
+
+def _shorts_tts_synthesize(text, voice, out_path):
+    """Sintesis SATU potongan teks jadi file audio (mp3).
+    1) edge-tts (utama, suara natural) — 2 percobaan;
+    2) gTTS (fallback). Mengembalikan True bila file audio layak.
+    False bila keduanya gagal (pemanggil menggagalkan task, bukan
+    mengirim Short bisu)."""
+    text = ' '.join(str(text or '').split())
+    if not text:
+        return False
+    if len(text) > 1000:
+        text = text[:1000]
+    for _attempt in range(1 + _SHORTS_TTS_MAX_RETRY):
+        try:
+            if os.path.isfile(out_path):
+                os.remove(out_path)
+        except Exception:
+            pass
+        try:
+            r = subprocess.run(
+                [sys.executable, '-m', 'edge_tts', '--voice', voice,
+                 '--text', text, '--write-media', out_path],
+                capture_output=True, text=True, timeout=_SHORTS_TTS_TIMEOUT)
+            if r.returncode == 0 and _shorts_audio_ok(out_path):
+                return True
+            print(f"[shorts-tts] edge-tts gagal (exit {r.returncode}): "
+                  f"{(r.stderr or '')[-200:]}", flush=True)
+        except Exception as e:
+            print(f"[shorts-tts] edge-tts gagal: {e}", flush=True)
+    try:
+        if os.path.isfile(out_path):
+            os.remove(out_path)
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(
+            [sys.executable, '-c',
+             'import sys; from gtts import gTTS; '
+             'gTTS(sys.argv[1], lang="id").save(sys.argv[2])',
+             text, out_path],
+            capture_output=True, text=True, timeout=_SHORTS_TTS_TIMEOUT)
+        if r.returncode == 0 and _shorts_audio_ok(out_path):
+            print("[shorts-tts] gTTS fallback berhasil", flush=True)
+            return True
+        print(f"[shorts-tts] gTTS gagal (exit {r.returncode}): "
+              f"{(r.stderr or '')[-200:]}", flush=True)
+    except Exception as e:
+        print(f"[shorts-tts] gTTS gagal: {e}", flush=True)
+    return False
+
+
+def _shorts_tts_segments(hook, script, cta_text, duration_sec):
+    """Segmen suara — timing PERSIS sama dengan teks di layar (ASS):
+    Hook di 0 detik, tiap potongan naskah berurutan, CTA di 5 detik
+    terakhir. Satu segmen = satu panggilan TTS."""
+    duration_sec = float(duration_sec)
+    hook_dur = min(SHORTS_MUSE_HOOK_SEC, max(1.0, duration_sec * 0.3))
+    cta_start = max(hook_dur + 0.5, duration_sec - SHORTS_MUSE_CTA_SEC)
+    segs = []
+    if (hook or '').strip():
+        segs.append({'start': 0.0, 'end': hook_dur,
+                     'text': hook.strip(), 'kind': 'Hook'})
+    chunks = _shorts_muse_split_script(script)
+    if chunks:
+        span = max(0.5, (cta_start - hook_dur) / len(chunks))
+        for i, ch in enumerate(chunks):
+            segs.append({'start': hook_dur + i * span,
+                         'end': min(hook_dur + (i + 1) * span, cta_start),
+                         'text': ch, 'kind': 'Body'})
+    if (cta_text or '').strip():
+        segs.append({'start': cta_start, 'end': duration_sec,
+                     'text': cta_text.strip(), 'kind': 'CTA'})
+    return segs
+
+
+def _shorts_sfx_synthesize(kind, out_path):
+    """Sintesis SATU efek suara (WAV 44.1k stereo) murni dengan FFmpeg —
+    tanpa download: pop (Hook masuk), whoosh (ganti naskah), chime (CTA).
+    Mengembalikan True bila file layak."""
+    ff = get_ffmpeg_path()
+    try:
+        if kind == 'pop':
+            cmd = [ff, '-y', '-f', 'lavfi', '-i',
+                   'sine=frequency=880:duration=0.12',
+                   '-af', 'afade=t=out:st=0.05:d=0.07,volume=0.5,aresample=44100',
+                   '-ac', '2', '-c:a', 'pcm_s16le', out_path]
+        elif kind == 'whoosh':
+            cmd = [ff, '-y', '-f', 'lavfi', '-i',
+                   'anoisesrc=duration=0.45:color=pink',
+                   '-af', 'bandpass=f=1100:width_type=q:width=1,afade=t=in:st=0:d=0.15,'
+                   'afade=t=out:st=0.28:d=0.17,volume=0.4,aresample=44100',
+                   '-ac', '2', '-c:a', 'pcm_s16le', out_path]
+        else:  # chime — dua nada (E6 lalu B6)
+            cmd = [ff, '-y', '-f', 'lavfi', '-i',
+                   'sine=frequency=1318:duration=0.5',
+                   '-f', 'lavfi', '-i', 'sine=frequency=1976:duration=0.5',
+                   '-filter_complex',
+                   '[0:a]afade=t=out:st=0.3:d=0.2,volume=0.4[a];'
+                   '[1:a]adelay=180:all=1,afade=t=out:st=0.48:d=0.2,volume=0.4[b];'
+                   '[a][b]amix=inputs=2:normalize=0,aresample=44100',
+                   '-ac', '2', '-c:a', 'pcm_s16le', out_path]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        # pop hanya 0,12 dtk — ambang durasi minimal diturunkan untuk SFX.
+        return r.returncode == 0 and _shorts_audio_ok(out_path, min_bytes=500, min_dur=0.05)
+    except Exception as e:
+        print(f"[shorts-sfx] {kind} gagal: {e}", flush=True)
+        return False
+
+
+def _shorts_bgm_fallback_generate(theme, out_path, duration=60.0):
+    """Generate musik latar bawaan (WAV 44.1k stereo) murni dengan numpy —
+    tanpa download: pad akor + melodi pentatonik + bass lembut. Dipakai
+    bila galeri musik channel kosong, supaya Short TIDAK PERNAH tanpa
+    musik. Deterministik per tema (bisa di-cache & dipakai ulang)."""
+    try:
+        sr = 44100
+        n = int(sr * float(duration))
+        t = np.arange(n, dtype=np.float64) / sr
+        theme = _shorts_muse_norm_theme(theme)
+        if theme == 'anak':
+            chords = [(60, False), (65, False), (67, False), (60, False)]
+            scale = [72, 74, 76, 79, 81, 84]
+            bpm = 100
+        elif theme in ('sleep', 'meditasi', 'asmr'):
+            chords = [(57, True), (53, False), (60, False), (55, False)]
+            scale = [69, 72, 76, 79, 76, 72]
+            bpm = 60
+        else:
+            chords = [(60, False), (57, True), (65, False), (67, False)]
+            scale = [72, 76, 79, 81, 79, 76]
+            bpm = 80
+
+        def _freq(midi):
+            return 440.0 * (2.0 ** ((midi - 69) / 12.0))
+
+        mix = np.zeros(n, dtype=np.float64)
+        chord_len = 5.0
+        n_chords = int(math.ceil(duration / chord_len))
+        for ci in range(n_chords):
+            root, minor = chords[ci % len(chords)]
+            c0 = int(ci * chord_len * sr)
+            c1 = min(n, int((ci + 1) * chord_len * sr))
+            if c0 >= n:
+                break
+            seg_t = np.arange(c1 - c0, dtype=np.float64) / sr
+            third = 3 if minor else 4
+            for interval, gain in ((0, 0.05), (third, 0.045),
+                                   (7, 0.04), (12, 0.025)):
+                f = _freq(root + interval)
+                tone = gain * np.sin(2.0 * np.pi * f * seg_t)
+                attack = np.minimum(1.0, seg_t / 0.8)
+                release = np.minimum(1.0, (len(seg_t) / sr - seg_t) / 0.8)
+                trem = 1.0 + 0.10 * np.sin(2.0 * np.pi * 0.5 * seg_t)
+                mix[c0:c1] += tone * attack * release * trem
+            # Bass lembut di awal akor
+            bass = 0.11 * np.sin(2.0 * np.pi * _freq(root - 12) * seg_t)
+            bass *= np.exp(-seg_t / 1.2)
+            mix[c0:c1] += bass
+        # Melodi pentatonik (nada pendek, decay cepat) di grid 1/2 ketuk
+        step = 30.0 / bpm
+        pattern = [0, 2, 4, 2, 5, 4, 2, 1, 0, 2, 4, 5, 4, 2, 1, 0]
+        pos = 0.0
+        pi = 0
+        while pos < duration:
+            deg = pattern[pi % len(pattern)]
+            pi += 1
+            f = _freq(scale[deg])
+            s0 = int(pos * sr)
+            s1 = min(n, int((pos + 0.55) * sr))
+            if s0 < n:
+                nt = np.arange(s1 - s0, dtype=np.float64) / sr
+                note = 0.16 * np.sin(2.0 * np.pi * f * nt) * np.exp(-nt / 0.22)
+                mix[s0:s1] += note
+            pos += step
+        peak = float(np.max(np.abs(mix))) if n else 0.0
+        if peak > 0:
+            mix = mix / peak * 0.45
+        pcm = np.clip(mix, -1.0, 1.0)
+        pcm16 = (pcm * 32767).astype(np.int16)
+        stereo = np.column_stack([pcm16, pcm16])
+        with wave.open(out_path, 'wb') as wf:
+            wf.setnchannels(2)
+            wf.setsampwidth(2)
+            wf.setframerate(sr)
+            wf.writeframes(stereo.tobytes())
+        return _shorts_audio_ok(out_path, min_bytes=10000, min_dur=30)
+    except Exception as e:
+        print(f"[shorts-bgm] generate musik bawaan gagal: {e}", flush=True)
+        return False
+
+
+def _shorts_bgm_fallback_path(theme):
+    """Path musik bawaan per tema (di-cache di uploads, dibuat sekali).
+    None bila generate gagal — pemanggil lanjut dengan voiceover saja."""
+    theme = _shorts_muse_norm_theme(theme)
+    p = os.path.join(BASE_UPLOAD, f"shorts_bgm_fallback_{theme}.wav")
+    try:
+        if (os.path.isfile(p) and os.path.getsize(p) > 10000
+                and (_shorts_audio_duration(p) or 0) > 30):
+            return p
+        if _shorts_bgm_fallback_generate(theme, p):
+            return p
+    except Exception as e:
+        print(f"[shorts-bgm] musik bawaan gagal: {e}", flush=True)
+    return None
+
+
+def _shorts_build_voice_track(task_id, hook, script, cta_text, duration_sec, theme):
+    """Bangun SATU file audio suara (voiceover + FX) untuk Short:
+    tiap segmen teks (Hook/naskah/CTA) disintesis TTS lalu diletakkan
+    di detik yang sama dengan teks di layar; FX pop di Hook, whoosh di
+    tiap ganti naskah, chime di CTA — semuanya pelan, di bawah suara.
+    Mengembalikan path file WAV. Raises Exception bila TTS gagal total
+    (task digagalkan dengan pesan jelas — tidak ada Short bisu)."""
+    duration_sec = float(duration_sec)
+    voice = _shorts_tts_voice_for_theme(theme)
+    segments = _shorts_tts_segments(hook, script, cta_text, duration_sec)
+    if not segments:
+        raise Exception("tidak ada teks yang bisa dibacakan (Hook/Naskah/CTA kosong)")
+    seg_files = []
+    try:
+        for idx, seg in enumerate(segments):
+            out = os.path.join(BASE_UPLOAD, f"shorts_seg_{task_id}_{idx}.mp3")
+            if not _shorts_tts_synthesize(seg['text'], voice, out):
+                raise Exception("layanan TTS tidak bisa dihubungi "
+                                "(edge-tts & gTTS gagal) — periksa koneksi "
+                                "internet VPS lalu coba lagi")
+            seg_files.append((out, seg))
+        sfx = {}
+        for kind in ('pop', 'whoosh', 'chime'):
+            p = os.path.join(BASE_UPLOAD, f"shorts_sfx_{kind}.wav")
+            if not (os.path.isfile(p) and os.path.getsize(p) > 1000):
+                _shorts_sfx_synthesize(kind, p)
+            if os.path.isfile(p) and os.path.getsize(p) > 1000:
+                sfx[kind] = p
+        inputs = []
+        chains = []
+        for i, (f, seg) in enumerate(seg_files):
+            inputs += ['-i', f]
+            slot = max(0.5, seg['end'] - seg['start'])
+            dur = _shorts_audio_duration(f) or slot
+            chain = f"[{i}:a]aresample=44100,pan=stereo|c0=c0|c1=c0"
+            if dur > slot:
+                tempo = min(1.6, dur / slot)
+                chain += f",atempo={tempo:.2f}"
+            chain += (f",atrim=0:{slot:.3f},"
+                      f"adelay={int(seg['start'] * 1000)}:all=1,volume=1.0[s{i}]")
+            chains.append(chain)
+        sfx_hits = []
+        if sfx.get('pop'):
+            sfx_hits.append((sfx['pop'], 50))
+        for seg in segments:
+            if seg['kind'] == 'Body' and sfx.get('whoosh'):
+                sfx_hits.append((sfx['whoosh'], int(seg['start'] * 1000)))
+        cta_segs = [s for s in segments if s['kind'] == 'CTA']
+        if cta_segs and sfx.get('chime'):
+            sfx_hits.append((sfx['chime'], int(cta_segs[0]['start'] * 1000)))
+        n_in = len(seg_files)
+        for j, (p, tms) in enumerate(sfx_hits):
+            inputs += ['-i', p]
+            chains.append(f"[{n_in + j}:a]aresample=44100,"
+                          f"pan=stereo|c0=c0|c1=c0,adelay={tms}:all=1,"
+                          f"volume=0.30[x{j}]")
+        n_total = len(seg_files) + len(sfx_hits)
+        labels = ''.join(f"[s{i}]" for i in range(len(seg_files)))
+        labels += ''.join(f"[x{j}]" for j in range(len(sfx_hits)))
+        chains.append(f"{labels}amix=inputs={n_total}:normalize=0,apad,"
+                      f"atrim=0:{duration_sec:.3f},aresample=44100[aout]")
+        mix_path = os.path.join(BASE_UPLOAD, f"shorts_voice_{task_id}.wav")
+        cmd = ([get_ffmpeg_path(), '-y'] + inputs +
+               ['-filter_complex', ';'.join(chains), '-map', '[aout]',
+                '-c:a', 'pcm_s16le', mix_path])
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if r.returncode != 0 or not _shorts_audio_ok(mix_path):
+            raise Exception("gagal mencampur trek suara: "
+                            f"{(r.stderr or '')[-200:]}")
+        mean_db = _audio_mean_volume_db(mix_path)
+        if mean_db is not None and (mean_db == float('-inf')
+                                    or mean_db < QC_SILENCE_MAX_DB):
+            raise Exception("trek suara hasil campuran hening — "
+                            "voiceover tidak terdengar")
+        return mix_path
+    finally:
+        for f, _s in seg_files:
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+
+
 def render_shorts_muse_core(task_id, task, yt_id):
     """🔥 FASE 8: render SATU Shorts Muse — vertikal 1080x1920, 100%
     FFmpeg (tanpa render frame Python). Background gambar/video dengan
-    zoom pelan + teks Hook/Naskah/CTA dari file ASS + musik galeri
-    (atau trek hening bila tanpa musik). Mengembalikan path final video
+    zoom pelan + teks Hook/Naskah/CTA dari file ASS + suara lengkap
+    (voiceover TTS + FX + musik galeri/bawaan, voiceover paling dominan).
+    Mengembalikan path final video
     (static/final_{task_id}.mp4) — sama seperti jalur Factory, supaya
     alur setelahnya (cek jeda → QC → upload → riwayat) dipakai ulang
     tanpa jalur paralel."""
@@ -2539,9 +2882,23 @@ def render_shorts_muse_core(task_id, task, yt_id):
                     concat_path = None
                     bg_path = clip_paths[0]
     bgm_path = _shorts_muse_pick_bgm(yt_id, task.get('shorts_bgm'))
-    # Tandai di blueprint supaya QC Fase 5 tahu: tanpa musik = audio hening
-    # itu disengaja, bukan cacat render.
-    task['shorts_no_music'] = bgm_path is None
+    # 🔊 v1.2.6: Shorts SELALU bersuara — voiceover (TTS) wajib; BGM dari
+    # galeri bila ada, kalau tidak pakai musik bawaan (fallback).
+    # TTS gagal total → render digagalkan dengan pesan jelas (tidak ada
+    # lagi Short bisu yang lolos diam-diam).
+    voice_mix_path = None
+    audio_parts = []
+    voice_mix_path = _shorts_build_voice_track(
+        task_id, hook, script, cta_text, duration_sec,
+        task.get('shorts_theme'))
+    audio_parts.append('voiceover')
+    if bgm_path:
+        audio_parts.append('musik galeri')
+    else:
+        bgm_path = _shorts_bgm_fallback_path(task.get('shorts_theme'))
+        if bgm_path:
+            audio_parts.append('musik bawaan')
+    task['shorts_audio'] = ' + '.join(audio_parts) or 'voiceover'
 
     with db_lock:
         for d in active_tasks:
@@ -2571,12 +2928,18 @@ def render_shorts_muse_core(task_id, task, yt_id):
             cmd += ['-loop', '1', '-framerate', '30', '-i', bg_path]
         else:
             cmd += ['-stream_loop', '-1', '-i', bg_path]
-        if bgm_path:
-            cmd += ['-stream_loop', '-1', '-i', bgm_path]
-        else:
-            cmd += ['-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo']
-        cmd += ['-filter_complex', f"[0:v]{vf}[v]",
-                '-map', '[v]', '-map', '1:a',
+        # 🔊 v1.2.6: [1:a] = voiceover+FX, [2:a] = musik latar — musik
+        # di-ducking saat suara berbicara, lalu dicampur RENDAH di bawah
+        # voiceover (aturan user: suara tidak boleh kalah oleh musik/FX).
+        cmd += ['-i', voice_mix_path]
+        cmd += ['-stream_loop', '-1', '-i', bgm_path]
+        cmd += ['-filter_complex',
+                f"[0:v]{vf}[v];"
+                f"[2:a]volume=0.16,aresample=44100[bgm];"
+                f"[bgm][1:a]sidechaincompress=threshold=0.03:ratio=6:"
+                f"attack=200:release=500[bgmd];"
+                f"[1:a][bgmd]amix=inputs=2:normalize=0[aout]",
+                '-map', '[v]', '-map', '[aout]',
                 '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
                 '-c:a', 'aac', '-b:a', '128k',
                 '-movflags', '+faststart',
@@ -2590,6 +2953,9 @@ def render_shorts_muse_core(task_id, task, yt_id):
     finally:
         try: os.remove(ass_path)
         except Exception: pass
+        if voice_mix_path:
+            try: os.remove(voice_mix_path)
+            except Exception: pass
         if concat_path:
             try: os.remove(concat_path)
             except Exception: pass
@@ -3184,7 +3550,8 @@ def background_worker():
                             # panel meng-escape status (perlindungan XSS).
                             move_to_history(task_id, "Tayang! ✅")
                             _shorts_pfx = "📱 Shorts " if task.get('kind') == SHORTS_MUSE_KIND else ""
-                            notify_event("✅", task['title'], f"{_shorts_pfx}udah tayang di YouTube {ch_name} 😎\nJadwal tayang: {task['publish_date']}")
+                            _audio_note = (task.get('shorts_audio') or '').strip()
+                            notify_event("✅", task['title'], f"{_shorts_pfx}udah tayang di YouTube {ch_name} 😎\nJadwal tayang: {task['publish_date']}" + (f"\n🎙️ Suara: {_audio_note}" if _audio_note else ""))
                             upload_berhasil = True
                             # 🔥 FASE 5: 1 sukses → reset hitungan gagal beruntun.
                             _record_channel_success(yt_id)
@@ -4994,11 +5361,11 @@ def run_qc_checks(task, video_path, yt_id):
                     f"durasi {int(dur // 60)} mnt, target {int(target // 60)} mnt "
                     f"(selisih > {int(tol // 60)} mnt)")
     # --- (c) audio ada & tidak hening ---
+    # 🔥 v1.2.6: Shorts WAJIB bersuara (voiceover + musik) — pengecualian
+    # "tanpa musik" (Fase 8) DIHAPUS; Short bisu tidak boleh lolos lagi
+    # ke YouTube.
     if not astreams:
         failures.append("tidak ada stream audio")
-    elif task.get('kind') == SHORTS_MUSE_KIND and task.get('shorts_no_music'):
-        # 🔥 FASE 8: Shorts tanpa musik disengaja (trek hening) — bukan cacat.
-        pass
     else:
         mean_db = _audio_mean_volume_db(video_path)
         if mean_db is not None and (mean_db == float('-inf')

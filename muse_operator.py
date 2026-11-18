@@ -2453,7 +2453,8 @@ def _make_short_summary(d):
         f"⏱️ Durasi: `{d.get('duration_sec', 30)} detik`\n"
         f"🗓️ Jadwal: `{_tg_escape(d.get('publish_date', ''))}`\n"
         f"🖼️ Background: `{_tg_escape(bg_label)}`\n"
-        f"🎵 Musik: `{_tg_escape(d.get('bgm_file', 'none'))}`\n\n"
+        f"🎵 Musik: `{_tg_escape(d.get('bgm_file') if d.get('bgm_file') not in (None, '', 'none') else 'musik bawaan')}`\n"
+        "🎙️ Suara: `voiceover + musik` (suara membacakan naskah)\n\n"
         "Kalau sudah oke, pencet ✅ Buat. Kalau mau ubah, pencet ❌ Batal lalu mulai lagi dari /buatshort ya Bos!"
     )
 
@@ -2595,12 +2596,12 @@ def _make_ask_step(token, chat_id, draft):
                                  [{"text": "✅ Buat", "callback_data": "mkshort:yes"},
                                   {"text": "❌ Batal", "callback_data": "mkshort:no"}]]})
                 return
-            lines = ["🎵 *Terakhir: Musik latar*\n\nPilih musik dari galeri (atau `0` untuk tanpa musik):\n"]
+            lines = ["🎵 *Terakhir: Musik latar*\n\nPilih musik dari galeri (atau `0` untuk musik bawaan):\n"]
             for i, f in enumerate(opts[:10], 1):
                 lines.append(f"{i}. `{_tg_escape(f)}`")
             if len(opts) > 10:
                 lines.append(f"_…dan {len(opts) - 10} file lainnya_")
-            lines.append("\nBalas angkanya, `0` tanpa musik, atau `lewati` untuk tanpa musik.")
+            lines.append("\nBalas angkanya, `0` musik bawaan, atau `lewati` untuk musik bawaan.")
             send_message(token, chat_id, "\n".join(lines))
         elif step == 'confirm':
             send_message(token, chat_id, _make_short_summary(d),
@@ -2857,7 +2858,7 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
                     picked = None
                 if not picked:
                     send_message(token, chat_id,
-                                 f"😅 *Pilihannya nggak ada Bos* — balas angkanya 1–{len(opts)}, atau `0` tanpa musik.")
+                                 f"😅 *Pilihannya nggak ada Bos* — balas angkanya 1–{len(opts)}, atau `0` musik bawaan.")
                     return True
                 d['bgm_file'] = picked
             draft['step'] = 'confirm'

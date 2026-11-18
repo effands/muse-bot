@@ -36,6 +36,8 @@
 
 ## 🚀 Panduan Deploy ke VPS (Ubuntu / Debian 24/7)
 
+> 📖 **Panduan ekosistem lengkap** (cara dapat JSON TV, install VPS, Telegram, dan cara kerja sama dengan Muse — sekaligus briefing yang bisa di-paste ke Muse mana pun): **[PANDUAN_EKOSISTEM.md](PANDUAN_EKOSISTEM.md)**.
+
 1. **Login ke VPS via SSH**:
    ```bash
    ssh root@ip-vps-anda

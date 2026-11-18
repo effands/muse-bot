@@ -1,5 +1,7 @@
 # 🤖 PANDUAN PENGGUNAAN ZIQVA MUSE BOT
 
+> 📖 **Panduan ekosistem lengkap (Google Cloud, VPS, Telegram, Muse — sekaligus briefing untuk Muse mana pun): [PANDUAN_EKOSISTEM.md](PANDUAN_EKOSISTEM.md).** Dokumen itu adalah versi terbaru dan paling lengkap; panduan di bawah ini adalah versi ringkas lama.
+
 Panduan lengkap instalasi dan operasional sistem produksi konten otomatis **Ziqva Muse Bot**, baik di komputer lokal Windows maupun di Server Cloud VPS (24/7).
 
 ---
@@ -64,14 +66,15 @@ Di dalam folder `muse-bot`, Anda cukup menggunakan perintah shortcut:
 
 ### 1. Setup PIN Keamanan
 Saat pertama kali membuka port 8000:
-* Masukkan PIN rahasia (contoh: `336699`).
+* Masukkan PIN rahasia (minimal 8 karakter, campuran huruf dan angka, contoh: `Rahasia2026`).
 * Klik **Simpan PIN**.
 
 ### 2. Hubungkan Akun YouTube (Google OAuth Device Flow)
 * Buka [Google Cloud Console](https://console.cloud.google.com).
 * Buat Project baru dan aktifkan **YouTube Data API v3**.
 * Pada OAuth Consent Screen, pilih **External** dan pastikan klik tombol **PUBLISH APP** (status **In Production**) agar token upload tidak expired setiap 7 hari.
-* Buat Credentials -> OAuth Client ID -> Tipe **Desktop App** -> Download file JSON-nya.
+* Buat Credentials -> OAuth Client ID -> Tipe **TV and Limited Input Devices** -> Download file JSON-nya.
+  > ⚠️ **KOREKSI PENTING:** panduan ini sebelumnya salah menulis tipe "Desktop App". Panel memakai device-code flow yang **hanya menerima client tipe TV** — client Desktop menyebabkan error `invalid_client` saat device login. Selalu pilih tipe **TV and Limited Input Devices**. Penjelasan lengkap ada di [PANDUAN_EKOSISTEM.md](PANDUAN_EKOSISTEM.md) bagian 6.4.
 * Masuk ke menu **Factory -> Settings**, upload file JSON tersebut, lalu klik **Connect**.
 * Salin kode yang muncul ke `https://www.google.com/device` dan login akun YouTube Anda.
 
@@ -98,3 +101,5 @@ Ketik atau sentuh tombol di chat `@ziqmusebot`:
 * `💡 10 Judul Sleep Music` atau `/judul`: Generate 10 judul video tidur viral siap pakai.
 * `📝 Template Deskripsi` atau `/deskripsi`: Template deskripsi SEO YouTube.
 * `📐 Blueprint Resep` atau `/blueprint`: Standar resep video kompilasi.
+
+> 📖 Daftar perintah di atas sudah ketinggalan — daftar lengkap dan terbaru (termasuk `/server`, `/kuota`, `/stok`, `/statistik`, `/monetisasi`, `/laporan`, `/gagal`, `/tag`, `/cta`, `/ideashorts`, `/buatshort`, `/buatlong`, `/batal`) ada di [PANDUAN_EKOSISTEM.md](PANDUAN_EKOSISTEM.md) bagian 9.3.

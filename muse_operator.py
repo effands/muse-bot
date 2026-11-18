@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import math
 import time
 import json
 import socket
@@ -21,6 +22,10 @@ MONITOR_STATE_FILE = os.path.join(BASE_DIR, 'monitor_state.json')
 # Batas upload harian per channel — cerminan MAX_UPLOADS_PER_CHANNEL_PER_DAY di app.py.
 MAX_UPLOADS_PER_DAY = 6
 DAILY_REPORT_HOUR_WIB = 7  # laporan harian otomatis tiap pagi 07:00 WIB
+EVENING_REPORT_HOUR_WIB = 17  # laporan sore otomatis tiap 17:00 WIB
+# TTL cache statistik channel (cerminan VIDEO_STATS_CACHE_TTL di app.py):
+# cache panel & cache operator sendiri dianggap segar selama 1 jam.
+CHANNEL_STATS_CACHE_TTL = 3600
 PANEL_URL = "http://127.0.0.1:8000"
 
 # 🔥 SINGLE INSTANCE LOCK (Port 8089)
@@ -71,11 +76,15 @@ def load_monitor_state():
         if not isinstance(data, dict):
             return {"daily_report_date": "", "alerts": {}}
         data.setdefault("daily_report_date", "")
+        data.setdefault("evening_report_date", "")
         data.setdefault("alerts", {})
         data.setdefault("make_drafts", {})
+        data.setdefault("channel_report_snapshot", {})
+        data.setdefault("channel_stats_cache", {})
         return data
     except Exception:
-        return {"daily_report_date": "", "alerts": {}, "make_drafts": {}}
+        return {"daily_report_date": "", "evening_report_date": "", "alerts": {},
+                "make_drafts": {}, "channel_report_snapshot": {}, "channel_stats_cache": {}}
 
 def save_monitor_state(state):
     """Simpan state secara atomik (temp + replace) agar tidak rusak saat restart."""
@@ -313,30 +322,572 @@ def build_status_report():
         lines.append("Aman Bos, saya yang urus 💪")
     return "\n".join(lines)
 
-def build_daily_report():
-    """Rekap pagi: hasil KEMARIN (WIB), antrean tersisa, stok tiap channel."""
+# ==========================================
+# 📊 LAPORAN PAGI/SORE — STATISTIK CHANNEL + KESIAPAN MONETISASI
+# ==========================================
+# KEMBARAN helper panel (app.py): _channel_monetization_readiness,
+# _monetization_rule_for, _snapshot_delta, _monetization_task_hours dan
+# _shorts_views_90d — dihitung ulang di sini karena operator adalah proses
+# terpisah dan TIDAK BOLEH mengimpor app.py. Bila logika panel berubah,
+# samakan di sini; semua ambang & tanggal peralihan di SATU tempat di bawah.
+MONETIZE_SUBS_REQUIRED = 1000
+MONETIZE_RULE_CHANGE_DATE = "2027-02-01"
+MONETIZE_WATCH_HOURS_BEFORE = 4000
+MONETIZE_WATCH_HOURS_FROM = 8000
+MONETIZE_SHORTS_VIEWS_BEFORE = 10_000_000
+MONETIZE_SHORTS_VIEWS_FROM = 20_000_000
+_SHORTS_MUSE_KIND = 'shorts_muse'
+
+
+def _monetization_rule_for(date_str):
+    """Ambang monetisasi YouTube yang berlaku pada tanggal WIB tertentu.
+    s.d. 31 Jan 2027: 1.000 subs + 4.000 jam (12 bln) atau 10 jt views
+    Shorts (90 hari). Mulai 1 Feb 2027: 8.000 jam atau 20 jt views Shorts.
+    Subs tetap 1.000; channel yang sudah monetisasi tidak terpengaruh."""
+    if date_str >= MONETIZE_RULE_CHANGE_DATE:
+        return {"subs": MONETIZE_SUBS_REQUIRED, "watch_hours": MONETIZE_WATCH_HOURS_FROM,
+                "shorts_views_90d": MONETIZE_SHORTS_VIEWS_FROM,
+                "label": "1.000 subs + 8.000 jam tayang (365 hari) atau 20 jt views Shorts (90 hari)",
+                "rule_next": None}
+    return {"subs": MONETIZE_SUBS_REQUIRED, "watch_hours": MONETIZE_WATCH_HOURS_BEFORE,
+            "shorts_views_90d": MONETIZE_SHORTS_VIEWS_BEFORE,
+            "label": "1.000 subs + 4.000 jam tayang (12 bln) atau 10 jt views Shorts (90 hari)",
+            "rule_next": "Mulai 1 Feb 2027: 1.000 subs + 8.000 jam tayang (365 hari) atau 20 jt views Shorts (90 hari)"}
+
+
+def _snapshot_delta(totals, days, ref_date=None):
+    """Selisih nilai snapshot: total(terbaru) − total(terdekat pada/
+    sebelum ref−days). totals: {tanggal 'YYYY-MM-DD': nilai}.
+    Kembalikan (delta, tanggal_dasar, tanggal_ref) atau (None, None,
+    tanggal_ref) bila riwayat belum cukup — pemanggil menampilkan '—',
+    jangan karang angka."""
+    if not totals:
+        return None, None, None
+    ref = ref_date or max(totals)
+    try:
+        ref_d = datetime.strptime(ref, "%Y-%m-%d").date()
+    except Exception:
+        return None, None, ref
+    target = (ref_d - timedelta(days=days)).strftime("%Y-%m-%d")
+    cands = [d for d in totals if d <= target]
+    if not cands:
+        return None, None, ref
+    base_d = max(cands)
+    if base_d == ref:
+        return None, None, ref
+    try:
+        return int(totals[ref]) - int(totals[base_d]), base_d, ref
+    except Exception:
+        return None, None, ref
+
+
+def _task_hours(t):
+    """Durasi video tayang dalam jam: kompilasi dari blueprint
+    target_duration_hours; Shorts Muse dari shorts_duration_sec."""
+    bp = t.get('blueprint') or {}
+    try:
+        kind = t.get('kind') or bp.get('kind')
+        if kind == _SHORTS_MUSE_KIND:
+            return float(t.get('shorts_duration_sec') or bp.get('shorts_duration_sec') or 0) / 3600.0
+        return float(bp.get('target_duration_hours') or t.get('target_duration_hours') or 0)
+    except Exception:
+        return 0.0
+
+
+def _avg_long_duration_hours(history, yt_id):
+    """Durasi rata-rata blueprint video LONG per channel (jam) — dasar
+    estimasi jam tayang (metode sama seperti kartu Monetisasi panel)."""
+    total, cnt = 0.0, 0
+    for t in history or []:
+        if _history_task_yt_id(t) != yt_id:
+            continue
+        if (t.get('kind') or (t.get('blueprint') or {}).get('kind')) == _SHORTS_MUSE_KIND:
+            continue
+        h = _task_hours(t)
+        if h and h > 0:
+            total += h
+            cnt += 1
+    return (total / cnt) if cnt else None
+
+
+def _shorts_views_90d(yt_id, history, cached_videos, vid_snaps, ref_date):
+    """Views Shorts (90 hari) dari snapshot per-video — HANYA video Shorts
+    Muse (kind='shorts_muse'). Klip Clipper TIDAK termasuk (tidak tercatat
+    di snapshot pabrik) — angka bisa terlalu rendah bila channel punya klip
+    Clipper tayang. Kembalikan (total_views, complete): complete=False bila
+    ada video Shorts yang baseline 90 hari lalu-nya tidak bisa ditentukan —
+    jalur Shorts lalu tidak dipakai untuk badge. Tanpa video Shorts sama
+    sekali → (0, True), terhitung jujur."""
+    vid_info = {}
+    for t in history or []:
+        vid = _history_task_video_id(t)
+        yt = _history_task_yt_id(t)
+        if vid and yt:
+            vid_info[vid] = (yt, t.get('kind') or (t.get('blueprint') or {}).get('kind'))
+    total = 0
+    complete = True
+    found = False
+    for vid, (yt, kind) in (vid_info or {}).items():
+        if yt != yt_id or kind != _SHORTS_MUSE_KIND:
+            continue
+        found = True
+        cv = cached_videos.get(vid) or {}
+        if cv.get('missing'):
+            continue
+        cur = cv.get('views')
+        if cur is None:
+            continue  # belum pernah di-fetch — tidak bisa dihitung
+        snaps = vid_snaps.get(vid, {})
+        ref_v = max(snaps) if snaps else (ref_date or _wib_now().strftime("%Y-%m-%d"))
+        try:
+            target = (datetime.strptime(ref_v, "%Y-%m-%d").date() - timedelta(days=90)).strftime("%Y-%m-%d")
+        except Exception:
+            complete = False
+            continue
+        cands = [d for d in snaps if d <= target]
+        if cands:
+            base = max(cands)
+            total += int(cur) - int(snaps[base])
+        else:
+            pub = (cv.get('published_at', '') or '')[:10]
+            if pub and pub > target:
+                total += int(cur)  # video belum ada 90 hari lalu → semua views masuk
+            else:
+                complete = False
+    if not found:
+        return 0, True
+    return total, complete
+
+
+def _channel_monetization_readiness(*, subs, watch_90d_est_hours, shorts_views_90d,
+                                   shorts_complete, monetized, today_str):
+    """SATU tempat perhitungan kesiapan monetisasi di operator (kembaran
+    helper panel). PENTING: jam tayang di sini HANYA ESTIMASI (snapshot
+    views 90 hari terakhir × durasi rata-rata blueprint video long channel).
+    Jam tayang asli butuh YouTube Analytics API yang tidak diizinkan di
+    device flow; keputusan akhir monetisasi ada di YouTube Studio. Jalur
+    Shorts hanya dipakai bila shorts_complete=True; bila tidak, badge tidak
+    pernah 'ready' lewat jalur Shorts."""
+    rule = _monetization_rule_for(today_str)
+    base = {"subs": subs or 0, "subs_required": rule["subs"],
+            "watch_est": watch_90d_est_hours, "watch_required": rule["watch_hours"],
+            "shorts_views": shorts_views_90d, "shorts_required": rule["shorts_views_90d"],
+            "shorts_complete": bool(shorts_complete),
+            "rule_label": rule["label"], "rule_next": rule["rule_next"]}
+    if monetized:
+        return dict(base, status="monetized", badge="💰 Monetisasi Aktif", via=None)
+    subs_ok = (subs or 0) >= rule["subs"]
+    hours_ok = watch_90d_est_hours is not None and watch_90d_est_hours >= rule["watch_hours"]
+    shorts_ok = bool(shorts_complete) and (shorts_views_90d or 0) >= rule["shorts_views_90d"]
+    ready = subs_ok and (hours_ok or shorts_ok)
+    via = None
+    if ready:
+        via = "shorts" if (shorts_ok and not hours_ok) else "hours"
+    return dict(base, status="ready" if ready else "progress",
+                badge="✅ Siap Monet (est.)" if ready else "⏳ Belum Siap", via=via)
+
+
+# Definisi "segera siap" (dipakai ringkasan laporan): channel belum siap dan
+# belum monetisasi, dan progres syarat yang PALING KURANG sudah ≥50%
+# (progres = nilai / ambang; untuk performa dipakai yang terbesar antara jam
+# tayang dan views Shorts). Ini mencakup "1 syarat terpenuhi & sisanya
+# ≥50%" maupun "keduanya sudah ≥50% tapi belum ada yang terpenuhi".
+def _is_almost_ready(ready):
+    """True bila channel masuk kategori 'segera siap' (lihat definisi di
+    atas). ready = dict hasil _channel_monetization_readiness."""
+    if ready.get("status") != "progress":
+        return False
+    subs_prog = (ready.get("subs") or 0) / ready["subs_required"] if ready.get("subs_required") else 0
+    perf_prog = 0.0
+    if ready.get("watch_est") is not None:
+        perf_prog = max(perf_prog, ready["watch_est"] / ready["watch_required"])
+    if ready.get("shorts_complete"):
+        perf_prog = max(perf_prog, (ready.get("shorts_views") or 0) / ready["shorts_required"])
+    return min(subs_prog, perf_prog) >= 0.5
+
+
+def _fmt_eta_days(missing, per_day):
+    """Perkiraan hari menuju target: '~N hari lagi'. None bila tidak bisa
+    dihitung (kecepatan nol/negatif atau target sudah tercapai). Angka
+    SELALU perkiraan — jangan pernah disajikan sebagai janji."""
+    if missing is None or missing <= 0:
+        return None
+    if per_day is None or per_day <= 0:
+        return None
+    days = math.ceil(missing / per_day)
+    if days <= 0:
+        return None
+    if days > 3650:
+        return f"~{_fmt_num(days)}+ hari lagi"
+    return f"~{days} hari lagi"
+
+
+def _monetization_analysis_line(ready, subs_per_day, hours_per_day, eta_hint, short=False):
+    """SATU baris analisis kekurangan + saran tindakan per channel (bahasa
+    sederhana, nada operator). subs_per_day / hours_per_day = kecepatan
+    dari 2 laporan terakhir (None bila belum bisa dihitung); eta_hint =
+    alasan kenapa kecepatan tidak bisa dihitung (atau None). short=True =
+    versi ringkas tanpa perkiraan waktu (dipakai bila channel banyak supaya
+    laporan tetap ≤4096 karakter).
+    TIDAK PERNAH menjanjikan hasil — semua waktu adalah 'Perkiraan ... (bila
+    kecepatan sekarang bertahan)'."""
+    if ready.get("status") == "monetized":
+        return "🔍 Sudah monetisasi — pertahankan konsistensi upload ya Bos."
+    if ready.get("status") == "ready":
+        return "🔍 Siap diajukan — cek YouTube Studio ya Bos (keputusan akhir ada di YouTube)."
+    subs = ready.get("subs") or 0
+    subs_req = ready.get("subs_required") or 1000
+    subs_ok = subs >= subs_req
+    watch = ready.get("watch_est")
+    watch_req = ready.get("watch_required") or 4000
+    hours_ok = watch is not None and watch >= watch_req
+    shorts_ok = bool(ready.get("shorts_complete")) and (ready.get("shorts_views") or 0) >= ready.get("shorts_required", 10_000_000)
+    subs_missing = max(0, subs_req - subs)
+    hours_missing = max(0, watch_req - watch) if watch is not None else None
+
+    def _eta_note(missing, per_day):
+        """' Perkiraan ~N hari lagi (bila kecepatan sekarang bertahan).' atau
+        penjelasan jujur kenapa tidak bisa dihitung."""
+        eta = _fmt_eta_days(missing, per_day)
+        if eta:
+            return f" Perkiraan {eta} (bila kecepatan sekarang bertahan)."
+        if per_day is not None and per_day <= 0:
+            return " Belum naik sejak laporan terakhir."
+        if eta_hint:
+            return f" {eta_hint}"
+        return " Belum bisa dihitung — butuh 2 laporan."
+
+    if short:
+        if hours_ok and not subs_ok:
+            return f"🔍 Subs kurang {_fmt_num(subs_missing)} — Shorts lebih sering, Bos."
+        if subs_ok and not (hours_ok or shorts_ok):
+            if watch is None:
+                return "🔍 Jam tayang belum bisa dihitung — buka Dashboard sekali ya Bos."
+            return (f"🔍 Jam kurang ~{_fmt_num(round(hours_missing))} jam (est.) — "
+                    f"perbanyak video long, Bos.")
+        if watch is None:
+            return (f"🔍 Subs kurang {_fmt_num(subs_missing)} • jam belum bisa dihitung — "
+                    f"fokus Shorts rutin dulu.")
+        subs_prog = subs / subs_req if subs_req else 0
+        perf_prog = max(watch / watch_req if watch_req else 0,
+                        (ready.get("shorts_views") or 0) / ready["shorts_required"] if ready.get("shorts_complete") else 0)
+        paling_kurang = "subs" if subs_prog <= perf_prog else "jam tayang"
+        return (f"🔍 Subs kurang {_fmt_num(subs_missing)} • jam kurang ~{_fmt_num(round(hours_missing))} jam (est.) — "
+                f"Shorts rutin + video long. Paling kurang: {paling_kurang}.")
+
+    if hours_ok and not subs_ok:
+        # Jam tayang cukup, subscriber kurang → Shorts harus lebih sering.
+        return (f"🔍 Jam tayang sudah cukup, subs kurang {_fmt_num(subs_missing)} lagi — "
+                f"Shorts harus lebih sering, Bos, Shorts paling cepat nambah subscriber."
+                + _eta_note(subs_missing, subs_per_day))
+    if subs_ok and not (hours_ok or shorts_ok):
+        if watch is None:
+            return ("🔍 Subs sudah cukup, jam tayang belum bisa dihitung — "
+                    "buka Dashboard sekali ya Bos biar snapshot keisi.")
+        return (f"🔍 Subs sudah cukup, jam tayang kurang ~{_fmt_num(round(hours_missing))} jam (est.) — "
+                f"perbanyak video long, Bos, biar jam tayangnya naik."
+                + _eta_note(hours_missing, hours_per_day))
+    # Keduanya kurang.
+    if watch is None:
+        return (f"🔍 Subs kurang {_fmt_num(subs_missing)} • jam tayang belum bisa dihitung — "
+                f"fokus Shorts rutin dulu buat nambah subs, sambil buka Dashboard sekali biar jam tayang kehitung."
+                + _eta_note(subs_missing, subs_per_day))
+    subs_prog = subs / subs_req if subs_req else 0
+    perf_prog = max(watch / watch_req if watch_req else 0,
+                    (ready.get("shorts_views") or 0) / ready["shorts_required"] if ready.get("shorts_complete") else 0)
+    paling_kurang = "subs" if subs_prog <= perf_prog else "jam tayang"
+    eta_txt = (_eta_note(subs_missing, subs_per_day) if paling_kurang == "subs"
+               else _eta_note(hours_missing, hours_per_day))
+    return (f"🔍 Subs kurang {_fmt_num(subs_missing)} • jam tayang kurang ~{_fmt_num(round(hours_missing))} jam (est.) — "
+            f"kombinasi: Shorts rutin buat nambah subs + video long buat jam tayang. "
+            f"Yang paling kurang: {paling_kurang}." + eta_txt)
+
+
+def _fetch_channel_stats_api(ch):
+    """channels().list part=snippet,statistics untuk SATU channel (1 unit
+    kuota). Dipakai hanya bila cache panel & cache operator sudah basi.
+    Import googleapiclient malas (lazy) supaya operator tetap jalan bila
+    library belum terpasang. Kembalikan (views, subs, videos) atau None."""
+    try:
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+        from googleapiclient.discovery import build
+    except Exception:
+        return None
+    creds_list = ch.get('creds_list') or [ch.get('creds_json')]
+    for cred_str in creds_list:
+        if not cred_str:
+            continue
+        try:
+            creds = Credentials.from_authorized_user_info(json.loads(cred_str))
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            youtube = build('youtube', 'v3', credentials=creds)
+            res = youtube.channels().list(part="snippet,statistics",
+                                          id=ch.get('yt_id')).execute()
+            if res.get('items'):
+                st = res['items'][0].get('statistics', {})
+                return (int(st.get('viewCount', 0)),
+                        int(st.get('subscriberCount', 0)),
+                        int(st.get('videoCount', 0)))
+        except Exception:
+            continue
+    return None
+
+
+def _get_report_channel_stats(channels):
+    """Statistik channel untuk laporan: {yt_id, name, views, subs, videos,
+    ok, source, monetized}. Sumber berlapis (yang pertama berhasil dipakai):
+    1) cache panel video_stats_cache.json channel_stats (TTL 1 jam);
+    2) cache operator sendiri di monitor_state.json (TTL 1 jam);
+    3) YouTube Data API channels().list (1 unit kuota/channel) — hasilnya
+    disimpan ke cache operator. Bila ketiganya gagal, ok=False dan angka
+    None (laporan menampilkan '—' untuk channel itu saja; channel lain
+    tetap jalan). Cache panel yang basi tapi ada tetap dipakai (ditandai)
+    daripada mengosongkan laporan."""
+    now = time.time()
+    cache = _load_video_stats_cache()
+    panel_stats = cache.get('channel_stats') or {}
+    state = load_monitor_state()
+    op_cache = state.get('channel_stats_cache') or {}
+    op_dirty = False
+    out = []
+    for ch in channels:
+        yt_id = ch.get('yt_id') or ''
+        name = _channel_display_name(ch)
+        views = subs = videos = None
+        source = None
+        ent = panel_stats.get(yt_id) or {}
+        if (ent.get('views') is not None and ent.get('fetched_at')
+                and (now - float(ent.get('fetched_at', 0)) < CHANNEL_STATS_CACHE_TTL)):
+            views, subs, videos = ent.get('views'), ent.get('subs'), ent.get('videos')
+            source = 'cache panel'
+        else:
+            op = op_cache.get(yt_id) or {}
+            if (op.get('views') is not None and op.get('fetched_at')
+                    and (now - float(op.get('fetched_at', 0)) < CHANNEL_STATS_CACHE_TTL)):
+                views, subs, videos = op.get('views'), op.get('subs'), op.get('videos')
+                source = 'cache operator'
+            else:
+                fetched = _fetch_channel_stats_api(ch)
+                if fetched is not None:
+                    views, subs, videos = fetched
+                    source = 'API YouTube'
+                    op_cache[yt_id] = {"views": views, "subs": subs, "videos": videos,
+                                       "fetched_at": now}
+                    op_dirty = True
+        if views is None and ent.get('views') is not None:
+            views, subs, videos = ent.get('views'), ent.get('subs'), ent.get('videos')
+            source = 'cache panel (basi)'
+        out.append({"yt_id": yt_id, "name": name, "views": views, "subs": subs,
+                    "videos": videos, "ok": views is not None, "source": source,
+                    "monetized": bool(ch.get('monetized'))})
+    if op_dirty:
+        state["channel_stats_cache"] = op_cache
+        save_monitor_state(state)
+    return out
+
+
+def _fmt_snapshot_time(at_str):
+    """'2026-11-18 07:05' → '18 Nov 07:05'. None bila tidak bisa diparse."""
+    try:
+        dt = datetime.strptime(str(at_str), "%Y-%m-%d %H:%M")
+        return dt.strftime("%d %b %H:%M")
+    except Exception:
+        return None
+
+
+def _build_channel_stats_section(channels):
+    """Bagian 'Views & Subscriber per Channel' untuk laporan pagi/sore/
+    on-demand. Kembalikan (lines, new_snapshot): new_snapshot =
+    {yt_id: {views, subs, videos, at}} untuk disimpan SETELAH laporan
+    terkirim (pemanggil yang menyimpan — jangan simpan di sini supaya
+    laporan yang gagal kirim tidak menggeser baseline delta)."""
+    today_str = _wib_today_str()
+    now_label = _wib_now().strftime("%Y-%m-%d %H:%M")
+    stats = _get_report_channel_stats(channels)
+    cache = _load_video_stats_cache()
+    history = load_tasks().get('history', [])
+    # Snapshot harian channel panel (90 hari) → views 90 hari & jam tayang.
+    ch_snaps = cache.get('channel_snapshots') or []
+    ch_totals = {}
+    for s in ch_snaps:
+        if s.get('yt_id'):
+            ch_totals.setdefault(s['yt_id'], {})[s.get('date')] = int(s.get('views', 0) or 0)
+    # Snapshot per-video panel → jalur Shorts 90 hari.
+    cached_videos = cache.get('videos', {}) or {}
+    vid_snaps = {}
+    for s in cache.get('snapshots', []) or []:
+        vid_snaps.setdefault(s.get('video_id'), {})[s.get('date')] = int(s.get('views', 0) or 0)
+    prev = load_monitor_state().get("channel_report_snapshot") or {}
+    new_snapshot = {}
+    any_missing_baseline = False
+    rule = _monetization_rule_for(today_str)
+    blocks = []   # baris-baris per channel (ditampilkan setelah ringkasan)
+    records = []  # status kesiapan per channel untuk hitungan ringkasan
+    for st in stats[:8]:
+        name = st["name"]
+        if not st["ok"]:
+            blocks.append([f"• *{_tg_escape(name)}* — data belum bisa diambil 😌 (coba lagi di laporan berikutnya)"])
+            continue
+        views, subs, videos = int(st["views"]), int(st["subs"] or 0), int(st["videos"] or 0)
+        new_snapshot[st["yt_id"]] = {"views": views, "subs": subs, "videos": videos, "at": now_label}
+        block = [f"• *{_tg_escape(name)}* — 👁️ {_fmt_num(views)} views • 👥 {_fmt_num(subs)} subs (📹 {_fmt_num(videos)} video)"]
+        base = prev.get(st["yt_id"]) or {}
+        subs_per_day = hours_per_day = None
+        eta_hint = None
+        if base.get('views') is None or base.get('subs') is None:
+            any_missing_baseline = True
+            eta_hint = "Belum bisa dihitung — butuh 2 laporan."
+        else:
+            try:
+                dv = views - int(base['views'])
+                ds = subs - int(base['subs'])
+                when = _fmt_snapshot_time(base.get('at', ''))
+                when_txt = f" ({when})" if when else ""
+                block.append(f"  📈 Sejak laporan terakhir{when_txt}: 👁️ {'+' if dv >= 0 else ''}{_fmt_num(dv)} • 👥 {'+' if ds >= 0 else ''}{_fmt_num(ds)}")
+                try:
+                    base_dt = datetime.strptime(str(base.get('at', '')), "%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo("Asia/Jakarta"))
+                except Exception:
+                    base_dt = None
+                if base_dt is None:
+                    eta_hint = "Belum bisa dihitung — butuh 2 laporan."
+                else:
+                    elapsed_h = (_wib_now() - base_dt).total_seconds() / 3600.0
+                    if elapsed_h < 6:
+                        eta_hint = "Belum bisa dihitung — jeda laporan terlalu pendek."
+                    else:
+                        days = elapsed_h / 24.0
+                        subs_per_day = ds / days
+                        views_per_day = dv / days  # jam/hari dihitung setelah avg_h diketahui
+            except Exception:
+                any_missing_baseline = True
+                eta_hint = "Belum bisa dihitung — butuh 2 laporan."
+        # --- kesiapan monetisasi (kembaran helper panel) ---
+        v90, _, _ = _snapshot_delta(ch_totals.get(st["yt_id"]) or {}, 90)
+        avg_h = _avg_long_duration_hours(history, st["yt_id"])
+        watch90 = round(v90 * avg_h, 1) if (v90 is not None and avg_h) else None
+        ref_date = max(ch_totals.get(st["yt_id"])) if ch_totals.get(st["yt_id"]) else today_str
+        shorts_v, shorts_ok = _shorts_views_90d(st["yt_id"], history, cached_videos, vid_snaps, ref_date)
+        ready = _channel_monetization_readiness(subs=subs, watch_90d_est_hours=watch90,
+                                                shorts_views_90d=shorts_v, shorts_complete=shorts_ok,
+                                                monetized=st["monetized"], today_str=today_str)
+        if subs_per_day is not None:
+            try:
+                hours_per_day = (views_per_day * avg_h) if avg_h else None
+            except Exception:
+                hours_per_day = None
+        if ready["status"] == "monetized":
+            block.append("  💰 Monetisasi Aktif")
+        elif ready["status"] == "ready":
+            via = "jam tayang" if ready.get("via") == "hours" else "views Shorts"
+            block.append(f"  💰 ✅ Siap Monet (est.) — lewat {via} 🎉")
+            block.append(f"     Subs {_fmt_num(subs)}/{_fmt_num(rule['subs'])} • ~{_fmt_num(round(watch90)) if watch90 is not None else '—'} jam/{_fmt_num(rule['watch_hours'])} jam (est.)")
+        else:
+            watch_txt = f"~{_fmt_num(round(watch90))} jam" if watch90 is not None else "jam tayang: — (belum bisa dihitung)"
+            block.append(f"  💰 ⏳ Belum Siap — subs {_fmt_num(subs)}/{_fmt_num(rule['subs'])} • {watch_txt}/{_fmt_num(rule['watch_hours'])} jam (est.)")
+        # --- analisis kekurangan + saran tindakan ---
+        # Bila channel banyak (>4), pakai versi ringkas tanpa perkiraan waktu
+        # supaya laporan tetap ≤4096 karakter (jangan potong di tengah angka).
+        compact = len(stats) > 4
+        block.append("  " + _monetization_analysis_line(ready, subs_per_day, hours_per_day, eta_hint, short=compact))
+        records.append({"status": ready["status"], "soon": _is_almost_ready(ready)})
+        blocks.append(block)
+    lines = ["📺 *Views & Subscriber per Channel:*"]
+    if records:
+        n_monet = sum(1 for r in records if r["status"] == "monetized")
+        n_ready = sum(1 for r in records if r["status"] == "ready")
+        n_soon = sum(1 for r in records if r.get("soon"))
+        n_far = sum(1 for r in records if r["status"] == "progress" and not r.get("soon"))
+        parts = [f"{n_monet} channel sudah monet", f"{n_soon} channel segera siap", f"{n_far} channel masih jauh"]
+        if n_ready:
+            parts.insert(1, f"{n_ready} channel siap diajukan")
+        lines.append("💰 *Monetisasi:* " + " • ".join(parts))
+        lines.append("_Segera siap = syarat yang paling kurang sudah ≥50%._")
+    for block in blocks:
+        lines.extend(block)
+    if len(stats) > 8:
+        lines.append(f"_...dan {len(stats) - 8} channel lainnya (cek di panel)._")
+    if any_missing_baseline:
+        lines.append("_Delta mulai terlihat dari laporan berikutnya._")
+    lines.append(f"_Syarat monet saat ini: {rule['label']}._")
+    if rule.get("rule_next"):
+        lines.append(f"_{rule['rule_next']}._")
+    lines.append("_Jam tayang adalah estimasi (views × durasi rata-rata); angka resmi hanya di YouTube Studio._")
+    return lines, new_snapshot
+
+
+def _update_report_snapshot(new_snapshot):
+    """Simpan baseline delta untuk laporan berikutnya (gabung dengan yang
+    lama: channel yang gagal diambil datanya di laporan ini tetap memakai
+    baseline lamanya)."""
+    if not new_snapshot:
+        return
+    state = load_monitor_state()
+    snap = state.get("channel_report_snapshot") or {}
+    snap.update(new_snapshot)
+    state["channel_report_snapshot"] = snap
+    save_monitor_state(state)
+
+
+def build_daily_report(kind="pagi"):
+    """Satu pembangun laporan untuk ketiga jalur: pagi (07:00), sore (17:00),
+    dan on-demand (/laporan). Kembalikan (teks, snapshot_baru): snapshot
+    berisi views/subs/video per channel yang dipakai laporan ini — pemanggil
+    menyimpannya ke monitor_state.json SETELAH pesan terkirim (supaya delta
+    laporan berikutnya dihitung dari laporan terakhir yang benar-benar
+    terkirim). kind 'pagi' = rekap hasil KEMARIN; 'sore' = hasil HARI INI;
+    'ondemand' = sama seperti pagi tapi tanpa sapaan."""
     tasks_data = load_tasks()
     active = tasks_data.get('active', [])
     history = tasks_data.get('history', [])
     channels = load_channels()
-    yday = _wib_yesterday_str()
+    now = _wib_now()
+    if kind == "sore":
+        yday = _wib_today_str()
+        recap_label = "hasil hari ini"
+        greeting = "Sore Bos! 🌇 Gimana harinya, lancar kan? 😊"
+        title = "🌆 *LAPORAN SORE BUAT BOS* 🌆"
+        ok_label, fail_label = "Upload sukses hari ini", "Gagal hari ini"
+    elif kind == "ondemand":
+        yday = _wib_yesterday_str()
+        recap_label = "hasil kemarin"
+        greeting = None
+        title = "📋 *LAPORAN BUAT BOS* 📋"
+        ok_label, fail_label = "Upload sukses kemarin", "Gagal kemarin"
+    else:
+        kind = "pagi"
+        yday = _wib_yesterday_str()
+        recap_label = "hasil kemarin"
+        greeting = "Pagi Bos! ☀️ Gimana kabarnya hari ini, sehat kan? 😊"
+        title = "🌅 *LAPORAN HARIAN BUAT BOS* ☀️"
+        ok_label, fail_label = "Upload sukses kemarin", "Gagal kemarin"
     ok, fail, ok_titles, fail_titles = _count_history_for_date(history, yday)
 
-    # Sapaan pagi 1x sehari (persona asisten pribadi) — di depan laporan,
-    # info penting tetap di bawahnya, tidak tertunda.
-    lines = [
-        "Pagi Bos! ☀️ Gimana kabarnya hari ini, sehat kan? 😊",
-        "",
-        "🌅 *LAPORAN HARIAN BUAT BOS* ☀️",
-        f"Rekap {_wib_now().strftime('%d %b %Y')} (hasil kemarin, {yday})",
+    # Sapaan pagi/sore 1x sehari (persona asisten pribadi) — di depan
+    # laporan, info penting tetap di bawahnya, tidak tertunda.
+    lines = []
+    if greeting:
+        lines += [greeting, ""]
+    lines += [
+        title,
+        f"Rekap {now.strftime('%d %b %Y')} ({recap_label}, {yday})",
         "━━━━━━━━━━━━━━━━━━━━━━",
-        f"✅ *Upload sukses kemarin:* `{ok}`",
-        f"❌ *Gagal kemarin:* `{fail}`",
+        f"✅ *{ok_label}:* `{ok}`",
+        f"❌ *{fail_label}:* `{fail}`",
     ]
     if fail_titles:
         lines.append("Gagal: " + "; ".join("• " + _tg_escape(t) for t in fail_titles[:5]))
     if ok_titles:
         lines.append("Sukses: " + "; ".join("• " + _tg_escape(t) for t in ok_titles[:5]))
+    # --- views & subs per channel + kesiapan monetisasi ---
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    if not channels:
+        lines.append("📺 *Channel:* Belum ada channel terhubung.")
+        new_snapshot = {}
+    else:
+        ch_lines, new_snapshot = _build_channel_stats_section(channels)
+        lines.extend(ch_lines)
     lines += [
         "━━━━━━━━━━━━━━━━━━━━━━",
         f"🏭 *Antrean tersisa:* `{len(active)} task`",
@@ -365,10 +916,12 @@ def build_daily_report():
         lines.append("\nYang gagal saya coba lagi ya Bos 💪")
     elif ok > 0:
         lines.append("\nSemua mulus Bos, saya lanjutkan 💪 Yang udah tayang jangan lupa ditonton ya, jangan lupa istirahat juga 😌")
+    elif kind == "sore":
+        lines.append("\nHari ini lagi sepi Bos, nggak ada yang tayang 😌")
     else:
         lines.append("\nKemarin lagi sepi Bos, nggak ada yang tayang 😌")
     lines.append("Bos, ketik /status kapan aja kalau mau cek kondisi terkini 😎")
-    return "\n".join(lines)
+    return "\n".join(lines), new_snapshot
 
 # ==========================================
 # 🔥 PERLUASAN PERINTAH — LAPORAN DETAIL (baca saja)
@@ -2186,7 +2739,7 @@ def handle_user_command(token, chat_id, text):
                 "👉 /jadwal — Jadwal publish 7 hari ke depan\n"
                 "👉 /riwayat — 8 upload terakhir\n"
                 "👉 /gagal — Task gagal + tombol Retry\n"
-                "👉 /laporan — Laporan harian, kapan saja\n\n"
+                "👉 /laporan — Laporan harian (otomatis tiap pagi 07:00 & sore 17:00 WIB), kapan saja\n\n"
                 "*📈 Hasil:*\n"
                 "👉 /statistik — Views/likes/komentar + video terbaik & terburuk\n"
                 "👉 /monetisasi — Estimasi penghasilan dari RPM manual\n\n"
@@ -2252,7 +2805,10 @@ def handle_user_command(token, chat_id, text):
 
         # 14. LAPORAN HARIAN (on-demand, pakai builder yang sudah ada)
         if "laporan" in clean_cmd or "report" in clean_cmd:
-            send_message(token, chat_id, build_daily_report())
+            _text, _snap = build_daily_report("ondemand")
+            _res = send_message(token, chat_id, _text)
+            if _res and _res.get('ok'):
+                _update_report_snapshot(_snap)
             return
 
         # 15. TASK GAGAL + tombol inline Retry
@@ -2446,7 +3002,8 @@ def daily_report_loop(token, chat_id):
     """🔥 FASE 1 MONITORING: laporan harian otomatis 07:00 WIB.
     Pola sama seperti watchdog (thread + sleep), tanpa cron sistem atau
     dependensi baru. Cek tiap 60 detik; kirim sekali sehari (dedupe tanggal
-    di monitor_state.json — tahan restart, tidak dobel kirim)."""
+    di monitor_state.json — tahan restart, tidak dobel kirim). Snapshot
+    delta disimpan hanya bila pesan benar-benar terkirim (res 'ok')."""
     print("🌅 [Ziqva Daily Report] Pengawas laporan harian aktif (07:00 WIB)...", flush=True)
     while True:
         try:
@@ -2458,12 +3015,48 @@ def daily_report_loop(token, chat_id):
             today = _wib_today_str()
             if state.get("daily_report_date") == today:
                 continue
-            send_message(token, chat_id, build_daily_report())
-            state["daily_report_date"] = today
-            save_monitor_state(state)
-            print(f"🌅 Laporan harian {today} terkirim.", flush=True)
+            text, snap = build_daily_report("pagi")
+            res = send_message(token, chat_id, text)
+            if res and res.get('ok'):
+                _update_report_snapshot(snap)
+                state = load_monitor_state()
+                state["daily_report_date"] = today
+                save_monitor_state(state)
+                print(f"🌅 Laporan harian {today} terkirim.", flush=True)
+            else:
+                print("🌅 Laporan harian gagal terkirim — coba lagi menit berikutnya.", flush=True)
         except Exception as e:
             print(f"Daily report exception: {e}", flush=True)
+            time.sleep(60)
+
+
+def evening_report_loop(token, chat_id):
+    """Laporan sore otomatis 17:00 WIB — pola sama persis seperti laporan
+    pagi (thread + sleep 60 detik, dedupe tanggal di monitor_state.json,
+    snapshot delta disimpan hanya bila pesan benar-benar terkirim)."""
+    print("🌆 [Ziqva Evening Report] Pengawas laporan sore aktif (17:00 WIB)...", flush=True)
+    while True:
+        try:
+            time.sleep(60)
+            now_wib = _wib_now()
+            if now_wib.hour != EVENING_REPORT_HOUR_WIB:
+                continue
+            state = load_monitor_state()
+            today = _wib_today_str()
+            if state.get("evening_report_date") == today:
+                continue
+            text, snap = build_daily_report("sore")
+            res = send_message(token, chat_id, text)
+            if res and res.get('ok'):
+                _update_report_snapshot(snap)
+                state = load_monitor_state()
+                state["evening_report_date"] = today
+                save_monitor_state(state)
+                print(f"🌆 Laporan sore {today} terkirim.", flush=True)
+            else:
+                print("🌆 Laporan sore gagal terkirim — coba lagi menit berikutnya.", flush=True)
+        except Exception as e:
+            print(f"Evening report exception: {e}", flush=True)
             time.sleep(60)
 
 def main():
@@ -2488,6 +3081,10 @@ def main():
     # 🔥 FASE 1 MONITORING: laporan harian otomatis 07:00 WIB
     d_thread = threading.Thread(target=daily_report_loop, args=(token, owner_chat_id), daemon=True)
     d_thread.start()
+
+    # Laporan sore otomatis 17:00 WIB (pola sama seperti laporan pagi)
+    e_thread = threading.Thread(target=evening_report_loop, args=(token, owner_chat_id), daemon=True)
+    e_thread.start()
 
     # Kirim salam & pasang keyboard menu interaktif
     welcome_msg = (

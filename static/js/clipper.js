@@ -1,4 +1,38 @@
+// 🔒 #12 (sisa): semua fetch pengubah state ke /api/* otomatis membawa
+// header X-CSRF-Token (pola yang sama seperti templates/index.html +
+// hub.html). GET yang hanya membaca tidak ditambah token.
+(function() {
+    const _fetch = window.fetch.bind(window);
+    window.fetch = function(url, opts) {
+        opts = opts || {};
+        const method = (opts.method || 'GET').toUpperCase();
+        if (method !== 'GET' && method !== 'HEAD' && typeof url === 'string' && url.indexOf('/api/') === 0) {
+            opts.headers = Object.assign({}, opts.headers, { 'X-CSRF-Token': window.CSRF_TOKEN || '' });
+        }
+        return _fetch(url, opts);
+    };
+    if (!window.CSRF_TOKEN) {
+        _fetch('/api/csrf_token').then(r => r.json()).then(d => { window.CSRF_TOKEN = d.csrf_token || ''; }).catch(() => {});
+    }
+})();
+
 document.addEventListener('DOMContentLoaded', () => {
+    // --- ANTI-XSS (temuan #7): semua data dinamis dari server / job yang
+    // disisipkan ke innerHTML harus lewat escapeHtml() (atau
+    // escapeJsString() untuk nilai di dalam string JS pada atribut
+    // onclick). Jangan sisipkan data mentah ke innerHTML.
+    const _HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+    function escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>"']/g, (ch) => _HTML_ESCAPES[ch]);
+    }
+    function escapeJsString(value) {
+        return String(value ?? '')
+            .replace(/\\/g, '\\\\')
+            .replace(/'/g, "\\'")
+            .replace(/\n/g, '\\n')
+            .replace(/\r/g, '\\r');
+    }
+
     // --- MANAJEMEN MULTI-PROVIDER API KEY ---
     const providerLinks = {
         'huggingface': { url: 'https://huggingface.co/settings/tokens', text: 'Ambil Token HF di sini' },
@@ -40,7 +74,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         list.innerHTML = tokens.map((t, i) => `
             <div class="flex justify-between items-center bg-[#0a0f1c] px-3 py-2 rounded border border-gray-800 mb-1">
-                <span class="text-xs text-gray-400 font-mono">...${t.slice(-8)}</span>
+                <span class="text-xs text-gray-400 font-mono">...${escapeHtml(t.slice(-8))}</span>
                 <button onclick="removeToken(${i})" class="text-red-500 hover:text-red-400 text-[10px] bg-red-500/10 px-2 py-1 rounded"><i class="fa-solid fa-trash"></i></button>
             </div>
         `).join('');
@@ -78,8 +112,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const assetSel = document.getElementById('assetChannelSelect');
             if (sel) {
                 channels.forEach(c => {
-                    sel.innerHTML += `<option value="${c.yt_id}">${c.name}</option>`;
-                    if (assetSel) assetSel.innerHTML += `<option value="${c.yt_id}">${c.name}</option>`;
+                    sel.innerHTML += `<option value="${escapeHtml(c.yt_id)}">${escapeHtml(c.name)}</option>`;
+                    if (assetSel) assetSel.innerHTML += `<option value="${escapeHtml(c.yt_id)}">${escapeHtml(c.name)}</option>`;
                 });
             }
         } catch(e) {}
@@ -100,7 +134,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 customFontSel.innerHTML = '<option value="">-- Gunakan Font Bawaan --</option>';
                 if (json.data.length > 0) {
                     json.data.forEach(f => {
-                        customFontSel.innerHTML += `<option value="${f.name}" data-filename="${f.filename}">${f.name}</option>`;
+                        customFontSel.innerHTML += `<option value="${escapeHtml(f.name)}" data-filename="${escapeHtml(f.filename)}">${escapeHtml(f.name)}</option>`;
                     });
                 }
                 customFontSel.dispatchEvent(new Event('change'));
@@ -188,7 +222,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (json.success && json.data.length > 0) {
                     let options = '<option value="none">-- Tanpa Musik Latar --</option>';
                     json.data.forEach(audio => {
-                        options += `<option value="${audio.value}">${audio.filename}</option>`;
+                        options += `<option value="${escapeHtml(audio.value)}">${escapeHtml(audio.filename)}</option>`;
                     });
                     bgmSelect.innerHTML = options;
                     bgmSelect.disabled = false;
@@ -313,7 +347,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         div.innerHTML = `
             <div class="flex justify-between items-center mb-6">
-                <h4 class="text-sm font-bold text-white">Clip: ${jobId.substring(0,8)}...</h4>
+                <h4 class="text-sm font-bold text-white">Clip: ${escapeHtml(jobId.substring(0,8))}...</h4>
                 <span class="bg-gray-800 text-gray-400 border border-gray-700 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider" id="badge-${jobId}">QUEUED</span>
             </div>
             
@@ -428,8 +462,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (resEl) {
                     resEl.innerHTML = `
                         <div class="mt-6 border-t border-cardborder pt-4 flex justify-between items-center">
-                            <div class="text-xs text-gray-400">File: <span class="text-white font-medium">${data.output_file || 'clip.mp4'}</span></div>
-                            <a href="/api/clip/download/${data.output_file}" target="_blank" class="bg-green-600 hover:bg-green-500 text-white px-4 py-1.5 rounded-lg text-xs font-bold transition-colors">
+                            <div class="text-xs text-gray-400">File: <span class="text-white font-medium">${escapeHtml(data.output_file || 'clip.mp4')}</span></div>
+                            <a href="/api/clip/download/${encodeURIComponent(data.output_file || 'clip.mp4')}" target="_blank" class="bg-green-600 hover:bg-green-500 text-white px-4 py-1.5 rounded-lg text-xs font-bold transition-colors">
                                 <i class="fa-solid fa-download"></i> Download
                             </a>
                         </div>`;
@@ -488,18 +522,18 @@ document.addEventListener('DOMContentLoaded', () => {
                         
                         <!-- WADAH VIDEO RESPONSIVE FIX -->
                         <div class="w-full bg-black relative" style="height: 350px;">
-                            <video src="${clip.url}" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain;" controls preload="metadata"></video>
+                            <video src="${escapeHtml(clip.url)}" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain;" controls preload="metadata"></video>
                         </div>
                         
                         <div class="p-4 flex-1 flex flex-col justify-between bg-gray-900/90 border-t border-gray-800">
-                            <div class="text-[11px] text-gray-300 font-mono truncate mb-2" title="${clip.filename}">${clip.filename}</div>
+                            <div class="text-[11px] text-gray-300 font-mono truncate mb-2" title="${escapeHtml(clip.filename)}">${escapeHtml(clip.filename)}</div>
                             <div class="flex justify-between items-center mt-auto">
-                                <span class="text-[10px] bg-gray-800 text-gray-400 px-2 py-1 rounded font-bold">${clip.size}</span>
+                                <span class="text-[10px] bg-gray-800 text-gray-400 px-2 py-1 rounded font-bold">${escapeHtml(clip.size)}</span>
                                 <div class="flex gap-2">
-                                    <a href="${clip.url}" download="${clip.filename}" class="text-green-500 hover:text-green-400 bg-green-500/10 hover:bg-green-500/20 px-3 py-1.5 rounded transition-colors flex items-center gap-1 text-[11px] font-bold">
+                                    <a href="${escapeHtml(clip.url)}" download="${escapeHtml(clip.filename)}" class="text-green-500 hover:text-green-400 bg-green-500/10 hover:bg-green-500/20 px-3 py-1.5 rounded transition-colors flex items-center gap-1 text-[11px] font-bold">
                                         <i class="fa-solid fa-download"></i> Unduh
                                     </a>
-                                    <button onclick="deleteSingleClip('${clip.filename}')" class="text-red-500 hover:text-red-400 bg-red-500/10 hover:bg-red-500/20 px-2 py-1.5 rounded transition-colors">
+                                    <button onclick="deleteSingleClip('${escapeJsString(clip.filename)}')" class="text-red-500 hover:text-red-400 bg-red-500/10 hover:bg-red-500/20 px-2 py-1.5 rounded transition-colors">
                                         <i class="fa-solid fa-trash"></i>
                                     </button>
                                 </div>
@@ -510,7 +544,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 galleryContainer.innerHTML = '<div class="col-span-full text-center py-12 text-gray-500 border-2 border-dashed border-gray-800 rounded-xl"><i class="fa-solid fa-folder-open text-3xl mb-2 opacity-50"></i><br>Galeri masih kosong.<br><span class="text-[10px]">Video yang sukses di-render akan muncul di sini.</span></div>';
             }
-        } catch (err) { galleryContainer.innerHTML = `<div class="col-span-full text-center py-10 text-red-500">Gagal memuat galeri: ${err.message}</div>`; }
+        } catch (err) { galleryContainer.innerHTML = `<div class="col-span-full text-center py-10 text-red-500">Gagal memuat galeri: ${escapeHtml(err.message)}</div>`; }
     }
 
     window.deleteSingleClip = async function(filename) {

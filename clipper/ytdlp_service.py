@@ -1,9 +1,12 @@
 import datetime
 import hashlib
+import ipaddress
 import os
 import re
 import shutil
+import socket
 from pathlib import Path
+from urllib.parse import urlparse
 
 import yt_dlp
 
@@ -11,6 +14,65 @@ import yt_dlp
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DOWNLOADS_DIR = PROJECT_DIR / "downloads"
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+# --- Batas keamanan download (temuan #8 SSRF, #17 tanpa batas) ---
+# Host YouTube yang sah saja — tidak ada host lain yang boleh di-fetch.
+ALLOWED_YOUTUBE_HOSTS = frozenset({
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtu.be",
+})
+# Batas ukuran file hasil download yt-dlp (2 GiB) dan durasi video (4 jam).
+MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024
+MAX_VIDEO_DURATION_SECONDS = 4 * 3600
+
+
+def _is_forbidden_ip(ip):
+    """True bila IP tidak boleh dijangkau server: hanya alamat IP publik
+    global yang diizinkan. Ini menolak IP privat, loopback, link-local
+    (termasuk metadata cloud 169.254.169.254), multicast, reserved,
+    CGNAT/benchmarking, dan unspecified — IPv4 maupun IPv6 (termasuk
+    alamat IPv6 yang memetakan IPv4)."""
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return not ip.is_global
+
+
+def validate_youtube_url(url):
+    """Validasi URL sebelum diteruskan ke yt-dlp (anti-SSRF).
+
+    Aturan: skema hanya http/https; host harus ada di allowlist YouTube;
+    host di-resolve via DNS dan SEMUA alamat hasil resolve harus IP publik
+    (tolak IP privat/link-local/loopback/metadata); DNS yang gagal
+    di-resolve ditolak. Mengangkat ValueError bila tidak valid.
+    """
+    if not url or not isinstance(url, str):
+        raise ValueError("URL tidak valid.")
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("Skema URL harus http atau https.")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if host not in ALLOWED_YOUTUBE_HOSTS:
+        raise ValueError("Hanya URL YouTube yang diizinkan.")
+    try:
+        addrinfos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise ValueError(f"Host tidak bisa di-resolve: {host}") from exc
+    if not addrinfos:
+        raise ValueError(f"Host tidak bisa di-resolve: {host}")
+    for _family, _type, _proto, _canon, sockaddr in addrinfos:
+        try:
+            ip = ipaddress.ip_address(sockaddr[0])
+        except ValueError as exc:
+            raise ValueError(f"Alamat hasil DNS tidak valid untuk {host}") from exc
+        if _is_forbidden_ip(ip):
+            raise ValueError(
+                f"Host {host} mengarah ke alamat IP internal/privat ({ip}) — ditolak."
+            )
+    return url.strip()
+
 
 
 def find_cookie_file():
@@ -72,6 +134,11 @@ def base_options():
 
 
 def get_metadata(url):
+    # Temuan #8: validasi URL SEBELUM yt-dlp menyentuh jaringan.
+    try:
+        url = validate_youtube_url(url)
+    except ValueError as exc:
+        return {"success": False, "error": {"message": str(exc)}}
     options = base_options()
     options.update({"quiet": True, "no_warnings": True, "skip_download": True})
 
@@ -136,6 +203,8 @@ def cache_key_for_url(url, fallback_id):
 
 
 def download_source(url, video_id, resolution="720p"):
+    # Temuan #8: validasi URL SEBELUM yt-dlp menyentuh jaringan.
+    url = validate_youtube_url(url)
     # 🔥 FASE 6 (audit C4): kunci cache = ID video asli (atau hash URL),
     # bukan video_id yang dikirim pemanggil (dulu: timestamp job → tiap
     # batch download ulang). Parameter video_id dipertahankan sebagai
@@ -149,6 +218,20 @@ def download_source(url, video_id, resolution="720p"):
     if output_path.exists():
         output_path.unlink()
 
+    # Temuan #17: tolak video berdurasi > 4 jam SEBELUM download.
+    # Bila metadata tidak memberi durasi (gagal dibaca / 0), lanjutkan —
+    # max_filesize di bawah tetap membatasi ukuran file.
+    try:
+        meta = get_metadata(url)
+        duration = int((meta.get("data") or {}).get("duration") or 0)
+    except Exception:
+        duration = 0
+    if duration > MAX_VIDEO_DURATION_SECONDS:
+        raise RuntimeError(
+            f"Video terlalu panjang ({duration // 3600} jam "
+            f"{(duration % 3600) // 60} mnt) — batas download 4 jam."
+        )
+
     options = base_options()
     options.update({
         "format": (
@@ -158,6 +241,9 @@ def download_source(url, video_id, resolution="720p"):
         "outtmpl": str(output_path),
         "merge_output_format": "mp4",
         "ffmpeg_location": "/usr/bin/ffmpeg",
+        # Temuan #17: batas ukuran file hasil download (2 GiB) — yt-dlp
+        # membatalkan download bila file melebihi batas ini.
+        "max_filesize": MAX_DOWNLOAD_BYTES,
     })
 
     try:
@@ -180,4 +266,4 @@ def download_source(url, video_id, resolution="720p"):
         raise RuntimeError(f"Gagal mengunduh video: {text}") from exc
 
 
-__all__ = ["get_metadata", "download_source", "extract_youtube_id", "cache_key_for_url"]
+__all__ = ["get_metadata", "download_source", "extract_youtube_id", "cache_key_for_url", "validate_youtube_url", "ALLOWED_YOUTUBE_HOSTS", "MAX_DOWNLOAD_BYTES", "MAX_VIDEO_DURATION_SECONDS"]

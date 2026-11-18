@@ -928,6 +928,8 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
 </style>
 </head>
 <body>
+<!-- 🔒 #12: token CSRF per-sesi (diisi server saat render; kosong bila halaman dirender tanpa login — JS lalu mengambilnya dari /api/csrf_token). -->
+<script>window.CSRF_TOKEN = "{{ csrf_token }}";</script>
 
 <div class="sidebar-backdrop" id="sidebar-backdrop" onclick="toggleSidebarDrawer()"></div>
 
@@ -963,7 +965,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         <div class="ch-mini-name" id="sb-name">Belum ada channel</div>
         <div class="ch-status"><span class="dot"></span><span class="ch-status-txt" id="sb-count">0 channel</span></div>
       </div>
-      <a href="/logout" style="color:var(--accent2); text-decoration:none; font-size:16px; margin-left:5px; cursor:pointer;" title="Kunci Sistem">⏻</a>
+      <a href="#" onclick="doLogout(event)" style="color:var(--accent2); text-decoration:none; font-size:16px; margin-left:5px; cursor:pointer;" title="Kunci Sistem">⏻</a>
     </div>
   </div>
 </aside>
@@ -1847,6 +1849,32 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
 
       <div class="card" style="margin-bottom:16px">
         <div class="card-head">
+          <span class="card-title">🔒 GANTI PIN PANEL</span>
+        </div>
+        <div class="card-body">
+          <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:14px">PIN minimal 8 karakter, campur huruf dan angka. Mengganti PIN mematikan semua sesi login lain.</div>
+          <div class="g2">
+            <div class="fg">
+                <label class="fl">PIN Lama</label>
+                <input type="password" id="pin-old" placeholder="PIN saat ini" autocomplete="current-password">
+            </div>
+            <div class="fg">
+                <label class="fl">PIN Baru</label>
+                <input type="password" id="pin-new" placeholder="Minimal 8 karakter (huruf+angka)" autocomplete="new-password">
+            </div>
+            <div class="fg">
+                <label class="fl">Ulangi PIN Baru</label>
+                <input type="password" id="pin-new2" placeholder="Ketik ulang PIN baru" autocomplete="new-password">
+            </div>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-p" onclick="changePin()">Ganti PIN</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-head">
           <span class="card-title">🔑 GOOGLE OAUTH 2.0 API</span>
           <span id="api-badge" class="pill p-muted">Mengecek...</span>
         </div>
@@ -1917,6 +1945,23 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
 </main>
 
 <script>
+// 🔒 #12: semua fetch POST ke /api/* otomatis membawa header X-CSRF-Token.
+// (Satu tempat — jadi tidak ada POST panel yang terlewat, termasuk FormData.)
+(function() {
+  const _fetch = window.fetch.bind(window);
+  window.fetch = function(url, opts) {
+    opts = opts || {};
+    const method = (opts.method || 'GET').toUpperCase();
+    if (method !== 'GET' && method !== 'HEAD' && typeof url === 'string' && url.indexOf('/api/') === 0) {
+      opts.headers = Object.assign({}, opts.headers, { 'X-CSRF-Token': window.CSRF_TOKEN || '' });
+    }
+    return _fetch(url, opts);
+  };
+  // Cadangan: bila token tidak tertanam saat render, ambil dari server.
+  if (!window.CSRF_TOKEN) {
+    _fetch('/api/csrf_token').then(r => r.json()).then(d => { window.CSRF_TOKEN = d.csrf_token || ''; }).catch(() => {});
+  }
+})();
 // ────────────────────────────────────────────────────────
 //  STATE
 // ────────────────────────────────────────────────────────
@@ -1934,24 +1979,25 @@ let currentGalleryType = 'audio';
 let currentGalleryCh = '';
 let currentTitleCh = '';
 
-function updateTgStatus(token, chat_id) {
+function updateTgStatus(tokenMasked, chat_id) {
     const el = document.getElementById('tg-status');
     if (!el) return;
-    if (token || chat_id) {
-        const masked = token ? '••••' + token.slice(-4) : '—';
-        el.textContent = 'Tersimpan — Token: ' + masked + ' · Chat ID: ' + (chat_id || '—');
+    if (tokenMasked || chat_id) {
+        el.textContent = 'Tersimpan — Token: ' + (tokenMasked || '—') + ' · Chat ID: ' + (chat_id || '—');
     } else {
         el.textContent = 'Belum ada konfigurasi tersimpan.';
     }
 }
 
 function loadTgConfig() {
+    // 🔒 #11: API hanya mengembalikan token ter-masking — token utuh TIDAK
+    // PERNAH masuk ke halaman. Kolom token dibiarkan kosong (= tidak berubah).
     fetch('/api/get_telegram').then(r => r.json()).then(d => {
         const tokenEl = document.getElementById('tg-token');
         const chatEl = document.getElementById('tg-chatid');
-        if (d.token) tokenEl.value = d.token; else tokenEl.value = '';
+        if (tokenEl) { tokenEl.value = ''; tokenEl.placeholder = d.configured ? 'Tersimpan (' + (d.token_masked || '••••') + ') — kosong = tidak berubah' : 'Contoh: 123456789:ABCDEF-GHIJKL...'; }
         if (d.chat_id) chatEl.value = d.chat_id; else chatEl.value = '';
-        updateTgStatus(d.token || '', d.chat_id || '');
+        updateTgStatus(d.token_masked || '', d.chat_id || '');
     }).catch(()=>{});
 }
 
@@ -1975,15 +2021,42 @@ function deleteTgConfig() {
 function saveTgConfig() {
     const token = document.getElementById('tg-token').value.trim();
     const chat_id = document.getElementById('tg-chatid').value.trim();
-    
+
     fetch('/api/save_telegram', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({token: token, chat_id: chat_id})
     }).then(r => r.json()).then(d => {
-        toast(d.message, 'success');
+        toast(d.message, d.status === 'success' ? 'success' : 'error');
         loadTgConfig();
     }).catch(() => toast('Gagal menyimpan konfigurasi Telegram', 'error'));
+}
+
+// 🔒 #1: ganti PIN panel (butuh PIN lama; sesi lain ikut dimatikan server).
+function changePin() {
+    const oldPin = (document.getElementById('pin-old') || {}).value || '';
+    const newPin = (document.getElementById('pin-new') || {}).value || '';
+    const newPin2 = (document.getElementById('pin-new2') || {}).value || '';
+    if (!oldPin || !newPin || !newPin2) { toast('Isi ketiga kolom PIN dulu.', 'warn'); return; }
+    fetch('/api/change_pin', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({old_pin: oldPin, new_pin: newPin, confirm_pin: newPin2})
+    }).then(r => r.json()).then(d => {
+        toast(d.message, d.status === 'success' ? 'success' : 'error');
+        if (d.status === 'success') {
+            document.getElementById('pin-old').value = '';
+            document.getElementById('pin-new').value = '';
+            document.getElementById('pin-new2').value = '';
+        }
+    }).catch(() => toast('Gagal mengganti PIN', 'error'));
+}
+
+// 🔒 #12: logout via POST (bukan GET) supaya tidak bisa dipicu navigasi.
+function doLogout(ev) {
+    if (ev) ev.preventDefault();
+    fetch('/logout', { method: 'POST' }).then(() => { window.location.href = '/login'; })
+        .catch(() => { window.location.href = '/login'; });
 }
 
 function generateOneTitle(bank, yt_id) {
@@ -2055,7 +2128,7 @@ function refreshDescPresetList() {
         const channelPresets = descBankPerChannel[yt_id] || {};
         const keys = Object.keys(channelPresets);
         
-        sel.innerHTML = '<option value="">-- Load Deskripsi --</option>' + keys.map(k => `<option value="${k}">${k}</option>`).join('');
+        sel.innerHTML = '<option value="">-- Load Deskripsi --</option>' + keys.map(k => `<option value="${escapeHtml(k)}">${escapeHtml(k)}</option>`).join('');
         
         if (note) {
             note.textContent = keys.length ? `${keys.length} preset deskripsi siap diacak untuk channel ini.` : 'Belum ada preset di channel ini. Simpan dulu di mode Manual.';
@@ -2202,8 +2275,8 @@ function fetchNotifs() {
           badge.textContent = data.length;
           list.innerHTML = data.map(n => `
               <div style="margin-bottom:10px; padding-bottom:10px; border-bottom:1px dashed var(--border);">
-                  <div style="color:var(--accent2); margin-bottom:4px; line-height:1.4; font-size:11px;">${n.msg}</div>
-                  <div style="font-family:var(--font-m); font-size:9px; color:var(--muted);">${n.time}</div>
+                  <div style="color:var(--accent2); margin-bottom:4px; line-height:1.4; font-size:11px;">${escapeHtml(n.msg)}</div>
+                  <div style="font-family:var(--font-m); font-size:9px; color:var(--muted);">${escapeHtml(n.time)}</div>
               </div>`).join('');
       } else {
           badge.style.display = 'none';
@@ -2257,14 +2330,14 @@ function loadChannels() {
       if (!sel) return;
       const val = sel.value;
       sel.innerHTML = '<option value="">-- Pilih Channel --</option>';
-      data.forEach(c => sel.innerHTML += `<option value="${c.yt_id}">${c.name}</option>`);
+      data.forEach(c => sel.innerHTML += `<option value="${escapeHtml(c.yt_id)}">${escapeHtml(c.name)}</option>`);
       if (val) sel.value = val;
     });
     if (data.length) {
       document.getElementById('sb-name').textContent = data[0].name;
       document.getElementById('sb-count').textContent = data.length + ' channel';
       const av = document.getElementById('sb-av');
-      av.innerHTML = data[0].thumbnail ? `<img src="${data[0].thumbnail}">` : data[0].name[0];
+      av.innerHTML = data[0].thumbnail ? `<img src="${escapeHtml(data[0].thumbnail)}">` : escapeHtml(data[0].name[0]);
     }
     data.forEach(c => { if (c.title_bank) titleBankData[c.yt_id] = c.title_bank; if (c.title_weights) titleWeightsData[c.yt_id] = c.title_weights; });
     renderChannelsGrid();
@@ -2280,10 +2353,10 @@ function renderChannelsGrid() {
   }
   if(g) g.innerHTML = channels.map(c => `
     <div class="ch-connected">
-      <div class="ch-con-av">${c.thumbnail ? `<img src="${c.thumbnail}">` : c.name[0]}</div>
+      <div class="ch-con-av">${c.thumbnail ? `<img src="${escapeHtml(c.thumbnail)}">` : escapeHtml(c.name[0])}</div>
       <div style="flex:1;min-width:0">
-        <div style="font-size:13px;font-weight:700;margin-bottom:3px">${c.name}</div>
-        <span class="pill p-green">${c.status}</span>
+        <div style="font-size:13px;font-weight:700;margin-bottom:3px">${escapeHtml(c.name)}</div>
+        <span class="pill p-green">${escapeHtml(c.status)}</span>
         ${c.paused ? `<span class="pill p-yellow">⏸️ Dijeda</span>` : ''}
         ${c.autopilot === 'auto' ? `<span class="pill p-cyan">🤖 Full-Auto</span>` : `<span class="pill p-muted">👀 Approval</span>`}
         <span class="pill p-muted" title="RPM: USD per 1000 views — dipakai hanya untuk estimasi penghasilan di kartu Monetisasi">💵 RPM $${c.rpm_usd != null ? c.rpm_usd : '—'}</span>
@@ -2324,6 +2397,7 @@ function deleteChannel(yt_id) {
   if (!confirm('⚠️ PERINGATAN NUKLIR!\n\nYakin ingin menghapus channel ini secara permanen?\nSeluruh folder aset (Video, Audio, Background), Title Bank, dan sisa antrean akan dimusnahkan tanpa jejak!')) return;
   const fd = new FormData();
   fd.append('yt_id', yt_id);
+  fd.append('confirm', 'yes'); // 🔒 #5: konfirmasi ulang di server
   fetch('/api/delete_channel', { method: 'POST', body: fd })
     .then(r => r.json())
     .then(d => { 
@@ -2368,7 +2442,7 @@ function loadCalendar() {
     if (sel) {
       const val = sel.value;
       sel.innerHTML = '<option value="">Semua Channel</option>';
-      calData.channels.forEach(c => { sel.innerHTML += `<option value="${c.yt_id}">${c.name}</option>`; });
+      calData.channels.forEach(c => { sel.innerHTML += `<option value="${escapeHtml(c.yt_id)}">${escapeHtml(c.name)}</option>`; });
       if (val) sel.value = val;
     }
     renderCalendar();
@@ -2393,9 +2467,9 @@ function renderCalendar() {
       const upcoming = active.filter(t => ((t.blueprint && t.blueprint.yt_id) || t.yt_id || '') === c.yt_id).length;
       return `<div class="card" style="padding:14px">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
-          <div class="ch-con-av">${c.thumbnail ? `<img src="${c.thumbnail}">` : c.name[0]}</div>
+          <div class="ch-con-av">${c.thumbnail ? `<img src="${escapeHtml(c.thumbnail)}">` : escapeHtml(c.name[0])}</div>
           <div style="flex:1;min-width:0">
-            <div style="font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.name}</div>
+            <div style="font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(c.name)}</div>
             <div style="font-family:var(--font-m);font-size:10px;color:var(--muted)">${upcoming} video terjadwal</div>
           </div>
           <span class="pill ${paused ? 'p-yellow' : 'p-green'}">${paused ? '⏸️ Dijeda' : '▶️ Aktif'}</span>
@@ -2459,7 +2533,7 @@ function calDayRow(dt, t, chName, isPaused) {
   const yt = (t.blueprint && t.blueprint.yt_id) || t.yt_id || '';
   const s = calTaskStatus(t, isPaused(yt));
   const hhmm = String(dt.getHours()).padStart(2, '0') + ':' + String(dt.getMinutes()).padStart(2, '0');
-  return `<div class="task-row"><div class="task-icon">🗓</div><div class="task-info"><div class="task-name">${t.title || 'Task'}</div><div class="task-meta">${hhmm} · ${chName(yt)}</div></div><span class="pill ${s.cls}" style="flex-shrink:0">${s.txt}</span></div>`;
+  return `<div class="task-row"><div class="task-icon">🗓</div><div class="task-info"><div class="task-name">${escapeHtml(t.title || 'Task')}</div><div class="task-meta">${hhmm} · ${escapeHtml(chName(yt))}</div></div><span class="pill ${s.cls}" style="flex-shrink:0">${s.txt}</span></div>`;
 }
 
 function toggleChannelPause(yt_id, paused) {
@@ -2574,24 +2648,23 @@ function renderGallery() {
     const isVid = !isAudio && ['mp4','webm','mov'].includes(ext);
     let thumbHtml = '';
     if (isImg && url) {
-      thumbHtml = `<img class="gitem-img" src="${url}" alt="${f.name}" loading="lazy">
-                   <div class="gitem-overlay img-zoom" onclick="openGalleryPreview('${url}')">🔍</div>`;
+      thumbHtml = `<img class="gitem-img" src="${escapeHtml(url)}" alt="${escapeHtml(f.name)}" loading="lazy">
+                   <div class="gitem-overlay img-zoom" onclick="openGalleryPreview(this.dataset.url)" data-url="${escapeHtml(url)}">🔍</div>`;
     } else if (isVid && url) {
-      thumbHtml = `<video class="gitem-vid" src="${url}" muted preload="metadata"></video>
-                   <div class="gitem-overlay vid-play" onclick="playGalleryVideo(this, '${url}')">▶</div>`;
+      thumbHtml = `<video class="gitem-vid" src="${escapeHtml(url)}" muted preload="metadata"></video>
+                   <div class="gitem-overlay vid-play" onclick="playGalleryVideo(this)" data-url="${escapeHtml(url)}">▶</div>`;
     } else {
       thumbHtml = `<span>${isAudio ? '🎵' : '🖼️'}</span>
                    <div class="gitem-overlay">▶</div>`;
     }
-    const nameSafe = f.name.replace(/'/g, "\\'");
     return `
     <div class="gitem">
       <div class="gitem-thumb ${!isAudio ? 'vid' : ''}">
         ${thumbHtml}
       </div>
-      <button class="gitem-del" onclick="deleteGalleryFile('${nameSafe}')">✕</button>
+      <button class="gitem-del" onclick="deleteGalleryFile(this.dataset.name)" data-name="${escapeHtml(f.name)}">✕</button>
       <div class="gitem-info">
-        <div class="gitem-name">${f.name}</div>
+        <div class="gitem-name">${escapeHtml(f.name)}</div>
         <div class="gitem-meta">${f.size || '—'}</div>
       </div>
     </div>`;
@@ -2605,10 +2678,11 @@ function openGalleryPreview(url) {
   modal.id = 'gallery-preview-modal';
   modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:zoom-out;padding:20px;';
   modal.onclick = () => modal.remove();
-  modal.innerHTML = `<img src="${url}" style="max-width:92vw;max-height:92vh;border-radius:12px;object-fit:contain;box-shadow:0 20px 60px rgba(0,0,0,.6);">`;
+  modal.innerHTML = `<img src="${escapeHtml(url)}" style="max-width:92vw;max-height:92vh;border-radius:12px;object-fit:contain;box-shadow:0 20px 60px rgba(0,0,0,.6);">`;
   document.body.appendChild(modal);
 }
-function playGalleryVideo(btn, url) {
+function playGalleryVideo(btn) {
+  const url = btn.dataset.url || '';
   const wrap = btn.parentElement;
   const vid = wrap.querySelector('video');
   if (!vid) return;
@@ -2774,7 +2848,7 @@ function renderTitleList(bank) {
   list.innerHTML = bank.map((t, i) => `
     <div class="title-item">
       <span class="title-item-num">${i + 1}</span>
-      <span class="title-item-text">${t}</span>
+      <span class="title-item-text">${escapeHtml(t)}</span>
       <span class="title-item-del" onclick="deleteTitle(${i})">✕</span>
     </div>`).join('');
 }
@@ -2896,7 +2970,7 @@ function generateTitles() {
   rc.innerHTML = generatedTitles.map((t, i) => `
     <div style="display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px solid var(--border);">
       <span style="font-family:var(--font-m);font-size:9px;color:var(--muted);width:24px;flex-shrink:0">${i + 1}</span>
-      <span style="flex:1; font-size:11px;">${t}</span>
+      <span style="flex:1; font-size:11px;">${escapeHtml(t)}</span>
       <span style="font-size:10px; color:var(--accent); cursor:pointer;" onclick="addOneGenTitle(${i})">+ Pakai</span>
     </div>`).join('');
   document.getElementById('gen-result-count').textContent = generatedTitles.length + ' judul baru';
@@ -3085,7 +3159,7 @@ function fetchPlaylistsForBatch(yt_id) {
     .then(r => r.json())
     .then(data => {
       sel.innerHTML = '<option value="">-- Tidak masuk playlist --</option>';
-      if (Array.isArray(data)) data.forEach(pl => sel.innerHTML += `<option value="${pl.id}">${pl.title}</option>`);
+      if (Array.isArray(data)) data.forEach(pl => sel.innerHTML += `<option value="${escapeHtml(pl.id)}">${escapeHtml(pl.title)}</option>`);
     })
     .catch(() => { sel.innerHTML = '<option value="">-- Tidak masuk playlist --</option>'; });
 }
@@ -3177,7 +3251,7 @@ function updateBatchPreview() {
       <div class="sched-item">
         <div class="sched-num">${item.num}</div>
         <div class="sched-info">
-          <div class="sched-title">${item.title}</div>
+          <div class="sched-title">${escapeHtml(item.title)}</div>
           <div class="sched-meta">Bahan Acak · Target: ${target_text}</div>
         </div>
         <div class="sched-date">${fmt(item.date)}</div>
@@ -3230,7 +3304,7 @@ function buildFinalSchedule() {
     <div class="sched-item">
       <div class="sched-num">${item.num}</div>
       <div class="sched-info">
-        <div class="sched-title">${item.title}</div>
+        <div class="sched-title">${escapeHtml(item.title)}</div>
         <div class="sched-meta">Bahan Acak Auto-Loop ➔ Target ${target_text} · Vis: ${visInfo}</div>
       </div>
       <div class="sched-date">${fmt(item.date)}</div>
@@ -3381,7 +3455,7 @@ function refreshBatchDropdowns() {
   const sel = document.getElementById('bc-channel');
   const val = sel.value;
   sel.innerHTML = '<option value="">-- Pilih Channel --</option>';
-  channels.forEach(c => sel.innerHTML += `<option value="${c.yt_id}">${c.name}</option>`);
+  channels.forEach(c => sel.innerHTML += `<option value="${escapeHtml(c.yt_id)}">${escapeHtml(c.name)}</option>`);
   if (val) { sel.value = val; onBcChannelChange(); }
 }
 
@@ -3619,14 +3693,14 @@ function deleteVisPreset() {
 
 function refreshVisPresetList() {
   const sel = document.getElementById('vis-preset-load'); const keys = Object.keys(visPresets);
-  if(sel) sel.innerHTML = '<option value="">-- Load Preset --</option>' + keys.map(k => `<option value="${k}">${k}</option>`).join('');
+  if(sel) sel.innerHTML = '<option value="">-- Load Preset --</option>' + keys.map(k => `<option value="${escapeHtml(k)}">${escapeHtml(k)}</option>`).join('');
   const randList = document.getElementById('random-preset-list'); const note = document.getElementById('random-preset-note');
   if (!keys.length) { if(randList) randList.innerHTML = ''; if(note) note.textContent = 'Belum ada preset tersimpan. Simpan dulu di mode Manual.'; return; }
   if(note) note.textContent = keys.length + ' preset tersedia. Ceklist yang ingin dimasukkan ke dalam acakan sistem.';
   if(randList) randList.innerHTML = keys.map(k => `
     <label style="display:flex;align-items:center;gap:6px;background:var(--card);border:1px solid var(--border);padding:6px 12px;border-radius:20px;cursor:pointer;color:var(--text);">
-      <input type="checkbox" value="${k}" checked style="width:14px;height:14px;accent-color:var(--accent);">
-      <span style="font-size:11px;font-weight:700;">${k}</span>
+      <input type="checkbox" value="${escapeHtml(k)}" checked style="width:14px;height:14px;accent-color:var(--accent);">
+      <span style="font-size:11px;font-weight:700;">${escapeHtml(k)}</span>
     </label>`).join('');
 }
 
@@ -3646,7 +3720,7 @@ function refreshOverlayFileList() {
   const items = (galleryData && galleryData.overlay) || [];
   const cur = sel.value;
   sel.innerHTML = items.length
-    ? items.map(f => `<option value="${f.name}">${f.name} (${f.size})</option>`).join('')
+    ? items.map(f => `<option value="${escapeHtml(f.name)}">${escapeHtml(f.name)} (${escapeHtml(f.size || '')})</option>`).join('')
     : '<option value="">-- Belum ada file overlay --</option>';
   if (cur) sel.value = cur;
 }
@@ -4146,8 +4220,8 @@ window.toggleQueueGroup = function(key) { qCollapsed[key] = !qCollapsed[key]; re
 window.toggleHistGroup = function(key) { hCollapsed[key] = !hCollapsed[key]; renderTasks(); };
 window.setHistPage = function(key, page) { hPage[key] = page; renderTasks(); };
 
-const groupDivQ = (name, count, ico, key) => `<div class="ch-group-head ${qCollapsed[key] ? 'collapsed' : ''}" onclick="toggleQueueGroup('${key}')"><span class="chevron">▼</span><span class="ch-group-ico">${ico}</span><span class="ch-group-name">${name}</span><span class="pill p-cyan" style="margin-left:auto;font-size:9px;padding:2px 8px">${count}</span></div>`;
-const groupDivH = (name, count, ico, key) => `<div class="ch-group-head ${hCollapsed[key] ? 'collapsed' : ''}" onclick="toggleHistGroup('${key}')"><span class="chevron">▼</span><span class="ch-group-ico">${ico}</span><span class="ch-group-name">${name}</span><span class="pill p-cyan" style="margin-left:auto;font-size:9px;padding:2px 8px">${count} Total</span></div>`;
+const groupDivQ = (name, count, ico, key) => `<div class="ch-group-head ${qCollapsed[key] ? 'collapsed' : ''}" onclick="toggleQueueGroup('${key}')"><span class="chevron">▼</span><span class="ch-group-ico">${ico}</span><span class="ch-group-name">${escapeHtml(name)}</span><span class="pill p-cyan" style="margin-left:auto;font-size:9px;padding:2px 8px">${count}</span></div>`;
+const groupDivH = (name, count, ico, key) => `<div class="ch-group-head ${hCollapsed[key] ? 'collapsed' : ''}" onclick="toggleHistGroup('${key}')"><span class="chevron">▼</span><span class="ch-group-ico">${ico}</span><span class="ch-group-name">${escapeHtml(name)}</span><span class="pill p-cyan" style="margin-left:auto;font-size:9px;padding:2px 8px">${count} Total</span></div>`;
 
 function fetchServerTasks() {
   fetch('/api/get_schedule').then(r => {
@@ -4197,7 +4271,7 @@ function renderTasks() {
       if (!qCollapsed[key]) {
         let rows = items.map(t => {
           if (isUnknown) {
-            return `<div class="task-row"><div class="task-icon">📤</div><div class="task-info"><div class="task-name">${t.judul || 'Task'}</div><div class="task-meta">${t.jadwal || ''}</div></div><span class="pill p-yellow" style="flex-shrink:0">${t.status || 'Menunggu'}</span><button class="cancel-btn" onclick="cancelBrowserTask(${JSON.stringify(t.id)})">Batalkan</button></div>`;
+            return `<div class="task-row"><div class="task-icon">📤</div><div class="task-info"><div class="task-name">${escapeHtml(t.judul || 'Task')}</div><div class="task-meta">${escapeHtml(t.jadwal || '')}</div></div><span class="pill p-yellow" style="flex-shrink:0">${escapeHtml(t.status || 'Menunggu')}</span><button class="cancel-btn" onclick="cancelBrowserTask(${JSON.stringify(t.id)})">Batalkan</button></div>`;
           } else {
             const _st = String(t.status || '');
             const _pend = t.approval === 'pending';
@@ -4205,7 +4279,7 @@ function renderTasks() {
             // 🔥 FASE 2: task pending menampilkan tombol approval langsung di panel
             // (cadangan kalau operator Telegram mati).
             const _apprBtns = _pend ? `<button class="stop-btn" style="background:var(--green);color:#fff" title="Setujui & masuk antrean" onclick="approveTask(${Number(t.id)})">✅</button><button class="stop-btn" style="background:var(--accent2);color:#fff" title="Tolak (tidak dieksekusi)" onclick="rejectTask(${Number(t.id)})">❌</button>` : '';
-            return `<div class="task-row${_qw ? ' q-waiting' : ''}"><div class="task-icon">${_qw ? '⏳' : '⚙️'}</div><div class="task-info"><div class="task-name">${t.title || 'Task'}</div><div class="task-meta">${t.time || ''}${t.thumb_status ? `<span style="color:var(--text2);font-size:10px"> · 🖼️ ${t.thumb_status}</span>` : ''}</div></div><span class="pill ${_qw ? 'p-yellow' : 'p-cyan'}" style="flex-shrink:0;max-width:200px;white-space:normal;line-height:1.3">${t.status || '—'}</span>${_apprBtns}<button class="stop-btn" onclick="stopTask(${Number(t.id)})">Stop</button></div>`;
+            return `<div class="task-row${_qw ? ' q-waiting' : ''}"><div class="task-icon">${_qw ? '⏳' : '⚙️'}</div><div class="task-info"><div class="task-name">${escapeHtml(t.title || 'Task')}</div><div class="task-meta">${escapeHtml(t.time || '')}${t.thumb_status ? `<span style="color:var(--text2);font-size:10px"> · 🖼️ ${escapeHtml(t.thumb_status)}</span>` : ''}</div></div><span class="pill ${_qw ? 'p-yellow' : 'p-cyan'}" style="flex-shrink:0;max-width:200px;white-space:normal;line-height:1.3">${escapeHtml(t.status || '—')}</span>${_apprBtns}<button class="stop-btn" onclick="stopTask(${Number(t.id)})">Stop</button></div>`;
           }
         }).join('');
         html += `<div class="q-group-content">${rows}</div>`;
@@ -4238,8 +4312,8 @@ function renderTasks() {
           
           let rows = pageItems.map(t => {
             const c = String(t.status).includes('❌') ? 'var(--accent2)' : 'var(--muted)';
-            const renderInfo = t.render_info ? `<br><span style="font-size:10px;color:var(--green);font-family:var(--font-m)">${t.render_info}</span>` : '';
-            return `<tr><td><span style="font-family:var(--font-m);font-size:10px;color:var(--muted)">#${t.id}</span></td><td style="font-weight:700">${t.title || '—'}${renderInfo}</td><td style="color:${c};font-weight:600">${t.status}${t.thumb_status ? `<br><span style="font-size:10px;color:var(--text2);font-weight:400">🖼️ ${t.thumb_status}</span>` : ''}</td></tr>`;
+            const renderInfo = t.render_info ? `<br><span style="font-size:10px;color:var(--green);font-family:var(--font-m)">${escapeHtml(t.render_info)}</span>` : '';
+            return `<tr><td><span style="font-family:var(--font-m);font-size:10px;color:var(--muted)">#${t.id}</span></td><td style="font-weight:700">${escapeHtml(t.title || '—')}${renderInfo}</td><td style="color:${c};font-weight:600">${escapeHtml(t.status)}${t.thumb_status ? `<br><span style="font-size:10px;color:var(--text2);font-weight:400">🖼️ ${escapeHtml(t.thumb_status)}</span>` : ''}</td></tr>`;
           }).join('');
           
           html += `<tbody>${rows}</tbody>`;
@@ -4311,7 +4385,7 @@ function recoverFailedTasks() {
 function fetchAnalytics() {
   fetch('/api/get_youtube_analytics').then(r => r.json()).then(data => {
     analyticsData = data; const f = document.getElementById('analytics_filter'); f.innerHTML = '<option value="ALL">⬡ ALL CHANNELS</option>';
-    data.forEach(d => f.innerHTML += `<option value="${d.yt_id}">${d.name}</option>`); renderAnalytics(); fetchVideoStats(false); fetchProjectQuotas(); fetchFormulaAnalytics(); fetchMonetization(); fetchNodeStatus();
+    data.forEach(d => f.innerHTML += `<option value="${escapeHtml(d.yt_id)}">${escapeHtml(d.name)}</option>`); renderAnalytics(); fetchVideoStats(false); fetchProjectQuotas(); fetchFormulaAnalytics(); fetchMonetization(); fetchNodeStatus();
   }).catch(() => {});
 }
 
@@ -4673,7 +4747,7 @@ async function loadPreviewAudioList() {
         }
         if (!items.length) { select.innerHTML = `<option value="">-- Tidak ada audio di gallery${mode === 'single_video' ? ' (folder Video+Audio kosong)' : ''} --</option>`; return; }
         select.innerHTML = '<option value="">-- Pilih audio preview --</option>' + 
-            items.map(a => `<option value="/uploads/${yt_id}/${folder}/${encodeURIComponent(a.name)}">${a.name}${extLabel}</option>`).join('');
+            items.map(a => `<option value="/uploads/${yt_id}/${folder}/${encodeURIComponent(a.name)}">${escapeHtml(a.name)}${extLabel}</option>`).join('');
     } catch(e) { console.error(e); }
 }
 

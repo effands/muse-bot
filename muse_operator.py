@@ -213,7 +213,7 @@ def build_status_report():
             cd_txt = " ⏸️ cooldown" if cd and cd > time.time() else ""
             # 🔥 FASE 3: tandai channel yang sedang dijeda.
             pause_txt = " ⏸️ Dijeda" if ch.get('paused') else ""
-            lines.append(f"• *{name}* — {conn}{cd_txt}{pause_txt}")
+            lines.append(f"• *{_tg_escape(name)}* — {conn}{cd_txt}{pause_txt}")
             lines.append(f"  Upload hari ini: `{used}/{MAX_UPLOADS_PER_DAY}` (sisa `{left}`) • Stok: {stock_txt}")
         lines.append(f"📈 *Total sisa kuota hari ini:* `{total_left} video`")
     lines += [
@@ -252,15 +252,15 @@ def build_daily_report():
         f"❌ *Gagal kemarin:* `{fail}`",
     ]
     if fail_titles:
-        lines.append("Gagal: " + "; ".join("• " + t for t in fail_titles[:5]))
+        lines.append("Gagal: " + "; ".join("• " + _tg_escape(t) for t in fail_titles[:5]))
     if ok_titles:
-        lines.append("Sukses: " + "; ".join("• " + t for t in ok_titles[:5]))
+        lines.append("Sukses: " + "; ".join("• " + _tg_escape(t) for t in ok_titles[:5]))
     lines += [
         "━━━━━━━━━━━━━━━━━━━━━━",
         f"🏭 *Antrean tersisa:* `{len(active)} task`",
     ]
     for t in active[:5]:
-        lines.append(f"• {t.get('title', '?')[:45]} — {t.get('status', '-')[:40]}")
+        lines.append(f"• {_tg_escape(t.get('title', '?')[:45])} — {_tg_escape(t.get('status', '-')[:40])}")
     if len(active) > 5:
         lines.append(f"_...dan {len(active) - 5} task lainnya._")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━")
@@ -272,13 +272,13 @@ def build_daily_report():
             name = _channel_display_name(ch)
             stock = get_stock_days(ch)
             if stock is None:
-                lines.append(f"• *{name}*: belum ada jadwal")
+                lines.append(f"• *{_tg_escape(name)}*: belum ada jadwal")
             elif stock < 0:
-                lines.append(f"• *{name}*: ⚠️ stok HABIS — Bos, buat batch baru ya!")
+                lines.append(f"• *{_tg_escape(name)}*: ⚠️ stok HABIS — Bos, buat batch baru ya!")
             elif stock <= 1:
-                lines.append(f"• *{name}*: ⚠️ sisa ~{max(0, int(stock))} hari — Bos, segera buat batch baru ya!")
+                lines.append(f"• *{_tg_escape(name)}*: ⚠️ sisa ~{max(0, int(stock))} hari — Bos, segera buat batch baru ya!")
             else:
-                lines.append(f"• *{name}*: sisa ~{int(stock)} hari")
+                lines.append(f"• *{_tg_escape(name)}*: sisa ~{int(stock)} hari")
     if fail > 0:
         lines.append("\nYang gagal saya coba lagi ya Bos 💪")
     elif ok > 0:
@@ -367,11 +367,11 @@ def build_schedule_report(days=7):
         items = [(dt, t) for dt, t in upcoming if _task_yt(t) == yt]
         over = [(dt, t) for dt, t in overdue if _task_yt(t) == yt]
         total += len(items) + len(over)
-        lines.append(f"📺 *{name}*" + (" — ⏸️ *DIJEDA*" if paused else ""))
+        lines.append(f"📺 *{_tg_escape(name)}*" + (" — ⏸️ *DIJEDA*" if paused else ""))
         if over:
             lines.append(f"  ⚠️ Terlambat: `{len(over)} task` belum tayang")
             for dt, t in over[:3]:
-                lines.append(f"  • {dt.strftime('%d %b %H:%M')} — {(t.get('title') or '?')[:40]}")
+                lines.append(f"  • {dt.strftime('%d %b %H:%M')} — {_tg_escape((t.get('title') or '?')[:40])}")
         if not items and not over:
             lines.append("  _Nggak ada jadwal 7 hari ke depan Bos 😌_")
         by_day = {}
@@ -383,7 +383,7 @@ def build_schedule_report(days=7):
             lines.append(f"  📅 *{day_lbl}*")
             for dt, t in sorted(by_day[day], key=lambda x: x[0]):
                 label = _task_schedule_label(t, paused)
-                lines.append(f"  • `{dt.strftime('%H:%M')}` {(t.get('title') or '?')[:40]} — {label}")
+                lines.append(f"  • `{dt.strftime('%H:%M')}` {_tg_escape((t.get('title') or '?')[:40])} — {label}")
         lines.append("")
     # Task yang channel-nya tidak dikenal (mis. channel baru dihapus).
     unknown = [(dt, t) for dt, t in upcoming + overdue if _task_yt(t) not in known_ids]
@@ -392,11 +392,21 @@ def build_schedule_report(days=7):
         lines.append("📺 *Channel Tidak Dikenal*")
         for dt, t in sorted(unknown, key=lambda x: x[0])[:5]:
             label = _task_schedule_label(t)
-            lines.append(f"  • `{dt.strftime('%d %b %H:%M')}` {(t.get('title') or '?')[:40]} — {label}")
+            lines.append(f"  • `{dt.strftime('%d %b %H:%M')}` {_tg_escape((t.get('title') or '?')[:40])} — {label}")
         lines.append("")
     lines.append(f"Total: `{total} task` dalam 7 hari ke depan (termasuk yang terlambat).")
     lines.append("Bos, ketik /status buat cek kuota & antrean terkini 😎")
     return "\n".join(lines)
+
+def _tg_escape(text):
+    """Escape karakter Markdown Telegram supaya nama channel / judul video
+    (yang bisa mengandung *, _, [, ] dll.) tidak merusak format pesan.
+    Hanya bagian DATA yang di-escape — template pesan yang memang memakai
+    *tebal* / `kode` tetap ditulis langsung. (#23)"""
+    text = str(text or '')
+    for ch in ['\\', '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']:
+        text = text.replace(ch, '\\' + ch)
+    return text
 
 def get_main_keyboard():
     return {
@@ -682,7 +692,7 @@ def handle_user_command(token, chat_id, text):
                 for idx, ch in enumerate(channels, 1):
                     name = ch.get('channel_name', 'Tanpa Nama')
                     connected = "🟢 Terhubung" if ch.get('access_token') or ch.get('refresh_token') else "🔴 Putus"
-                    msg += f"*{idx}. {name}*\nStatus: {connected}\nID: `{ch.get('yt_id', '-')}`\n\n"
+                    msg += f"*{idx}. {_tg_escape(name)}*\nStatus: {connected}\nID: `{_tg_escape(ch.get('yt_id', '-'))}`\n\n"
             send_message(token, chat_id, msg)
             return
 
@@ -698,7 +708,7 @@ def handle_user_command(token, chat_id, text):
                     title = t.get('title', 'Video Kompilasi')
                     status = t.get('status', 'Menunggu')
                     sched = t.get('schedule_date', '-')
-                    msg += f"*{idx}. {title[:35]}...*\nStatus: `{status}` | Tayang: `{sched}`\n\n"
+                    msg += f"*{idx}. {_tg_escape(title[:35])}...*\nStatus: `{_tg_escape(status)}` | Tayang: `{_tg_escape(sched)}`\n\n"
                 if len(active) > 8:
                     msg += f"_...dan {len(active)-8} video lainnya dalam antrean._"
             send_message(token, chat_id, msg)
@@ -767,7 +777,7 @@ def handle_user_command(token, chat_id, text):
 
         # DEFAULT FALLBACK
         msg = (
-            f"🤖 *Eh Bos, pesan \"{raw_cmd}\" saya terima tapi saya nggak ngerti maksudnya* 😅\n\n"
+            f"🤖 *Eh Bos, pesan \"{_tg_escape(raw_cmd)}\" saya terima tapi saya nggak ngerti maksudnya* 😅\n\n"
             "Coba sentuh tombol di bawah atau ketik:\n"
             "👉 /status | /channel | /antrean | /jadwal | /judul"
         )
@@ -775,7 +785,7 @@ def handle_user_command(token, chat_id, text):
 
     except Exception as e:
         print(f"Error di handle_user_command: {e}", flush=True)
-        send_message(token, chat_id, f"⚠️ *Yah Bos, ada kendala nih* 😅: `{e}`")
+        send_message(token, chat_id, f"⚠️ *Yah Bos, ada kendala nih* 😅: `{_tg_escape(e)}`")
 
 def watchdog_background_loop(token, chat_id):
     print("🛡️ [Ziqva Watchdog] Lapis 1 pengawas aktif...", flush=True)
@@ -791,7 +801,7 @@ def watchdog_background_loop(token, chat_id):
                 msg = (
                     "🚨 *Bos, ada kendala nih* 😅\n\n"
                     f"`{len(failed)}` tugas render bermasalah!\n"
-                    f"Contoh: `{failed[0].get('title', 'Unknown')}` — {failed[0].get('status', '')}\n\n"
+                    f"Contoh: `{_tg_escape(failed[0].get('title', 'Unknown'))}` — {_tg_escape(failed[0].get('status', ''))}\n\n"
                     "Coba cek panel ya Bos, saya juga lagi pantau 👀"
                 )
                 send_message(token, chat_id, msg)
@@ -818,9 +828,9 @@ def watchdog_background_loop(token, chat_id):
                         if not _alerted_today(state, key):
                             send_message(
                                 token, chat_id,
-                                f"⛔ *Bos, stok jadwal {name} HABIS* 😅\n\n"
-                                f"Channel: *{name}*\n"
-                                f"Jadwal terakhir: `{last_sched}` (sudah lewat)\n\n"
+                                f"⛔ *Bos, stok jadwal {_tg_escape(name)} HABIS* 😅\n\n"
+                                f"Channel: *{_tg_escape(name)}*\n"
+                                f"Jadwal terakhir: `{_tg_escape(last_sched)}` (sudah lewat)\n\n"
                                 "Channel ini berhenti dulu sampai batch baru dibuat — "
                                 "buatin batch baru ya Bos, dari panel (/factory → Batch Creator) 🙏")
                             _mark_alerted(state, key)
@@ -829,9 +839,9 @@ def watchdog_background_loop(token, chat_id):
                         if not _alerted_today(state, key):
                             send_message(
                                 token, chat_id,
-                                f"⚠️ *Bos, stok {name} menipis nih* 😌\n\n"
-                                f"Channel: *{name}*\n"
-                                f"Jadwal terakhir: `{last_sched}` (sisa ~{int(stock)} hari)\n\n"
+                                f"⚠️ *Bos, stok {_tg_escape(name)} menipis nih* 😌\n\n"
+                                f"Channel: *{_tg_escape(name)}*\n"
+                                f"Jadwal terakhir: `{_tg_escape(last_sched)}` (sisa ~{int(stock)} hari)\n\n"
                                 "Buatin batch baru ya Bos, biar channel-nya nggak kehabisan video 🙏")
                             _mark_alerted(state, key)
             except Exception as e:
@@ -875,7 +885,8 @@ def main():
 
     print("==================================================", flush=True)
     print("🚀 MUSE AI OPERATOR: Menghubungkan ke Telegram...", flush=True)
-    print(f"🤖 Bot Token: {token[:12]}...", flush=True)
+    # 🔒 #22: token bot TIDAK PERNAH dicetak ke log (dulu 12 karakter pertama).
+    print("🤖 Bot Token: tersimpan di config.json (tidak ditampilkan di log).", flush=True)
     print(f"👤 Owner Chat ID: {owner_chat_id}", flush=True)
     print("==================================================", flush=True)
 

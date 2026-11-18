@@ -310,6 +310,8 @@
     </style>
 </head>
 <body class="min-h-screen w-screen overflow-x-hidden flex flex-col justify-between p-3 sm:p-5 select-none relative">
+    <!-- 🔒 #12: token CSRF per-sesi (diisi server saat render). -->
+    <script>window.CSRF_TOKEN = "{{ csrf_token }}";</script>
     <div class="bg-mesh"></div>
     <div class="aurora aurora-a"></div>
     <div class="aurora aurora-b"></div>
@@ -353,7 +355,7 @@
                 </button>
 
                 <!-- Lock System -->
-                <a href="/logout" class="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-[11px] font-semibold text-rose-300 transition-all flex items-center gap-1" title="Kunci Sistem">
+                <a href="#" onclick="doLogout(event)" class="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-[11px] font-semibold text-rose-300 transition-all flex items-center gap-1" title="Kunci Sistem">
                     <i class="fa-solid fa-power-off text-xs"></i>
                 </a>
             </div>
@@ -588,6 +590,27 @@
     </div>
 
     <script>
+        // 🔒 #12: semua fetch POST ke /api/* otomatis membawa header X-CSRF-Token.
+        (function() {
+            const _fetch = window.fetch.bind(window);
+            window.fetch = function(url, opts) {
+                opts = opts || {};
+                const method = (opts.method || 'GET').toUpperCase();
+                if (method !== 'GET' && method !== 'HEAD' && typeof url === 'string' && url.indexOf('/api/') === 0) {
+                    opts.headers = Object.assign({}, opts.headers, { 'X-CSRF-Token': window.CSRF_TOKEN || '' });
+                }
+                return _fetch(url, opts);
+            };
+            if (!window.CSRF_TOKEN) {
+                _fetch('/api/csrf_token').then(r => r.json()).then(d => { window.CSRF_TOKEN = d.csrf_token || ''; }).catch(() => {});
+            }
+        })();
+        // 🔒 #12: logout via POST (bukan GET).
+        function doLogout(ev) {
+            if (ev) ev.preventDefault();
+            fetch('/logout', { method: 'POST' }).then(() => { window.location.href = '/login'; })
+                .catch(() => { window.location.href = '/login'; });
+        }
         async function fetchHubStatus() {
             try {
                 const response = await fetch('/api/hub_status');
@@ -604,8 +627,15 @@
 
         function openTelegramModal() {
             document.getElementById('tg-modal').classList.remove('hidden');
+            // 🔒 #11: API hanya mengembalikan token ter-masking — token utuh
+            // TIDAK PERNAH masuk ke halaman. Kolom token dibiarkan kosong
+            // (= tidak berubah); placeholder menampilkan status tersimpan.
             fetch('/api/get_telegram').then(r => r.json()).then(data => {
-                if (data.token) document.getElementById('tg_token').value = data.token;
+                const tokenEl = document.getElementById('tg_token');
+                if (tokenEl) {
+                    tokenEl.value = '';
+                    tokenEl.placeholder = data.configured ? 'Tersimpan (' + (data.token_masked || '••••') + ') — kosong = tidak berubah' : 'Token bot Telegram';
+                }
                 if (data.chat_id) document.getElementById('tg_chat_id').value = data.chat_id;
             });
         }

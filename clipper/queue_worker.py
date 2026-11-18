@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import time
 import threading
 import subprocess
@@ -12,7 +13,33 @@ from .ai_engine import get_viral_moments_cached, generate_lyrics_srt
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'clips_db.json')
 CHANNELS_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'channels_db.json')
+UPLOADS_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads'))
 _db_lock = threading.Lock()
+
+# Temuan #19: ID channel aset hanya karakter ID yang sah.
+_ASSET_CHANNEL_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def resolve_bgm_path(asset_id, bgm_file):
+    """Kembalikan path absolut file BGM yang aman, atau None bila tidak
+    valid. Aturan: asset_id harus cocok pola ID; bgm_file harus .mp3 dan
+    hasil akhirnya (abspath) harus tetap di bawah uploads/<asset_id> —
+    path absolut atau '..' tidak bisa lolos keluar (os.path.join yang
+    membuang prefix ikut ditangkap cek commonpath)."""
+    if not bgm_file or bgm_file == 'none':
+        return None
+    if not asset_id or not _ASSET_CHANNEL_RE.match(str(asset_id)):
+        print(f"[Clipper BGM] assetChannelId tidak valid: {asset_id!r}")
+        return None
+    if not str(bgm_file).lower().endswith('.mp3'):
+        print(f"[Clipper BGM] bgmFile bukan .mp3: {bgm_file!r}")
+        return None
+    base_dir = os.path.join(UPLOADS_DIR, str(asset_id))
+    candidate = os.path.abspath(os.path.join(base_dir, str(bgm_file)))
+    if os.path.commonpath([os.path.abspath(base_dir), candidate]) != os.path.abspath(base_dir):
+        print(f"[Clipper BGM] bgmFile di luar folder aset channel: {bgm_file!r}")
+        return None
+    return candidate
 
 # 🔥 FASE 6 (audit C6+C7): batas percobaan upload & retry job clipper.
 CLIP_UPLOAD_MAX_ATTEMPTS = 3   # 1 percobaan + maks 2x retry (backoff 10 → 20 dtk)
@@ -208,8 +235,19 @@ def clipper_worker_loop():
                 total_batch = job_to_run.get('total_batch', 1)
                 
                 update_job(job_id, status='processing', stage='Menunggu slot CPU/RAM kosong...')
-                acquire_resource(worker_name="Clipper Worker")
-                
+                # Temuan #16: acquire_resource() kini melempar TimeoutError
+                # (default 600 dtk) bila RAM tak kunjung lega / lock tak
+                # lepas — kembalikan job ke antrean dengan retry 60 dtk
+                # supaya tidak terjebak selamanya di status 'processing'.
+                try:
+                    acquire_resource(worker_name="Clipper Worker")
+                except TimeoutError as gate_err:
+                    update_job(job_id, status='queued',
+                               stage=f"Slot CPU/RAM sibuk, coba lagi otomatis... ({gate_err})",
+                               extra={"retry_at": time.time() + 60})
+                    print(f"⚠️ [Clipper Worker] Job {job_id} menunggu resource timeout, dijadwalkan ulang: {gate_err}")
+                    continue
+
                 temp_files = []
                 try:
                     # 1. DOWNLOAD
@@ -236,7 +274,10 @@ def clipper_worker_loop():
                     bgm_path = None
                     
                     if bgm_file != 'none' and asset_id:
-                        bgm_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads', asset_id, bgm_file)
+                        # Temuan #19: path BGM di-contain di bawah
+                        # uploads/<assetChannelId>; path absolut/traversal
+                        # mengembalikan None (diperlakukan tanpa BGM).
+                        bgm_path = resolve_bgm_path(asset_id, bgm_file)
                     
                     # 3. POTONG AUDIO & GENERATE LIRIK (Auto-Switch Sumber Suara)
                     srt_path = None

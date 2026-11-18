@@ -3,6 +3,28 @@ import subprocess
 import re
 from datetime import datetime, timedelta
 
+# Gaya lirik yang sah — dipakai juga sebagai suffix nama file SRT
+# (temuan #18: nilai lain tidak boleh lolos ke path). routes.py sudah
+# memvalidasi; di sini fallback ke 'none' sebagai defense in depth.
+ALLOWED_LYRIC_STYLES = {"none", "mrbeast", "neon", "karaoke"}
+
+
+def _escape_ass_style(value):
+    """Escape nama font untuk force_style='...' di dalam filter graph
+    FFmpeg (temuan #14, defense in depth). Karakter ' , : ; = dan
+    backslash di-escape supaya tidak bisa menutup quoting force_style
+    atau menyisipkan opsi/filter baru (mis. movie=)."""
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("'", "\\'")
+        .replace(",", "\\,")
+        .replace(":", "\\:")
+        .replace(";", "\\;")
+        .replace("=", "\\=")
+    )
+
+
 def get_ffmpeg_path():
     return "/usr/bin/ffmpeg"
 
@@ -74,6 +96,10 @@ def split_srt_to_words(input_srt, output_srt, max_words=1):
 # ⚙️ MESIN RENDER UTAMA
 # =========================================================
 def process_clip_pro(source_path, output_path, start_time, duration, crop_mode, lyric_style, srt_path, use_visualizer, bgm_path=None, audio_mode="bgm", custom_font=""):
+    # Temuan #18 (defense in depth): gaya lirik di luar allowlist tidak
+    # pernah dipakai sebagai suffix path — jatuh ke 'none' (tanpa lirik).
+    if lyric_style not in ALLOWED_LYRIC_STYLES:
+        lyric_style = "none"
     filter_complex = []
     has_bgm = bgm_path and os.path.exists(bgm_path)
     
@@ -131,6 +157,9 @@ def process_clip_pro(source_path, output_path, start_time, duration, crop_mode, 
             f_name = custom_font.replace('_', ' ').replace('.ttf', '').replace('.otf', '')
         elif lyric_style == "mrbeast":
             f_name = "Impact"
+        # Temuan #14 (defense in depth): escape karakter filter-graph
+        # meski routes.py sudah memvalidasi customFont.
+        f_name = _escape_ass_style(f_name)
             
         style = ""
         if lyric_style == "mrbeast":

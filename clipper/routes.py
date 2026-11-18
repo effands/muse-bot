@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import json
 import time
@@ -7,11 +8,38 @@ import shutil
 import subprocess
 from flask import Blueprint, request, jsonify, Response, send_from_directory
 from werkzeug.utils import secure_filename
-from .ytdlp_service import get_metadata, cache_key_for_url
+from .ytdlp_service import get_metadata, cache_key_for_url, validate_youtube_url
 from .queue_worker import read_db, write_db
 
 # Inisialisasi Blueprint
 clipper_bp = Blueprint('clipper', __name__)
+
+# --- Batas keamanan (temuan #14, #15, #18, #19) ---
+MAX_BATCH_COUNT = 50  # temuan #15: maks job clipper per request /start
+ALLOWED_LYRIC_STYLES = {"none", "mrbeast", "neon", "karaoke"}  # temuan #18
+_CHANNEL_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")  # temuan #19 (channel_id)
+_FONT_NAME_RE = re.compile(r"^[A-Za-z0-9 _-]+$")  # temuan #14 (fallback)
+
+
+def _font_dir():
+    return os.path.join(os.path.dirname(os.path.dirname(__file__)), 'static', 'fonts')
+
+
+def _available_font_names():
+    """Nama font (stem file) yang terdaftar via GET /fonts — sumber
+    kebenaran untuk validasi customFont di /start (temuan #14)."""
+    font_dir = _font_dir()
+    if not os.path.isdir(font_dir):
+        return set()
+    names = set()
+    for pattern in ('*.ttf', '*.otf'):
+        for path in glob.glob(os.path.join(font_dir, pattern)):
+            names.add(os.path.splitext(os.path.basename(path))[0])
+    return names
+
+
+def _error(message, status=400):
+    return jsonify({"success": False, "error": {"message": message}}), status
 
 @clipper_bp.route('/info', methods=['POST'])
 def get_info():
@@ -28,16 +56,58 @@ def get_info():
 def start_clip():
     data = request.json
     url = data.get('url')
-    
-    batch_count = int(data.get('batchCount', 1))
+
+    if not url:
+        return jsonify({"success": False, "error": {"message": "URL tidak boleh kosong."}})
+
+    # Temuan #8: tolak URL non-YouTube / SSRF sejak awal, jangan simpan
+    # job dengan URL mentah yang nanti di-fetch worker.
+    try:
+        url = validate_youtube_url(url)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": {"message": str(exc)}}), 400
+
+    # Temuan #15: batchCount harus integer 1..50 — tolak (bukan clamp)
+    # supaya pemanggil tahu batasnya.
+    raw_batch = data.get('batchCount', 1)
+    if isinstance(raw_batch, bool) or (
+        isinstance(raw_batch, float) and not raw_batch.is_integer()
+    ):
+        return _error("batchCount harus berupa angka bulat 1–50.")
+    try:
+        batch_count = int(raw_batch)
+    except (TypeError, ValueError):
+        return _error("batchCount harus berupa angka bulat 1–50.")
+    if batch_count < 1 or batch_count > MAX_BATCH_COUNT:
+        return _error(f"batchCount maks {MAX_BATCH_COUNT} per request.")
+
+    # Temuan #18: lyricStyle hanya nilai yang dipakai kode (dipakai juga
+    # sebagai suffix nama file SRT) — tolak sisanya.
+    lyric_style = data.get('lyricStyle', 'none')
+    if lyric_style not in ALLOWED_LYRIC_STYLES:
+        return _error("lyricStyle tidak dikenal.")
+
+    # Temuan #14: customFont harus font yang terdaftar di GET /fonts.
+    # Bila belum ada font terpasang sama sekali, izinkan hanya nama font
+    # sederhana (huruf/angka/spasi/_/-) — karakter filter-graph tetap
+    # di-escape di ffmpeg_service.py sebagai defense in depth.
+    custom_font = data.get('customFont', '') or ''
+    if custom_font:
+        known_fonts = _available_font_names()
+        if known_fonts:
+            if custom_font not in known_fonts:
+                return _error("customFont tidak terdaftar. Unggah font dulu lewat manajer font.")
+        elif not _FONT_NAME_RE.match(custom_font):
+            return _error("Nama customFont tidak valid.")
+
     ai_provider = data.get('aiProvider', 'huggingface')
     api_keys = data.get('apiKeys', [])
     publish_date = data.get('publishDate', '')
-    
+
     options = {
         "cropMode": data.get('cropMode', 'center'),
-        "lyricStyle": data.get('lyricStyle', 'none'),
-        "customFont": data.get('customFont', ''),
+        "lyricStyle": lyric_style,
+        "customFont": custom_font,
         "useVisualizer": data.get('useVisualizer', False),
         "bgmFile": data.get('bgmFile', 'none'),
         "audioMode": data.get('audioMode', 'bgm'),
@@ -45,9 +115,6 @@ def start_clip():
         "assetChannelId": data.get('assetChannelId', ''),
         "targetChannelId": data.get('targetChannelId', '')
     }
-
-    if not url:
-        return jsonify({"success": False, "error": {"message": "URL tidak boleh kosong."}})
 
     base_job_id = f"{int(time.time())}"
     # 🔥 FASE 6 (audit C4): kunci cache download yang stabil per video sumber
@@ -172,7 +239,15 @@ def delete_all_clips():
 
 @clipper_bp.route('/assets/<channel_id>', methods=['GET'])
 def get_channel_assets(channel_id):
-    target_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads', channel_id)
+    # Temuan #19: channel_id mentah dipakai di path glob — batasi ke
+    # karakter ID yang sah dan pastikan direktori target tetap di bawah
+    # uploads/ (channel_id=".." tidak lagi me-list file repo).
+    if not _CHANNEL_ID_RE.match(channel_id or ''):
+        return jsonify({"success": False, "error": "channel_id tidak valid."}), 400
+    uploads_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads'))
+    target_dir = os.path.abspath(os.path.join(uploads_dir, channel_id))
+    if os.path.commonpath([uploads_dir, target_dir]) != uploads_dir:
+        return jsonify({"success": False, "error": "channel_id tidak valid."}), 400
     if not os.path.exists(target_dir):
         return jsonify({"success": True, "data": []})
     mp3_files = glob.glob(os.path.join(target_dir, '**', '*.mp3'), recursive=True)

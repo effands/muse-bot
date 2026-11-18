@@ -1,12 +1,14 @@
-import os, time, queue, threading, subprocess, random, json, shutil, math, re
+import os, time, queue, threading, subprocess, random, json, shutil, math, re, hmac
+import html as _html
 import numpy as np
 import cv2, librosa, imageio
 import datetime as dt
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import secrets
-from flask import Flask, render_template, request, jsonify, redirect, url_for, send_from_directory, session
+from flask import Flask, render_template, request, jsonify, redirect, url_for, send_from_directory, session, Response
 import requests
+from werkzeug.security import generate_password_hash, check_password_hash
 
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
@@ -73,6 +75,11 @@ CONFIG_FILE = os.path.join(BASE_DIR, 'config.json')
 from clipper.routes import clipper_bp
 app.register_blueprint(clipper_bp, url_prefix='/api/clip')
 
+# 🔒 KEAMANAN: batas total ukuran request (upload galeri, import, title
+# bank). Flask default = tak terbatas → disk-fill. 512 MB cukup untuk
+# semua upload sah (per file galeri dibatasi lagi 200 MB di upload_gallery).
+app.config['MAX_CONTENT_LENGTH'] = 512 * 1024 * 1024
+
 def is_configured(): return os.path.exists(CONFIG_FILE)
 def load_bot_config():
     if is_configured():
@@ -80,6 +87,193 @@ def load_bot_config():
     return {}
 
 bot_config = load_bot_config()
+
+# ============================================================
+# 🔒 HELPERS KEAMANAN (perbaikan bug hunt #1, #5, #10, #12, #15, #20, #22, #25)
+# ============================================================
+# Batas-batas keamanan (nilai disepakati di laporan perbaikan).
+GALLERY_MAX_FILE_BYTES = 200 * 1024 * 1024   # per file galeri (#21)
+QUEUE_MAX_SIZE = 200                          # maks task di antrean render (#15)
+BATCH_MAX_COUNT = 50                          # maks video per request batch_create (#15)
+LOGIN_MAX_FAILS = 5                           # gagal login → kunci (#1)
+LOGIN_LOCK_BASE_MINUTES = 15                  # durasi kunci awal (#1)
+LOGIN_WINDOW_SECONDS = 900                    # jendela hitung kegagalan login (#1)
+OPERATOR_MAX_FAILS = 30                       # kunci operator salah / menit / IP (#22)
+OPERATOR_WINDOW_SECONDS = 60
+DEVICE_POLL_MAX_PER_MIN = 30                  # poll device token / menit / IP (#3)
+
+def _save_bot_config(cfg):
+    """Tulis config.json + kunci permission 0600 (#25: secret plaintext di
+    satu file — minimal batasi siapa yang bisa membacanya di disk).
+    Gagal chmod tidak boleh mematikan aplikasi (try/except)."""
+    with open(CONFIG_FILE, 'w') as f:
+        json.dump(cfg, f, indent=4)
+    try:
+        os.chmod(CONFIG_FILE, 0o600)
+    except Exception:
+        pass
+
+def _session_version_expected():
+    """Nomor versi sesi dari config (default 1 untuk config lama)."""
+    try:
+        return int(load_bot_config().get('session_version', 1) or 1)
+    except Exception:
+        return 1
+
+def _bump_session_version():
+    """Naikkan versi sesi di config → SEMUA cookie sesi lama mati (#10).
+    Dipakai logout() dan ganti PIN."""
+    cfg = load_bot_config()
+    cfg['session_version'] = _session_version_expected() + 1
+    _save_bot_config(cfg)
+    return cfg['session_version']
+
+# --- PIN: hash + migrasi plaintext lama (#1) ---
+def _pin_is_hashed(stored):
+    return isinstance(stored, str) and (stored.startswith('pbkdf2:') or stored.startswith('scrypt:'))
+
+def _pin_strength_ok(pin):
+    """PIN minimal 8 karakter, campur huruf + angka."""
+    if not isinstance(pin, str) or len(pin) < 8:
+        return False
+    has_letter = any(c.isalpha() for c in pin)
+    has_digit = any(c.isdigit() for c in pin)
+    return has_letter and has_digit
+
+def _check_pin(pin):
+    """Cek PIN terhadap config. PIN plaintext LAMA tetap diterima sekali —
+    saat cocok, penyimpanannya langsung diganti hash (migrasi otomatis,
+    owner tidak terkunci). Hash TIDAK PERNAH ditulis ke log.
+    Mengembalikan True/False."""
+    if not isinstance(pin, str) or not pin:
+        return False
+    cfg = load_bot_config()
+    stored = cfg.get('admin_pin')
+    if not stored:
+        return False
+    if _pin_is_hashed(stored):
+        try:
+            return check_password_hash(stored, pin)
+        except Exception:
+            return False
+    # Penyimpanan lama (plaintext): bandingkan constant-time, lalu migrasi.
+    if hmac.compare_digest(str(stored), pin):
+        try:
+            cfg['admin_pin'] = generate_password_hash(pin)
+            _save_bot_config(cfg)
+            print("🔒 PIN lama (plaintext) berhasil dimigrasi ke hash.", flush=True)
+        except Exception:
+            pass
+        return True
+    return False
+
+# --- Rate-limit login (#1) + operator (#22) + poll device (#3) ---
+_login_failures = {}   # ip -> [timestamp gagal]
+_login_locks = {}      # ip -> (lock_until, lock_count)
+_operator_failures = {}  # ip -> [timestamp kunci salah]
+_operator_locks = {}     # ip -> lock_until
+_poll_attempts = {}      # ip -> [timestamp poll]
+
+def _prune(lst, window):
+    now = time.time()
+    return [t for t in lst if now - t < window]
+
+def _login_locked(ip):
+    until, _n = _login_locks.get(ip, (0, 0))
+    return time.time() < until
+
+def _login_lock_remaining(ip):
+    until, _n = _login_locks.get(ip, (0, 0))
+    return max(0, int(until - time.time()))
+
+def _record_login_failure(ip):
+    now = time.time()
+    lst = _prune(_login_failures.get(ip, []), LOGIN_WINDOW_SECONDS)
+    lst.append(now)
+    _login_failures[ip] = lst
+    if len(lst) >= LOGIN_MAX_FAILS:
+        _until, n = _login_locks.get(ip, (0, 0))
+        # Jeda eksponensial: 15 → 30 → 60 menit (maks 60).
+        minutes = min(LOGIN_LOCK_BASE_MINUTES * (2 ** n), 60)
+        _login_locks[ip] = (now + minutes * 60, n + 1)
+        _login_failures[ip] = []
+        print(f"🔒 Login dikunci {minutes} menit untuk IP {ip} setelah {LOGIN_MAX_FAILS} gagal.", flush=True)
+
+def _clear_login_failures(ip):
+    _login_failures.pop(ip, None)
+    _login_locks.pop(ip, None)
+
+def _operator_locked(ip):
+    return time.time() < _operator_locks.get(ip, 0)
+
+def _record_operator_failure(ip):
+    now = time.time()
+    lst = _prune(_operator_failures.get(ip, []), OPERATOR_WINDOW_SECONDS)
+    lst.append(now)
+    _operator_failures[ip] = lst
+    if len(lst) >= OPERATOR_MAX_FAILS:
+        _operator_locks[ip] = now + 60
+        _operator_failures[ip] = []
+        print(f"🔒 Endpoint operator dikunci 60 dtk untuk IP {ip} ({OPERATOR_MAX_FAILS} kunci salah/menit).", flush=True)
+
+def _poll_rate_limited(ip):
+    now = time.time()
+    lst = _prune(_poll_attempts.get(ip, []), 60)
+    if len(lst) >= DEVICE_POLL_MAX_PER_MIN:
+        return True
+    lst.append(now)
+    _poll_attempts[ip] = lst
+    return False
+
+# --- CSRF per-sesi (#12) ---
+def _get_csrf_token():
+    if 'csrf_token' not in session:
+        session['csrf_token'] = secrets.token_hex(16)
+    return session['csrf_token']
+
+def _check_csrf():
+    """Token CSRF dari header X-CSRF-Token (JS panel) atau field form."""
+    sent = request.headers.get('X-CSRF-Token') or request.form.get('csrf_token') or ''
+    expected = session.get('csrf_token') or ''
+    return bool(expected) and hmac.compare_digest(str(sent), str(expected))
+
+# --- Validasi yt_id anti path-traversal (#5) ---
+_YT_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
+_GALLERY_SUBS = {'audios', 'backgrounds', 'thumbnails', 'base_videos', 'overlays', 'special_songs'}
+
+def _valid_yt_id(yt_id):
+    return isinstance(yt_id, str) and bool(_YT_ID_RE.fullmatch(yt_id))
+
+def _safe_join_under(base, *parts):
+    """Gabung path + pastikan hasil tetap di bawah `base` (commonpath)."""
+    base_abs = os.path.abspath(base)
+    out = os.path.abspath(os.path.join(base_abs, *parts))
+    if os.path.commonpath([out, base_abs]) != base_abs:
+        raise ValueError("Path di luar direktori yang diizinkan")
+    return out
+
+# --- Penulis daftar concat FFmpeg tunggal (#20) ---
+def _concat_list_line(path):
+    """Satu baris `file '...'` untuk -f concat, dengan ' di-escape
+    gaya shell ('\\''). Dipakai di SEMUA titik concat (dulu hanya 2 dari 6
+    yang meng-escape)."""
+    safe = os.path.abspath(path).replace('\\', '/').replace("'", "'\\''")
+    return f"file '{safe}'\n"
+
+def _write_concat_list(txt_path, paths):
+    with open(txt_path, 'w', encoding='utf-8') as f:
+        for p in paths:
+            f.write(_concat_list_line(p))
+
+class _QueueFullError(Exception):
+    """Antrean render penuh — queue_put menolak task baru (#15)."""
+    pass
+
+def _mask_token(token):
+    """Masking token untuk API/UI (#11): '••••' + 4 karakter terakhir."""
+    if not token:
+        return ''
+    return '••••' + str(token)[-4:]
 
 # --- Sesi login yang stabil di semua browser ---
 # Penyebab login berputar-putar: kalau config.json tidak punya secret_key,
@@ -92,8 +286,7 @@ bot_config = load_bot_config()
 if is_configured() and not bot_config.get('secret_key'):
     bot_config['secret_key'] = secrets.token_hex(32)
     try:
-        with open(CONFIG_FILE, 'w') as _f:
-            json.dump(bot_config, _f, indent=4)
+        _save_bot_config(bot_config)
     except Exception:
         pass
 # 🔥 FASE 1 MONITORING: kunci bersama untuk operator Telegram (proses terpisah)
@@ -102,8 +295,7 @@ if is_configured() and not bot_config.get('secret_key'):
 if is_configured() and not bot_config.get('operator_key'):
     bot_config['operator_key'] = secrets.token_hex(24)
     try:
-        with open(CONFIG_FILE, 'w') as _f:
-            json.dump(bot_config, _f, indent=4)
+        _save_bot_config(bot_config)
     except Exception:
         pass
 # 🔥 FASE 9 MULTI-NODE: identitas node ini, dibuat sekali & menetap di
@@ -114,8 +306,7 @@ if is_configured() and not bot_config.get('operator_key'):
 if is_configured() and not bot_config.get('node_id'):
     bot_config['node_id'] = 'node-' + secrets.token_hex(4)
     try:
-        with open(CONFIG_FILE, 'w') as _f:
-            json.dump(bot_config, _f, indent=4)
+        _save_bot_config(bot_config)
     except Exception:
         pass
 app.secret_key = bot_config.get('secret_key', secrets.token_hex(32))
@@ -128,25 +319,105 @@ app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SECURE'] = False
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
 
+# 🔒 KEAMANAN (#3, #9, #10, #12): route yang boleh tanpa login HANYA
+# login/setup/statis umum + endpoint operator (auth via operator_key
+# HMAC, bukan cookie — jadi tidak butuh CSRF). device_login,
+# poll_device_token dan serve_uploads SUDAH DIKELUARKAN dari daftar ini:
+# keduanya wajib login panel. 'static' tetap bebas karena halaman login
+# butuh CSS/JS — TAPI file hasil render di /static/final_*/clip_* tetap
+# dikunci (dicek khusus di bawah). Endpoint pengubah state panel wajib
+# membawa token CSRF per-sesi (header X-CSRF-Token) — termasuk blueprint
+# clipper (dulu dikecualikan karena clipper.js dikelola terpisah; sejak
+# perbaikan sisa #12, clipper.js mengirim token yang sama seperti panel).
+_OPERATOR_ENDPOINTS = {'operator_retry_task', 'operator_approve_task',
+                      'operator_reject_task', 'operator_approve_batch',
+                      'operator_register_node'}
+_CSRF_EXEMPT_ENDPOINTS = {'login', 'setup', 'static'} | _OPERATOR_ENDPOINTS
+
 @app.before_request
 def check_security():
-    allowed_routes = ['login', 'setup', 'static', 'serve_uploads', 'device_login', 'poll_device_token', 'operator_retry_task', 'operator_approve_task', 'operator_reject_task', 'operator_approve_batch', 'operator_register_node']
-    if request.endpoint in allowed_routes: return
-    if not is_configured(): return redirect(url_for('setup'))
-    if 'logged_in' not in session: return redirect(url_for('login'))
+    # File hasil render/log di /static/ hanya untuk sesi login.
+    if request.path.startswith('/static/final_') or request.path.startswith('/static/clip_'):
+        if 'logged_in' not in session:
+            return redirect(url_for('login'))
+        if session.get('session_version') != _session_version_expected():
+            session.clear()
+            return redirect(url_for('login'))
+        return
+    if request.endpoint in _CSRF_EXEMPT_ENDPOINTS:
+        return
+    if not is_configured():
+        return redirect(url_for('setup'))
+    if 'logged_in' not in session:
+        return redirect(url_for('login'))
+    # #10: cookie lama mati begitu versi sesi di config berubah (logout /
+    # ganti PIN menaikkan versi). Sesi lama tanpa versi = wajib login ulang.
+    if session.get('session_version') != _session_version_expected():
+        session.clear()
+        return redirect(url_for('login'))
+    # #12 (sisa): SEMUA metode pengubah state (POST/PUT/PATCH/DELETE)
+    # wajib membawa token CSRF — termasuk blueprint clipper (start job,
+    # upload font/cookie, hapus font/clip/cookie). GET yang hanya membaca
+    # tidak dicek. Endpoint operator dikecualikan di atas (auth HMAC,
+    # bukan cookie — tidak butuh CSRF).
+    if request.method in ('POST', 'PUT', 'PATCH', 'DELETE'):
+        if not _check_csrf():
+            return jsonify({"status": "error",
+                            "message": "Token CSRF tidak valid. Muat ulang halaman lalu coba lagi."}), 403
+
+@app.after_request
+def _security_headers(resp):
+    # #7: header keamanan di semua respons. CSP memakai 'unsafe-inline'
+    # untuk script/style karena panel memakai inline JS/CSS di template —
+    # ini BUKAN CSP penuh (inline script tetap bisa jalan), tapi
+    # object-src 'none' + base-uri 'self' + frame-ancestors 'none' tetap
+    # membatasi. /uploads/ memakai CSP sandbox sendiri (lihat serve_uploads)
+    # karena header CSP ganda akan saling menguatkan (AND), bukan mengganti.
+    resp.headers['X-Content-Type-Options'] = 'nosniff'
+    resp.headers['X-Frame-Options'] = 'DENY'
+    if request.endpoint != 'serve_uploads':
+        # CDN yang dipakai panel: Chart.js (jsdelivr, index.html),
+        # Tailwind (cdn.tailwindcss.com) + Font Awesome CSS/font
+        # (cdnjs.cloudflare.com) di hub.html.
+        resp.headers['Content-Security-Policy'] = (
+            "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.tailwindcss.com; "
+            "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self' data: https:; "
+            "media-src 'self' blob:; connect-src 'self'; font-src 'self' https://cdnjs.cloudflare.com; "
+            "form-action 'self'; object-src 'none'; base-uri 'self'; "
+            "frame-ancestors 'none'")
+    return resp
+
+@app.route('/api/csrf_token')
+def csrf_token_api():
+    """Token CSRF per-sesi untuk JS panel (#12). Butuh login panel."""
+    return jsonify({"csrf_token": _get_csrf_token()})
 
 @app.route('/setup', methods=['GET', 'POST'])
 def setup():
-    if is_configured(): return redirect(url_for('login'))
+    # #25: setup ulang DILARANG bila config sudah berisi PIN owner — PIN
+    # lama hanya bisa diganti lewat /api/change_pin (butuh PIN lama).
+    # Kalau config.json ada tapi TIDAK punya PIN (rusak), setup diizinkan
+    # sebagai jalur pemulihan. Owner yang lupa PIN harus menghapus
+    # config.json manual di VPS (disengaja — tidak ada reset via web).
+    if is_configured() and load_bot_config().get('admin_pin'):
+        return redirect(url_for('login'))
     error = None
     if request.method == 'POST':
         pin = request.form.get('new_pin'); pin2 = request.form.get('confirm_pin')
-        if not pin or len(pin) < 3: error = "PIN minimal 3 karakter."
+        if not pin or not _pin_strength_ok(pin):
+            error = "PIN minimal 8 karakter, campur huruf dan angka."
         elif pin != pin2: error = "PIN tidak cocok!"
         else:
             new_secret = secrets.token_hex(24)
-            with open(CONFIG_FILE, 'w') as f: json.dump({"admin_pin": pin, "secret_key": new_secret}, f, indent=4)
-            app.secret_key = new_secret; session.permanent = True; session['logged_in'] = True
+            # #1: PIN disimpan sebagai HASH (bukan plaintext).
+            # #25: config ditulis dengan permission 0600.
+            _save_bot_config({"admin_pin": generate_password_hash(pin),
+                              "secret_key": new_secret, "session_version": 1})
+            app.secret_key = new_secret
+            session.permanent = True
+            session['logged_in'] = True
+            session['session_version'] = 1
+            _get_csrf_token()
             return redirect(url_for('hub'))
     return render_template('setup.html', error=error)
 
@@ -155,24 +426,66 @@ def login():
     if not is_configured(): return redirect(url_for('setup'))
     error = None
     if request.method == 'POST':
-        if request.form.get('password') == load_bot_config().get('admin_pin'):
-            session.permanent = True; session['logged_in'] = True; return redirect(url_for('hub'))
-        else: error = 'Akses Ditolak! PIN Salah.'
+        ip = request.remote_addr or '?'
+        if _login_locked(ip):
+            error = (f"Terlalu banyak percobaan gagal. Coba lagi dalam "
+                     f"{_login_lock_remaining(ip)} detik.")
+        elif _check_pin(request.form.get('password') or ''):
+            _clear_login_failures(ip)
+            session.permanent = True
+            session['logged_in'] = True
+            session['session_version'] = _session_version_expected()
+            _get_csrf_token()
+            return redirect(url_for('hub'))
+        else:
+            # #1: kegagalan dicatat (IP saja — PIN TIDAK PERNAH masuk log).
+            _record_login_failure(ip)
+            print(f"⚠️ Percobaan login gagal dari IP {ip}.", flush=True)
+            error = 'Akses Ditolak! PIN Salah.'
     return render_template('login.html', error=error)
 
-@app.route('/logout')
+@app.route('/api/change_pin', methods=['POST'])
+def change_pin():
+    """Ganti PIN panel (#1). Butuh login + PIN lama yang benar.
+    Sesi lain ikut mati (versi sesi naik) — termasuk cookie lama."""
+    data = request.get_json(silent=True) or {}
+    old_pin = data.get('old_pin') or ''
+    new_pin = data.get('new_pin') or ''
+    new_pin2 = data.get('confirm_pin') or ''
+    if not _check_pin(old_pin):
+        return jsonify({"status": "error", "message": "PIN lama salah."}), 400
+    if not _pin_strength_ok(new_pin):
+        return jsonify({"status": "error",
+                        "message": "PIN baru minimal 8 karakter, campur huruf dan angka."}), 400
+    if new_pin != new_pin2:
+        return jsonify({"status": "error", "message": "PIN baru tidak cocok."}), 400
+    cfg = load_bot_config()
+    cfg['admin_pin'] = generate_password_hash(new_pin)
+    cfg['session_version'] = _session_version_expected() + 1
+    _save_bot_config(cfg)
+    session['session_version'] = cfg['session_version']
+    return jsonify({"status": "success", "message": "PIN berhasil diganti. Sesi lain sudah dimatikan."})
+
+@app.route('/logout', methods=['POST'])
 def logout():
-    session.pop('logged_in', None); return redirect(url_for('login'))
+    # #10 + #12: logout via POST (bukan GET) dan menaikkan versi sesi —
+    # cookie lama yang sudah diterbitkan langsung tidak berlaku lagi.
+    try:
+        _bump_session_version()
+    except Exception:
+        pass
+    session.clear()
+    return redirect(url_for('login'))
 
 @app.route('/hub')
 def hub():
     # Halaman untuk memilih masuk ke Factory atau Clipper
-    return render_template('hub.html')
+    return render_template('hub.html', csrf_token=_get_csrf_token())
 
 @app.route('/clipper')
 def clipper_dashboard():
     # Halaman UI utama untuk Clipper
-    return render_template('clipper.html')
+    return render_template('clipper.html', csrf_token=_get_csrf_token())
 
 BASE_UPLOAD = os.path.join(BASE_DIR, "uploads")
 DB_FILE = os.path.join(BASE_DIR, 'channels_db.json')
@@ -253,7 +566,7 @@ def startup_sanitizer():
     notifs = []
     try:
         # 1. Bunuh ffmpeg zombie yang tertinggal dari proses mati mendadak
-        proc = _sub.run(["pkill", "-9", "-f", "ffmpeg"], capture_output=True)
+        proc = _sub.run(["pkill", "-9", "-f", "ffmpeg"], capture_output=True, timeout=10)
         if proc.returncode == 0:
             notifs.append("🧹 ffmpeg zombie ditemukan & dibersihkan")
     except Exception:
@@ -353,12 +666,19 @@ def notify_event(emoji, title, status, reply_markup=None):
     Event digabung & dikirim maksimal tiap 1 menit agar tidak spam chat.
     Kalau reply_markup diisi (mis. tombol Retry untuk task gagal), event TIDAK
     masuk buffer — langsung dikirim saat itu juga, karena satu pesan gabungan
-    tidak bisa membawa tombol untuk task tertentu."""
+    tidak bisa membawa tombol untuk task tertentu.
+    🔒 #23: judul/status dinamis di-escape Markdown Telegram (judul video
+    bisa mengandung *, _, [, ] dll. — tanpa escape, format pesan rusak /
+    bisa dipakai injeksi Markdown)."""
     try:
+        # _tg_escape didefinisikan di bawah (dipakai saat fungsi dipanggil,
+        # bukan saat modul dimuat — jadi aman).
+        title_e = _tg_escape(str(title)[:70])
+        status_e = _tg_escape(str(status))
         if reply_markup is not None:
-            send_tg_message(f"{emoji} *{title[:70]}*\nStatus: {status}", reply_markup=reply_markup)
+            send_tg_message(f"{emoji} *{title_e}*\nStatus: {status_e}", reply_markup=reply_markup)
             return
-        tg_event_queue.append(f"{emoji} *{title[:70]}*\nStatus: {status}")
+        tg_event_queue.append(f"{emoji} *{title_e}*\nStatus: {status_e}")
     except Exception:
         pass
 
@@ -404,14 +724,31 @@ def _queue_priority(blueprint):
         ts = max(0.0, ts - min(overdue_boost, 7 * 24 * 3600))
     return ts
 
-def queue_put(blueprint):
+def queue_put(blueprint, allow_overflow=False):
     # 🔥 FASE 9: cap pemilik task. Di single-node (default) nilainya tidak
     # dipakai — worker mengambil semua task. Di multi-node, worker hanya
     # mengambil task yang assigned_node-nya == node_id sendiri (atau kosong
     # = task lama, boleh diambil siapa saja).
+    # 🔒 #15: tolak task baru bila antrean sudah penuh (maks 200), kecuali
+    # jalur internal yang memasukkan lagi task yang SUDAH ADA (resume /
+    # aktivator / startup) — antrean penuh tidak boleh membuat task lama
+    # hilang diam-diam.
+    if not allow_overflow and render_queue.qsize() >= QUEUE_MAX_SIZE:
+        raise _QueueFullError(f"Antrean render penuh (maks {QUEUE_MAX_SIZE} task). "
+                              "Tunggu antrean berkurang lalu coba lagi.")
     if isinstance(blueprint, dict):
         blueprint.setdefault('assigned_node', _node_id())
     render_queue.put((_queue_priority(blueprint), next(_queue_seq), blueprint))
+
+# 🔒 #15: ID task monotonik (milidetik + naik terus) supaya dua batch
+# dalam milidetik yang sama tidak pernah menghasilkan ID yang sama.
+_last_task_id_ms = 0
+
+def _next_task_id():
+    global _last_task_id_ms
+    now_ms = int(time.time() * 1000)
+    _last_task_id_ms = max(now_ms, _last_task_id_ms + 1)
+    return _last_task_id_ms
 
 def queue_get():
     _priority, _seq, blueprint = render_queue.get()
@@ -749,7 +1086,14 @@ threading.Thread(target=api_key_checker_worker, daemon=True).start()
 # 🏭 GALLERY & ASSET MANAGER
 # ==========================================
 def get_channel_folder(yt_id, sub):
-    path = os.path.join(BASE_UPLOAD, yt_id, sub)
+    # 🔒 #5: yt_id TIDAK PERNAH dipercaya mentah — allowlist ketat +
+    # pastikan hasil akhir tetap di bawah BASE_UPLOAD (commonpath).
+    # sub juga harus salah satu folder galeri yang dikenal.
+    if not _valid_yt_id(yt_id):
+        raise ValueError("yt_id tidak valid")
+    if sub not in _GALLERY_SUBS:
+        raise ValueError("sub-folder galeri tidak dikenal")
+    path = _safe_join_under(BASE_UPLOAD, yt_id, sub)
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -1347,7 +1691,6 @@ class VisualEngine:
         import numpy as np
         import math
         import cv2
-        import urllib.request
         import os
         
         def safe_num(val, default):
@@ -1422,15 +1765,13 @@ class VisualEngine:
         if bar_style in ['circle']:
             if getattr(self, 'logo', None) is None and not getattr(self, 'logo_checked', False):
                 self.logo_checked = True
-                logo_url = cfg.get('logo_url', '')
+                # 🔒 #13: dukungan logo REMOTE (logo_url dari preset) DIHAPUS —
+                # urlopen tanpa timeout/batas ukuran/validasi host = blind
+                # SSRF + DoS (thread render menahan resource_gate). Logo
+                # selalu dari static/logo.png (lokal). Preset lama yang
+                # punya logo_url: nilainya diabaikan (lihat save_preset).
                 img_data = None
-                if logo_url and logo_url.startswith('http'):
-                    try:
-                        req = urllib.request.urlopen(logo_url)
-                        arr = np.asarray(bytearray(req.read()), dtype=np.uint8)
-                        img_data = cv2.imdecode(arr, cv2.IMREAD_UNCHANGED)
-                    except: pass
-                if img_data is None and os.path.exists('static/logo.png'):
+                if os.path.exists('static/logo.png'):
                     img_data = cv2.imread('static/logo.png', cv2.IMREAD_UNCHANGED)
                 if img_data is not None:
                     if len(img_data.shape) == 3 and img_data.shape[2] == 3:
@@ -1553,11 +1894,17 @@ def _run_ffmpeg_zoom(task_id, cmd, err_tag):
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=log_f)
     active_processes[task_id] = proc
     last_ping = time.time()
+    # 🔒 #16: batas waktu 3600 dtk per panggilan ffmpeg Zoom (satu segmen /
+    # gabung durasinya paling lama = durasi video, maks ~80 menit).
+    _zoom_deadline = time.time() + 3600
     try:
         while proc.poll() is None:
             if stop_flags.get(task_id):
                 proc.terminate()
                 raise Exception("Dibatalkan")
+            if time.time() > _zoom_deadline:
+                proc.terminate()
+                raise Exception(f"{err_tag}: timeout (3600 dtk)")
             now_t = time.time()
             if now_t - last_ping > 60:
                 last_ping = now_t
@@ -1628,10 +1975,7 @@ def render_zoom_core(task_id, audio_path, bg_paths, output_path, duration, cfg, 
             _run_ffmpeg_zoom(task_id, cmd, "FFmpeg Zoom Error")
 
         # Gabung segmen + tempel audio (video copy; audio AAC default — sama seperti jalur lain)
-        with open(join_txt, 'w', encoding='utf-8') as f:
-            for sf in seg_files:
-                safe_sf = os.path.abspath(sf).replace('\\', '/')
-                f.write(f"file '{safe_sf}'\n")
+        _write_concat_list(join_txt, seg_files)  # 🔒 #20: escape ' tunggal
         cmd = [get_ffmpeg_path(), '-y', '-f', 'concat', '-safe', '0', '-i', join_txt,
                '-i', audio_path, '-map', '0:v', '-map', '1:a',
                '-c:v', 'copy', '-t', str(duration), output_path]
@@ -1694,12 +2038,18 @@ def render_video_core(task_id, audio_path, bg_paths, output_path, duration, cfg,
     
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     active_processes[task_id] = proc
-    
+
+    # 🔒 #16: batas waktu render frame-by-frame 6 jam — jauh di atas durasi
+    # render wajar (video target 60-80 menit), tapi mencegah proses
+    # menggantung selamanya kalau ffmpeg macet.
+    _render_deadline = time.time() + 6 * 3600
     try:
         last_ping = time.time()
         for f in range(total_f):
             if stop_flags.get(task_id):
                 raise Exception("Dibatalkan")
+            if time.time() > _render_deadline:
+                raise Exception("Render timeout (6 jam)")
 
             if overlay_mode:
                 # 🔥 Mode overlay: tanpa visualizer Python — langsung frame background saja
@@ -1724,7 +2074,13 @@ def render_video_core(task_id, audio_path, bg_paths, output_path, duration, cfg,
         bg.close()
         raise e
         
-    proc.stdin.close(); proc.wait(); bg.close()
+    proc.stdin.close()
+    try:
+        proc.wait(timeout=900)  # 🔒 #16: ffmpeg harus selesai 15 menit setelah stdin ditutup
+    except subprocess.TimeoutExpired:
+        proc.terminate()
+        raise Exception("FFmpeg tidak selesai setelah stdin ditutup (timeout 900 dtk)")
+    bg.close()
     active_processes.pop(task_id, None)
 
 
@@ -1767,7 +2123,9 @@ def apply_visual_overlay(task_id, video_path, overlay_path, size_pct=60, key_col
         '-shortest', tmp_out,
     ]
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=3600)
+    except subprocess.TimeoutExpired:
+        raise Exception("FFmpeg Overlay Error: timeout (3600 dtk)")
     except subprocess.CalledProcessError as e:
         err_lines = (e.stderr or '').strip().split('\n')
         real_err = " | ".join(err_lines[-6:])
@@ -2024,7 +2382,7 @@ def background_worker():
         if temp_cooldowns:
             save_tasks_db()
             for t in temp_cooldowns:
-                queue_put(t)
+                queue_put(t, allow_overflow=True)
                 render_queue.task_done()
                 
         # 🔥 3. Jika semua antrean ternyata sedang cooldown, istirahat sejenak
@@ -2127,15 +2485,14 @@ def background_worker():
                     # tanpa re-encode (copy) agar kualitas & subtitle tidak berubah.
                     if vid_req > 1:
                         concat_txt = os.path.join(BASE_UPLOAD, f"temp_sv_{task_id}.txt")
-                        with open(concat_txt, 'w', encoding='utf-8') as f:
-                            for vp in selected_videos:
-                                safe_path = os.path.abspath(vp).replace('\\', '/').replace("'", "'\\''")
-                                f.write(f"file '{safe_path}'\n")
+                        _write_concat_list(concat_txt, selected_videos)  # 🔒 #20
                         merged_video = os.path.join(BASE_UPLOAD, f"temp_mv_{task_id}.mp4")
                         try:
                             subprocess.run([get_ffmpeg_path(), '-y', '-f', 'concat', '-safe', '0',
                                             '-i', concat_txt, '-c', 'copy', merged_video],
-                                           check=True, capture_output=True)
+                                           check=True, capture_output=True, timeout=3600)
+                        except subprocess.TimeoutExpired:
+                            raise Exception("Gagal menggabungkan video acak! (timeout 3600 dtk)")
                         except subprocess.CalledProcessError:
                             raise Exception("Gagal menggabungkan video acak! Pastikan semua video MP4 punya format/kodek sejenis (misal resolusi & fps sama).")
                         try: os.remove(concat_txt)
@@ -2145,11 +2502,13 @@ def background_worker():
                 
                     # Ekstrak audio dari video gabungan ke temp_a.mp3 (untuk visualizer)
                     try:
-                        subprocess.run([get_ffmpeg_path(), '-y', '-i', merged_video, '-vn', '-q:a', '0', base_audio], check=True, capture_output=True)
+                        subprocess.run([get_ffmpeg_path(), '-y', '-i', merged_video, '-vn', '-q:a', '0', base_audio], check=True, capture_output=True, timeout=1800)
+                    except subprocess.TimeoutExpired:
+                        raise Exception("Gagal ekstrak audio! (timeout 1800 dtk)")
                     except subprocess.CalledProcessError:
                         raise Exception(f"Gagal ekstrak audio! Video gabungan mungkin tidak bersuara.")
 
-                    probe = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', base_audio], capture_output=True, text=True, check=True)
+                    probe = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', base_audio], capture_output=True, text=True, check=True, timeout=120)
                     try: base_duration_sec = float(probe.stdout.strip())
                     except: raise Exception("Gagal membaca durasi audio dari video utama!")
 
@@ -2158,7 +2517,7 @@ def background_worker():
                     # Judul dibersihkan dari nomor depan, misal '06. Langkah Sabar.mp4' → 'Langkah Sabar'
                     current_sec = 0.0
                     for vp in selected_videos:
-                        probe_vp = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', vp], capture_output=True, text=True)
+                        probe_vp = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', vp], capture_output=True, text=True, timeout=120)
                         try: dur_vp = float(probe_vp.stdout.strip())
                         except: dur_vp = 0.0
                         raw_title = os.path.splitext(os.path.basename(vp))[0]
@@ -2181,9 +2540,9 @@ def background_worker():
                 
                     with open(c_txt, 'w', encoding='utf-8') as f:
                         for ap in selected_audios:
-                            safe_path = os.path.abspath(ap).replace('\\', '/').replace("'", "'\\''")
-                            f.write(f"file '{safe_path}'\n")
-                            probe = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', ap], capture_output=True, text=True)
+                            safe_path = os.path.abspath(ap).replace('\\', '/')
+                            f.write(_concat_list_line(ap))  # 🔒 #20
+                            probe = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', ap], capture_output=True, text=True, timeout=120)
                             try: dur = float(probe.stdout.strip())
                             except: dur = 0.0
                         
@@ -2208,7 +2567,7 @@ def background_worker():
                         special_schedule = []
                         _sp_offset = 0.0
                         for _sp in sp_paths:
-                            probe_sp = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', _sp], capture_output=True, text=True)
+                            probe_sp = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', _sp], capture_output=True, text=True, timeout=120)
                             try: _dur_sp = float(probe_sp.stdout.strip())
                             except: _dur_sp = 0.0
                             if _dur_sp <= 0:
@@ -2225,15 +2584,13 @@ def background_worker():
                         else:
                             # Gabung lagu-lagu khusus jadi 1 file audio untuk segmen penutup
                             sp_txt = os.path.join(BASE_UPLOAD, f"temp_spjoin_{task_id}.txt")
-                            with open(sp_txt, 'w') as _spf:
-                                for _sp in sp_paths:
-                                    _spf.write(f"file '{os.path.abspath(_sp).replace(chr(92), '/')}'\n")
+                            _write_concat_list(sp_txt, sp_paths)  # 🔒 #20
                             special_audio_path = os.path.join(BASE_UPLOAD, f"temp_spaudio_{task_id}.mp3")
-                            subprocess.run([get_ffmpeg_path(), '-y', '-f', 'concat', '-safe', '0', '-i', sp_txt, '-c:a', 'libmp3lame', '-ar', '44100', special_audio_path], check=True)
+                            subprocess.run([get_ffmpeg_path(), '-y', '-f', 'concat', '-safe', '0', '-i', sp_txt, '-c:a', 'libmp3lame', '-ar', '44100', special_audio_path], check=True, timeout=1800)
 
-                    subprocess.run([get_ffmpeg_path(), '-y', '-f', 'concat', '-safe', '0', '-i', c_txt, '-c:a', 'libmp3lame', '-ar', '44100', base_audio], check=True)
+                    subprocess.run([get_ffmpeg_path(), '-y', '-f', 'concat', '-safe', '0', '-i', c_txt, '-c:a', 'libmp3lame', '-ar', '44100', base_audio], check=True, timeout=1800)
 
-                    probe = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', base_audio], capture_output=True, text=True, check=True)
+                    probe = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', base_audio], capture_output=True, text=True, check=True, timeout=120)
                     base_duration_sec = float(probe.stdout.strip())
                 
                     bg_count = int(task.get('bg_count', 1))
@@ -2314,16 +2671,15 @@ def background_worker():
                     save_tasks_db()
 
                     loop_txt = os.path.join(BASE_UPLOAD, f"loop_{task_id}.txt")
-                    with open(loop_txt, 'w', encoding='utf-8') as f:
-                        for _ in range(loop_count):
-                            safe_path_vid = os.path.abspath(base_video).replace('\\', '/')
-                            f.write(f"file '{safe_path_vid}'\n")
+                    _write_concat_list(loop_txt, [base_video] * loop_count)  # 🔒 #20
 
                     if stop_flags.get(task_id): raise Exception("Dibatalkan")
 
                     try:
                         # Kembali ke concat tapi dengan pengaman timestamp (+genpts)
-                        subprocess.run([get_ffmpeg_path(), '-y', '-fflags', '+genpts', '-f', 'concat', '-safe', '0', '-i', loop_txt, '-c', 'copy', '-t', str(main_target), loop_out], check=True, capture_output=True, text=True)
+                        subprocess.run([get_ffmpeg_path(), '-y', '-fflags', '+genpts', '-f', 'concat', '-safe', '0', '-i', loop_txt, '-c', 'copy', '-t', str(main_target), loop_out], check=True, capture_output=True, text=True, timeout=3600)
+                    except subprocess.TimeoutExpired:
+                        raise Exception("FFmpeg Concat Error: timeout (3600 dtk)")
                     except subprocess.CalledProcessError as e:
                         # Ambil 6 baris terakhir agar error aslinya tidak tertutup statistik ukuran
                         err_lines = e.stderr.strip().split('\n')
@@ -2333,7 +2689,9 @@ def background_worker():
                     if stop_flags.get(task_id): raise Exception("Dibatalkan")
 
                     try:
-                        subprocess.run([get_ffmpeg_path(), '-y', '-i', base_video, '-c', 'copy', '-t', str(main_target), loop_out], check=True, capture_output=True, text=True)
+                        subprocess.run([get_ffmpeg_path(), '-y', '-i', base_video, '-c', 'copy', '-t', str(main_target), loop_out], check=True, capture_output=True, text=True, timeout=1800)
+                    except subprocess.TimeoutExpired:
+                        raise Exception("FFmpeg Final Error: timeout (1800 dtk)")
                     except subprocess.CalledProcessError as e:
                         err_lines = e.stderr.strip().split('\n')
                         real_err = " | ".join(err_lines[-6:])
@@ -2349,14 +2707,13 @@ def background_worker():
                     try:
                         if main_target > 0:
                             join_txt = os.path.join(BASE_UPLOAD, f"temp_join_{task_id}.txt")
-                            with open(join_txt, 'w', encoding='utf-8') as f:
-                                for vp in [loop_out, special_video]:
-                                    safe_vp = os.path.abspath(vp).replace('\\', '/')
-                                    f.write(f"file '{safe_vp}'\n")
-                            subprocess.run([get_ffmpeg_path(), '-y', '-fflags', '+genpts', '-f', 'concat', '-safe', '0', '-i', join_txt, '-c', 'copy', final_video], check=True, capture_output=True, text=True)
+                            _write_concat_list(join_txt, [loop_out, special_video])  # 🔒 #20
+                            subprocess.run([get_ffmpeg_path(), '-y', '-fflags', '+genpts', '-f', 'concat', '-safe', '0', '-i', join_txt, '-c', 'copy', final_video], check=True, capture_output=True, text=True, timeout=3600)
                         else:
                             # Target lebih pendek dari lagu khusus: pakai lagu khusus saja (dipotong target)
-                            subprocess.run([get_ffmpeg_path(), '-y', '-i', special_video, '-c', 'copy', '-t', str(target_sec), final_video], check=True, capture_output=True, text=True)
+                            subprocess.run([get_ffmpeg_path(), '-y', '-i', special_video, '-c', 'copy', '-t', str(target_sec), final_video], check=True, capture_output=True, text=True, timeout=1800)
+                    except subprocess.TimeoutExpired:
+                        raise Exception("FFmpeg Special-Song Error: timeout")
                     except subprocess.CalledProcessError as e:
                         err_lines = e.stderr.strip().split('\n')
                         real_err = " | ".join(err_lines[-6:])
@@ -2671,7 +3028,7 @@ def background_worker():
                         if d['id'] == task_id:
                             d['status'] = f"Gagal Upload, Antre Ulang ({err_msg}) ⏳"
                 save_tasks_db()
-                queue_put(task)
+                queue_put(task, allow_overflow=True)
             else:
                 move_to_history(task_id, f"Gagal ❌ ({err_msg})")
                 # 🔥 FASE 5: catat kegagalan beruntun untuk auto-pause channel.
@@ -2710,17 +3067,17 @@ threading.Thread(target=background_worker, daemon=True).start()
 @app.route('/')
 def main_hub_landing():
     # Halaman pertama yang terbuka saat IP diakses
-    return render_template('hub.html')
+    return render_template('hub.html', csrf_token=_get_csrf_token())
 
 @app.route('/factory')
 def factory_main_dashboard():
     # Dashboard Factory
-    return render_template('index.html')
+    return render_template('index.html', csrf_token=_get_csrf_token())
 
 @app.route('/clipper')
 def clipper_main_dashboard():
     # Dashboard Clipper
-    return render_template('clipper.html')
+    return render_template('clipper.html', csrf_token=_get_csrf_token())
 
 @app.route('/api/notifications', methods=['GET'])
 def get_notifications():
@@ -3413,7 +3770,7 @@ def run_formula_tune():
     Body opsional {yt_id} — tanpa yt_id, tune semua channel. Notifikasi
     Telegram TIDAK dikirim di sini (tune manual dari panel); notifikasi
     hanya dari loop harian."""
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     yt_id = data.get('yt_id')
     if yt_id:
         return jsonify({"status": "success", "results": [_apply_formula_tune(yt_id)]})
@@ -3423,7 +3780,7 @@ def run_formula_tune():
 def reset_formula_weights():
     """🔥 FASE 7: kembalikan semua bobot satu channel ke 1,0 (butuh login).
     Judul tidak dihapus — hanya bobot yang direset. Dicatat di formula_log."""
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     yt_id = data.get('yt_id')
     if not yt_id:
         return jsonify({"status": "error", "message": "yt_id wajib diisi."}), 400
@@ -3727,7 +4084,8 @@ def set_channel_rpm():
         try:
             save_channels(database_channel)
         except Exception as e:
-            return jsonify({"status": "error", "message": f"Gagal menyimpan: {e}"}), 500
+            print(f"Gagal simpan RPM {yt_id}: {e}", flush=True)
+            return jsonify({"status": "error", "message": "Gagal menyimpan perubahan."}), 500
     if rpm is None:
         return jsonify({"status": "success", "rpm_usd": None,
                         "message": f"RPM channel {name} dihapus — estimasi penghasilan dimatikan."})
@@ -3771,9 +4129,9 @@ def operator_register_node():
     Keamanan: wajib operator_key (HMAC) seperti endpoint operator lain;
     route ini masuk allowed_routes di check_security."""
     data = request.get_json(silent=True) or {}
-    ok_key, msg_key = _validate_operator_key(data)
+    ok_key, msg_key, _st = _validate_operator_key(data)
     if not ok_key:
-        return jsonify({"status": "error", "message": msg_key}), 403
+        return jsonify({"status": "error", "message": msg_key}), _st
     node_id = str(data.get('node_id') or '').strip()
     role = str(data.get('role') or 'worker').lower()
     if not node_id or len(node_id) > 64 or not re.match(r'^[A-Za-z0-9][A-Za-z0-9_-]*$', node_id):
@@ -3787,12 +4145,16 @@ def operator_register_node():
 @app.route('/api/get_schedule')
 def get_schedule(): return jsonify({"active": active_tasks, "history": history_tasks})
 
-@app.route('/api/recover_failed_tasks', methods=['GET', 'POST'])
+@app.route('/api/recover_failed_tasks', methods=['POST'])
 def recover_failed_tasks():
     # 🔥 BARU: memulihkan task yang digagalkan watchdog (belum diproses)
     # dari history kembali ke antrean aktif — jadwal tayang & judul tetap utuh.
+    # 🔒 #12: POST-only (sebelumnya GET juga bisa mengubah state) + CSRF
+    # via check_security. 🔒 #15: kalau antrean penuh, task dikembalikan
+    # ke riwayat (tidak hilang) dan endpoint mengembalikan 429.
     global active_tasks, history_tasks
     recovered = []
+    moved = []
     with db_lock:
         still_needed = []
         for t in history_tasks:
@@ -3802,17 +4164,35 @@ def recover_failed_tasks():
                 t['status'] = "Menunggu Giliran (Queue) ⏳ (Dipulihkan)"
                 t['updated_at'] = time.time()
                 active_tasks.append(t)
-                queue_put(bp)   # masuk mesin render beneran
-                recovered.append(t.get('title', '?')[:60])
+                moved.append(t)
             else:
                 still_needed.append(t)
         history_tasks = still_needed
         active_tasks.sort(key=lambda x: x.get('blueprint', {}).get('publish_date', ''))
         save_tasks_db()
-    for r in recovered:
-        pass
+    queued, failed = [], []
+    for t in moved:
+        try:
+            queue_put(t["blueprint"])   # masuk mesin render beneran
+            queued.append(t)
+            recovered.append(t.get('title', '?')[:60])
+        except _QueueFullError:
+            failed.append(t)
+    if failed:
+        # Antrean penuh: kembalikan task ke riwayat supaya tidak hilang.
+        with db_lock:
+            for t in failed:
+                if t in active_tasks:
+                    active_tasks.remove(t)
+                t['status'] = "Gagal ❌ (Stuck — antrean penuh saat dipulihkan)"
+                history_tasks.insert(0, t)
+            save_tasks_db()
+        return jsonify({"status": "error",
+                        "message": f"Antrean render penuh (maks {QUEUE_MAX_SIZE} task). "
+                                   f"{len(queued)} task dipulihkan, {len(failed)} task dikembalikan ke riwayat.",
+                        "recovered": len(queued), "titles": recovered}), 429
     if recovered:
-        send_tg_message("🔄 *Bos, saya pulihkan task yang sempat macet nih* 💪\n" + "\n".join("• " + r for r in recovered[:10]) +
+        send_tg_message("🔄 *Bos, saya pulihkan task yang sempat macet nih* 💪\n" + "\n".join("• " + _tg_escape(r) for r in recovered[:10]) +
                         ("\n…dst" if len(recovered) > 10 else "") + "\nUdah masuk antrean render lagi, saya lanjutkan.")
     return jsonify({"status": "success", "recovered": len(recovered),
                     "titles": recovered})
@@ -4055,10 +4435,11 @@ def _record_channel_failure(yt_id, title, reason):
     except Exception:
         return
     if auto_paused:
+        # 🔒 #23: nama channel + alasan gagal bisa berisi karakter Markdown.
         send_tg_message(
-            f"⏸️ *Bos, channel {name} saya jeda dulu ya* 😅\n"
+            f"⏸️ *Bos, channel {_tg_escape(name)} saya jeda dulu ya* 😅\n"
             f"Udah gagal {streak}x berturut-turut "
-            f"(terakhir: {(reason or '')[:80]}).\n"
+            f"(terakhir: {_tg_escape((reason or '')[:80])}).\n"
             f"Biar nggak makin parah, saya tahan dulu — cek penyebabnya, "
             f"terus pencet Lanjutkan di panel ya 💪")
 
@@ -4299,13 +4680,22 @@ def _approval_of(t):
 
 def _validate_operator_key(data):
     """Cek `key` == operator_key (HMAC, pola sama seperti retry_task).
-    Mengembalikan (True, '') kalau valid, kalau tidak (False, pesan)."""
+    Mengembalikan (ok, pesan, status_http). Kunci salah dihitung ke
+    rate-limit per IP (#22: maks 30 gagal/menit → kunci 60 detik, 429);
+    kunci benar tidak dihitung dan mereset hitungan. Operator jalan di
+    localhost dan memanggil jarang (per klik tombol) — batas ini tidak
+    akan mengganggu pemakaian normal."""
     import hmac as _hmac
+    ip = request.remote_addr or '?'
+    if _operator_locked(ip):
+        return False, "Terlalu banyak percobaan kunci operator. Coba lagi sebentar lagi.", 429
     key = data.get('key', '')
     expected = load_bot_config().get('operator_key', '')
     if not expected or not _hmac.compare_digest(str(key), str(expected)):
-        return False, "Kunci operator tidak valid."
-    return True, ''
+        _record_operator_failure(ip)
+        return False, "Kunci operator tidak valid.", 403
+    _operator_failures.pop(ip, None)
+    return True, '', 200
 
 def _apply_approval(task_id, decision):
     """Terapkan keputusan approval ke SATU task pending. Dipakai bersama
@@ -4332,6 +4722,12 @@ def _apply_approval(task_id, decision):
             return False, "Task ini tidak punya blueprint.", target.get('title', '')[:60]
         title = target.get('title', '?')[:60]
         if decision == 'approved':
+            # 🔒 #15: cek kapasitas antrean DULU sebelum status diubah —
+            # task harus tetap pending (bisa di-approve ulang) bila antrean
+            # penuh, bukan approved tapi tak ter-queue (= hilang).
+            if not _channel_paused(_active_task_yt_id(target)) and render_queue.qsize() >= QUEUE_MAX_SIZE:
+                return False, f"Antrean render penuh (maks {QUEUE_MAX_SIZE} task). Tunggu antrean berkurang lalu coba lagi.", title
+            prev_status = target.get('status')
             target['approval'] = 'approved'
             # 🔥 FASE 3: channel dijeda → disetujui tapi DITAHAN (tidak masuk
             # antrean render). Task berstatus Dijeda sampai channel dilanjutkan.
@@ -4348,7 +4744,15 @@ def _apply_approval(task_id, decision):
             try:
                 queue_put(target["blueprint"])
             except Exception as e:
-                return False, f"Gagal masuk antrean: {e}", title
+                # 🔒 #15 rollback (kondisi balap antar request): task kembali
+                # pending supaya bisa di-approve ulang, bukan approved tapi
+                # tak ter-queue.
+                target['approval'] = 'pending'
+                target['status'] = prev_status
+                target['updated_at'] = time.time()
+                save_tasks_db()
+                print(f"Gagal queue approve task {task_id}: {e}", flush=True)
+                return False, "Gagal masuk antrean render. Cek log server.", title
             return True, "Task disetujui dan masuk antrean render.", title
         # decision == 'rejected': pindah ke riwayat supaya terlihat di panel,
         # bukan hilang diam-diam — dan TIDAK pernah dieksekusi.
@@ -4361,12 +4765,22 @@ def _apply_approval(task_id, decision):
 
 def _apply_approve_batch(batch_id):
     """Setujui SEMUA task pending dalam satu batch. Mengembalikan
-    (jumlah_disetujui, [judul...]). Task yang sudah diputuskan dilewati."""
+    (jumlah_disetujui, [judul...]). Task yang sudah diputuskan dilewati.
+    🔒 #15: cek kapasitas antrean DULU — jangan tandai approved kalau
+    antrean tidak muat (task approved tapi tidak ter-queue = hilang)."""
     approved_titles = []
     with db_lock:
         pending = [t for t in active_tasks
                    if t.get('batch_id') == batch_id and _approval_of(t) == 'pending'
                    and t.get('blueprint')]
+        _to_queue = [t for t in pending
+                     if CHANNEL_PAUSED_STATUS not in t.get('status', '')
+                     and not _channel_paused(_active_task_yt_id(t))]
+        if render_queue.qsize() + len(_to_queue) > QUEUE_MAX_SIZE:
+            raise _QueueFullError(
+                f"Antrean render penuh (maks {QUEUE_MAX_SIZE} task). "
+                "Setujui sebagian task dulu atau tunggu antrean berkurang.")
+        orig_status = {id(t): t.get('status') for t in pending}
         for t in pending:
             t['approval'] = 'approved'
             # 🔥 FASE 3: task dari channel yang dijeda disetujui tapi ditahan.
@@ -4381,27 +4795,41 @@ def _apply_approve_batch(batch_id):
             save_tasks_db()
         blueprints = [t["blueprint"] for t in pending
                       if CHANNEL_PAUSED_STATUS not in t.get('status', '')]
+    failed_bps = []
     for bp in blueprints:
         try:
             queue_put(bp)
         except Exception as e:
             print(f"Gagal queue batch approve: {e}", flush=True)
+            failed_bps.append(bp)
+    if failed_bps:
+        # 🔒 #15 rollback (kondisi balap): task yang gagal masuk antrean
+        # kembali pending supaya bisa di-approve ulang, bukan approved
+        # tapi tak ter-queue.
+        failed_ids = {bp.get('id') for bp in failed_bps}
+        with db_lock:
+            for t in active_tasks:
+                if t.get('id') in failed_ids:
+                    t['approval'] = 'pending'
+                    t['status'] = orig_status.get(id(t), APPROVAL_PENDING_STATUS)
+                    t['updated_at'] = time.time()
+            save_tasks_db()
     return len(approved_titles), approved_titles
 
 def _operator_approval_endpoint(decision):
     """Kerangka endpoint operator approve/reject satu task. Mengembalikan
     respons JSON Flask (dipakai kedua route di bawah)."""
     data = request.get_json(silent=True) or {}
-    ok_key, msg_key = _validate_operator_key(data)
+    ok_key, msg_key, _st = _validate_operator_key(data)
     if not ok_key:
-        return jsonify({"status": "error", "message": msg_key}), 403
+        return jsonify({"status": "error", "message": msg_key}), _st
     if data.get('task_id') is None:
         return jsonify({"status": "error", "message": "task_id wajib diisi."}), 400
     ok, msg, title = _apply_approval(data.get('task_id'), decision)
     if not ok:
         return jsonify({"status": "error", "message": msg}), 400
     word = "disetujui" if decision == 'approved' else "ditolak"
-    send_tg_message(f"{'✅' if decision == 'approved' else '❌'} *Sip Bos, task {word}* 😎\n`{title}`\n_{msg}_")
+    send_tg_message(f"{'✅' if decision == 'approved' else '❌'} *Sip Bos, task {word}* 😎\n`{_tg_escape(title)}`\n_{_tg_escape(msg)}_")
     return jsonify({"status": "success", "message": msg, "title": title})
 
 @app.route('/api/operator/approve_task', methods=['POST'])
@@ -4412,7 +4840,8 @@ def operator_approve_task():
     try:
         return _operator_approval_endpoint('approved')
     except Exception as e:
-        return jsonify({"status": "error", "message": f"Gagal approve: {e}"}), 500
+        print(f"Gagal approve operator: {e}", flush=True)
+        return jsonify({"status": "error", "message": "Gagal menyetujui task. Cek log server."}), 500
 
 @app.route('/api/operator/reject_task', methods=['POST'])
 def operator_reject_task():
@@ -4421,7 +4850,8 @@ def operator_reject_task():
     try:
         return _operator_approval_endpoint('rejected')
     except Exception as e:
-        return jsonify({"status": "error", "message": f"Gagal reject: {e}"}), 500
+        print(f"Gagal reject operator: {e}", flush=True)
+        return jsonify({"status": "error", "message": "Gagal menolak task. Cek log server."}), 500
 
 @app.route('/api/operator/approve_batch', methods=['POST'])
 def operator_approve_batch():
@@ -4429,19 +4859,22 @@ def operator_approve_batch():
     Keamanan: wajib operator_key seperti endpoint operator lain."""
     try:
         data = request.get_json(silent=True) or {}
-        ok_key, msg_key = _validate_operator_key(data)
+        ok_key, msg_key, _st = _validate_operator_key(data)
         if not ok_key:
-            return jsonify({"status": "error", "message": msg_key}), 403
+            return jsonify({"status": "error", "message": msg_key}), _st
         batch_id = data.get('batch_id')
         if not batch_id:
             return jsonify({"status": "error", "message": "batch_id wajib diisi."}), 400
         count, titles = _apply_approve_batch(batch_id)
         if count == 0:
             return jsonify({"status": "error", "message": "Tidak ada task pending di batch ini (mungkin sudah diputuskan)."}), 400
-        send_tg_message(f"✅ *Sip Bos, {count} task udah saya setujui semua!* 💪\nUdah masuk antrean render, saya kerjakan satu-satu.\n_" + "; ".join(titles[:5]) + ("…" if len(titles) > 5 else "") + "_")
+        send_tg_message(f"✅ *Sip Bos, {count} task udah saya setujui semua!* 💪\nUdah masuk antrean render, saya kerjakan satu-satu.\n_" + "; ".join(_tg_escape(t) for t in titles[:5]) + ("…" if len(titles) > 5 else "") + "_")
         return jsonify({"status": "success", "message": f"{count} task disetujui dan masuk antrean.", "count": count})
+    except _QueueFullError as e:
+        return jsonify({"status": "error", "message": str(e)}), 429
     except Exception as e:
-        return jsonify({"status": "error", "message": f"Gagal approve batch: {e}"}), 500
+        print(f"Gagal approve batch operator: {e}", flush=True)
+        return jsonify({"status": "error", "message": "Gagal menyetujui batch. Cek log server."}), 500
 
 # --- Approval dari panel (login) — cadangan kalau operator Telegram mati. ---
 @app.route('/api/approve_task', methods=['POST'])
@@ -4480,9 +4913,9 @@ def operator_retry_task():
     try:
         data = request.get_json(silent=True) or {}
         task_id = data.get('task_id')
-        ok_key, msg_key = _validate_operator_key(data)
+        ok_key, msg_key, _st = _validate_operator_key(data)
         if not ok_key:
-            return jsonify({"status": "error", "message": msg_key}), 403
+            return jsonify({"status": "error", "message": msg_key}), _st
         if task_id is None:
             return jsonify({"status": "error", "message": "task_id wajib diisi."}), 400
         try:
@@ -4518,12 +4951,14 @@ def operator_retry_task():
             try:
                 queue_put(target["blueprint"])
             except Exception as e:
-                return jsonify({"status": "error", "message": f"Gagal masuk antrean: {e}"}), 500
+                print(f"Gagal queue retry task {task_id}: {e}", flush=True)
+                return jsonify({"status": "error", "message": "Gagal masuk antrean render. Cek log server."}), 500
         title = target.get('title', '?')[:60]
-        send_tg_message(f"🔁 *Siap Bos, retry jalan!* 💪\nTask `{title}` udah masuk antrean render lagi.")
+        send_tg_message(f"🔁 *Siap Bos, retry jalan!* 💪\nTask `{_tg_escape(title)}` udah masuk antrean render lagi.")
         return jsonify({"status": "success", "message": "Task kembali ke antrean render.", "title": title})
     except Exception as e:
-        return jsonify({"status": "error", "message": f"Gagal retry: {e}"}), 500
+        print(f"Gagal retry operator: {e}", flush=True)
+        return jsonify({"status": "error", "message": "Gagal retry task. Cek log server."}), 500
 
 @app.route('/api/clear_history', methods=['POST'])
 def clear_history():
@@ -4553,39 +4988,127 @@ from flask import send_file # Pastikan send_file di-import di baris paling atas 
 
 @app.route('/api/export_channels', methods=['GET'])
 def export_channels():
-    """Mengunduh database channel saat ini sebagai file JSON."""
-    if not os.path.exists(DB_FILE):
-        return jsonify({"status": "error", "message": "Database belum terbentuk."}), 404
-    
+    """Mengunduh database channel sebagai file JSON — HANYA field aman
+    (#4). Kredensial (creds_list/creds_json/token) TIDAK PERNAH ikut
+    ter-export; channel yang di-import harus ditaut ulang via device flow."""
+    safe = [_sanitize_channel_for_export(c) for c in database_channel]
+    payload = json.dumps(safe, indent=4, ensure_ascii=False)
     timestamp = int(time.time())
-    return send_file(DB_FILE, as_attachment=True, download_name=f"pabrik_konten_channels_backup_{timestamp}.json")
+    return Response(payload, mimetype='application/json', headers={
+        "Content-Disposition": f"attachment; filename=pabrik_konten_channels_backup_{timestamp}.json"})
+
+def _sanitize_channel_for_export(c):
+    """Salinan channel tanpa field kredensial — cerminan get_channels()."""
+    return {"id": c.get("id"), "name": c.get("name"), "yt_id": c.get("yt_id"),
+            "thumbnail": c.get("thumbnail"), "status": c.get("status"),
+            "title_bank": c.get("title_bank", []),
+            "title_weights": c.get("title_weights", {}),
+            "paused": c.get("paused", False),
+            "autopilot": c.get("autopilot", "approval"),
+            "rpm_usd": c.get("rpm_usd"),
+            "last_scheduled_date": c.get("last_scheduled_date"),
+            "daily_uploads": c.get("daily_uploads", {}),
+            "cooldown_until": c.get("cooldown_until", 0)}
+
+# Field kredensial yang WAJIB ditolak dari file import (#4).
+_IMPORT_FORBIDDEN_KEYS = {'creds_list', 'creds_json', 'creds', 'access_token',
+                          'refresh_token', 'token', 'client_secret', 'client_id'}
+
+def _sanitize_imported_channel(entry, idx):
+    """Validasi ketat satu entri channel dari file import. Mengembalikan
+    dict channel bersih, atau raise ValueError dengan pesan aman."""
+    if not isinstance(entry, dict):
+        raise ValueError("Entri channel harus berupa objek JSON.")
+    bad = _IMPORT_FORBIDDEN_KEYS & set(entry.keys())
+    if bad:
+        raise ValueError("File import mengandung field kredensial — ditolak. "
+                         "Taut ulang channel lewat device flow, bukan import.")
+    yt_id = entry.get('yt_id')
+    if not _valid_yt_id(yt_id):
+        raise ValueError("yt_id channel tidak valid.")
+    name = entry.get('name')
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Nama channel wajib diisi.")
+    title_bank = entry.get('title_bank', [])
+    if not isinstance(title_bank, list) or not all(isinstance(t, str) for t in title_bank):
+        raise ValueError("title_bank harus berupa daftar judul (string).")
+    title_weights = entry.get('title_weights', {})
+    if not isinstance(title_weights, dict):
+        raise ValueError("title_weights harus berupa objek.")
+    autopilot = entry.get('autopilot', 'approval')
+    if autopilot not in ('auto', 'approval'):
+        autopilot = 'approval'
+    rpm = entry.get('rpm_usd')
+    if rpm is not None:
+        try:
+            rpm = float(rpm)
+        except Exception:
+            raise ValueError("rpm_usd harus angka.")
+        if rpm < 0 or rpm > 100:
+            raise ValueError("rpm_usd harus antara 0 dan 100.")
+    out = {"id": entry.get('id') if isinstance(entry.get('id'), int) else idx + 1,
+           "name": name.strip(),
+           "yt_id": yt_id,
+           "thumbnail": entry.get('thumbnail') if isinstance(entry.get('thumbnail'), str) else "",
+           "status": entry.get('status') if isinstance(entry.get('status'), str) else "Imported",
+           "title_bank": title_bank[:5000],
+           "title_weights": {str(k): v for k, v in title_weights.items()},
+           "paused": bool(entry.get('paused', False)),
+           "autopilot": autopilot,
+           "rpm_usd": rpm,
+           "last_scheduled_date": entry.get('last_scheduled_date') if isinstance(entry.get('last_scheduled_date'), str) else None,
+           "daily_uploads": entry.get('daily_uploads') if isinstance(entry.get('daily_uploads'), dict) else {},
+           "cooldown_until": 0}
+    return out
 
 @app.route('/api/import_channels', methods=['POST'])
 def import_channels():
-    """Mengunggah dan menimpa database channel dengan file JSON cadangan."""
+    """Mengunggah dan menimpa database channel dengan file JSON cadangan.
+    Validasi ketat (#4 + #5): hanya field aman yang diterima, field
+    kredensial ditolak, yt_id traversal ditolak."""
     global database_channel
     file = request.files.get('file')
-    
+
     if not file or not file.filename.endswith('.json'):
         return jsonify({"status": "error", "message": "File tidak valid! Harus berformat .json"}), 400
-    
+
     try:
         new_data = json.load(file)
         if not isinstance(new_data, list):
             return jsonify({"status": "error", "message": "Format file rusak. Data channel harus berupa List/Array."}), 400
-            
+        if len(new_data) > 100:
+            return jsonify({"status": "error", "message": "File import maksimal 100 channel."}), 400
+        clean = [_sanitize_imported_channel(e, i) for i, e in enumerate(new_data)]
+        # yt_id ganda di dalam file = tolak (hindari duplikat diam-diam).
+        seen = set()
+        for c in clean:
+            if c['yt_id'] in seen:
+                return jsonify({"status": "error", "message": "File import berisi yt_id yang sama dua kali."}), 400
+            seen.add(c['yt_id'])
+
         with db_lock:
-            database_channel = new_data
+            database_channel = clean
             # Langsung simpan secara permanen menimpa channels_db.json lama
             save_channels(database_channel)
-            
+
         return jsonify({"status": "success", "message": f"{len(database_channel)} channel berhasil diimpor!"})
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
     except Exception as e:
-        return jsonify({"status": "error", "message": f"Gagal membaca file: {str(e)}"}), 500
+        print(f"Gagal import channels: {e}", flush=True)
+        return jsonify({"status": "error", "message": "Gagal membaca file cadangan. Periksa format JSON-nya."}), 500
 
 @app.route('/api/delete_channel', methods=['POST'])
 def delete_channel():
+    # 🔒 #5: yt_id divalidasi ketat (allowlist) + path hasil gabung dicek
+    # tetap di bawah BASE_UPLOAD sebelum rmtree. 🔒 Konfirmasi ulang:
+    # request wajib membawa confirm=yes (JS panel mengirimkannya setelah
+    # dialog confirm() — lihat deleteChannel() di template).
     yt_id = request.form.get('yt_id')
+    if not _valid_yt_id(yt_id):
+        return jsonify({"status": "error", "message": "yt_id tidak valid."}), 400
+    if request.form.get('confirm') != 'yes':
+        return jsonify({"status": "error", "message": "Penghapusan channel wajib dikonfirmasi (confirm=yes)."}), 400
     global database_channel, active_tasks, history_tasks
     
     # 1. Batalkan semua antreannya di background
@@ -4619,7 +5142,7 @@ def delete_channel():
     save_tasks_db()
 
     # 2. Sapu bersih folder & fisik dari Gallery VPS
-    gallery_path = os.path.join(BASE_UPLOAD, yt_id)
+    gallery_path = _safe_join_under(BASE_UPLOAD, yt_id)
     if os.path.exists(gallery_path):
         import shutil
         shutil.rmtree(gallery_path, ignore_errors=True)
@@ -4633,17 +5156,26 @@ def delete_channel():
 # --- PRESET API ---
 @app.route('/api/save_preset', methods=['POST'])
 def save_preset():
-    data = request.json
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"status": "error", "message": "Preset harus berupa objek JSON."}), 400
     try:
         presets = {}
         if os.path.exists(PRESETS_FILE):
             with open(PRESETS_FILE, 'r') as f:
                 try: presets = json.load(f)
                 except: pass
+        # 🔒 #13: logo_url remote TIDAK PERNAH disimpan — dukungan logo
+        # remote dihapus (SSRF); logo selalu dari static/logo.png.
+        for _v in data.values():
+            if isinstance(_v, dict):
+                _v.pop('logo_url', None)
         presets.update(data)
         with open(PRESETS_FILE, 'w') as f: json.dump(presets, f, indent=4)
         return jsonify({"status": "success"})
-    except Exception as e: return jsonify({"status": "error", "message": str(e)})
+    except Exception as e:
+        print(f"Gagal save preset: {e}", flush=True)
+        return jsonify({"status": "error", "message": "Gagal menyimpan preset."})
 
 @app.route('/api/get_presets', methods=['GET'])
 def get_presets():
@@ -4657,32 +5189,70 @@ def get_presets():
 
 @app.route('/api/delete_preset', methods=['POST'])
 def delete_preset():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     preset_name = data.get('name')
     try:
         if os.path.exists(PRESETS_FILE):
             with open(PRESETS_FILE, 'r') as f:
                 presets = json.load(f)
-                
+
             if preset_name in presets:
                 del presets[preset_name]
-                
-                with open(PRESETS_FILE, 'w') as f: 
+
+                with open(PRESETS_FILE, 'w') as f:
                     json.dump(presets, f, indent=4)
-                    
+
                 return jsonify({"status": "success"})
-                
+
         return jsonify({"status": "error", "message": "Preset tidak ditemukan"})
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
+        print(f"Gagal delete preset: {e}", flush=True)
+        return jsonify({"status": "error", "message": "Gagal menghapus preset."})
 
 # ============================================================
 # 🖼️ GALLERY ENDPOINTS
 # ============================================================
+# 🔒 #6: allowlist ekstensi per folder galeri + validasi magic-byte.
+# File .html/.svg/.php (dan apa pun di luar daftar) DITOLAK — dulu
+# file apa pun bisa di-upload lalu dirender browser sebagai HTML/JS
+# pada origin panel lewat /uploads/. Daftar ini sama dengan ekstensi
+# yang dibaca mesin render (get_multi_backgrounds, get_all_audios,
+# dsb.) — tidak ada file sah yang jadi tertolak.
+_GALLERY_EXTS = {
+    'audios': {'.mp3', '.wav'},
+    'special_songs': {'.mp3', '.wav'},
+    'backgrounds': {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4', '.mov'},
+    'thumbnails': {'.jpg', '.jpeg', '.png'},
+    'base_videos': {'.mp4', '.mov', '.webm', '.mkv'},
+    'overlays': {'.mp4', '.mov', '.webm', '.mkv'},
+}
+
+def _magic_ok(head, ext):
+    """Cek beberapa byte awal file cocok dengan ekstensi yang diklaim."""
+    if ext in ('.jpg', '.jpeg'):
+        return head[:3] == b'\xff\xd8\xff'
+    if ext == '.png':
+        return head[:8] == b'\x89PNG\r\n\x1a\n'
+    if ext == '.gif':
+        return head[:6] in (b'GIF87a', b'GIF89a')
+    if ext == '.webp':
+        return head[:4] == b'RIFF' and head[8:12] == b'WEBP'
+    if ext == '.mp3':
+        return head[:3] == b'ID3' or head[:2] in (b'\xff\xfb', b'\xff\xf3', b'\xff\xf2')
+    if ext == '.wav':
+        return head[:4] == b'RIFF' and head[8:12] == b'WAVE'
+    if ext in ('.mp4', '.mov'):
+        return head[4:8] == b'ftyp'
+    if ext in ('.webm', '.mkv'):
+        return head[:4] == b'\x1a\x45\xdf\xa3'
+    return False
+
 @app.route('/api/get_asset_counts')
 def get_asset_counts():
     yt_id = request.args.get('yt_id')
     if not yt_id: return jsonify({"audios": 0, "backgrounds": 0, "thumbnails": 0, "base_videos": 0, "overlays": 0, "special_songs": 0})
+    if not _valid_yt_id(yt_id):
+        return jsonify({"status": "error", "message": "yt_id tidak valid."}), 400
     def count_files(sub):
         path = get_channel_folder(yt_id, sub)
         return len([f for f in os.listdir(path) if os.path.isfile(os.path.join(path, f))])
@@ -4699,6 +5269,8 @@ def get_asset_counts():
 def get_gallery():
     yt_id = request.args.get('yt_id')
     if not yt_id: return jsonify({"audio": [], "background": [], "thumbnails": [], "base_video": [], "overlay": [], "special_song": []})
+    if not _valid_yt_id(yt_id):
+        return jsonify({"status": "error", "message": "yt_id tidak valid."}), 400
     def get_files_data(sub):
         path = get_channel_folder(yt_id, sub)
         res = []
@@ -4733,11 +5305,17 @@ def upload_gallery():
 
     if not yt_id:
         return jsonify({"status": "error", "message": "yt_id tidak boleh kosong!"}), 400
+    if not _valid_yt_id(yt_id):
+        return jsonify({"status": "error", "message": "yt_id tidak valid."}), 400
     if not g_type:
         return jsonify({"status": "error", "message": "type tidak boleh kosong!"}), 400
 
     folder_name = resolve_folder(g_type)
-    folder      = get_channel_folder(yt_id, folder_name)
+    try:
+        folder = get_channel_folder(yt_id, folder_name)
+    except ValueError:
+        return jsonify({"status": "error", "message": "type galeri tidak dikenal."}), 400
+    allowed_exts = _GALLERY_EXTS.get(folder_name, set())
 
     files = (request.files.getlist('files[]')
              or request.files.getlist('files')
@@ -4751,13 +5329,39 @@ def upload_gallery():
     for f in files:
         if not f or not f.filename:
             continue
+        safe_name = os.path.basename(f.filename)
+        ext = os.path.splitext(safe_name)[1].lower()
+        if ext not in allowed_exts:
+            errors.append(f"{safe_name}: ekstensi {ext or '(tanpa ekstensi)'} tidak diizinkan untuk '{folder_name}'")
+            continue
         try:
-            safe_name = os.path.basename(f.filename)
+            # 🔒 #6: validasi magic-byte (isi file harus cocok dengan
+            # ekstensi yang diklaim — .mp3 yang isinya HTML ditolak).
+            head = f.stream.read(12)
+            try:
+                f.stream.seek(0)
+            except Exception:
+                pass
+            if not _magic_ok(head, ext):
+                errors.append(f"{safe_name}: isi file tidak cocok dengan ekstensi {ext}")
+                continue
+            # 🔒 #21: tolak file > 200 MB (cek awal dari header bila ada,
+            # lalu cek ulang ukuran nyata setelah disimpan).
+            if f.content_length and f.content_length > GALLERY_MAX_FILE_BYTES:
+                errors.append(f"{safe_name}: file lebih dari 200 MB")
+                continue
             dest = os.path.join(folder, safe_name)
             f.save(dest)
+            if os.path.getsize(dest) > GALLERY_MAX_FILE_BYTES:
+                try: os.remove(dest)
+                except Exception: pass
+                errors.append(f"{safe_name}: file lebih dari 200 MB")
+                continue
             saved += 1
-        except Exception as e:
-            errors.append(f"{f.filename}: {str(e)}")
+        except Exception:
+            # 🔒 #24: pesan error generik — detail hanya di log server.
+            print(f"Gagal simpan galeri {safe_name}: {f.filename}", flush=True)
+            errors.append(f"{safe_name}: gagal disimpan")
 
     if saved == 0:
         return jsonify({"status": "error", "message": "Tidak ada file yang berhasil disimpan. " + "; ".join(errors)}), 500
@@ -4773,21 +5377,37 @@ def delete_gallery_file():
     g_type = request.form.get('type',  '').strip()
     name   = request.form.get('name',  '').strip()
 
+    if not _valid_yt_id(yt_id):
+        return jsonify({"status": "error", "message": "yt_id tidak valid."}), 400
     folder_name = resolve_folder(g_type)
-    path = os.path.join(get_channel_folder(yt_id, folder_name), os.path.basename(name))
+    try:
+        base = get_channel_folder(yt_id, folder_name)
+    except ValueError:
+        return jsonify({"status": "error", "message": "type galeri tidak dikenal."}), 400
+    # 🔒 #5: nama file di-basename + hasil gabung dicek tetap di folder.
+    try:
+        path = _safe_join_under(base, os.path.basename(name))
+    except ValueError:
+        return jsonify({"status": "error", "message": "Nama file tidak valid."}), 400
 
     if os.path.exists(path):
         os.remove(path)
         return jsonify({"status": "success", "message": "File dihapus!"})
-    return jsonify({"status": "error", "message": f"File tidak ditemukan: {path}"})
+    # 🔒 #24: jangan bocorkan path absolut server di pesan error.
+    return jsonify({"status": "error", "message": "File tidak ditemukan"})
 
 @app.route('/api/clear_gallery_folder', methods=['POST'])
 def clear_gallery_folder():
     yt_id  = request.form.get('yt_id', '').strip()
     g_type = request.form.get('type',  '').strip()
 
+    if not _valid_yt_id(yt_id):
+        return jsonify({"status": "error", "message": "yt_id tidak valid."}), 400
     folder_name = resolve_folder(g_type)
-    path = get_channel_folder(yt_id, folder_name)
+    try:
+        path = get_channel_folder(yt_id, folder_name)
+    except ValueError:
+        return jsonify({"status": "error", "message": "type galeri tidak dikenal."}), 400
 
     deleted = 0
     if os.path.exists(path):
@@ -4851,7 +5471,8 @@ def upload_title_bank():
             return jsonify({"status": "error", "message": f"Channel dengan yt_id '{yt_id}' tidak ditemukan di database."}), 404
 
     except Exception as e:
-        return jsonify({"status": "error", "message": f"Gagal memproses file: {str(e)}"}), 500
+        print(f"Gagal memproses title bank: {e}", flush=True)
+        return jsonify({"status": "error", "message": "Gagal memproses file."}), 500
 
 @app.route('/api/get_playlists', methods=['GET'])
 def get_playlists():
@@ -4896,6 +5517,8 @@ def stop_task(task_id):
 
 @app.route('/api/stop_channel/<yt_id>', methods=['POST'])
 def stop_channel(yt_id):
+    if not _valid_yt_id(yt_id):
+        return jsonify({"status": "error", "message": "yt_id tidak valid."}), 400
     global active_tasks, history_tasks
     with db_lock:
         tasks_to_remove = [t for t in active_tasks if _active_task_yt_id(t) == yt_id]
@@ -4955,13 +5578,14 @@ def set_channel_paused():
         try:
             save_channels(database_channel)
         except Exception as e:
-            return jsonify({"status": "error", "message": f"Gagal menyimpan: {e}"}), 500
+            print(f"Gagal simpan paused {yt_id}: {e}", flush=True)
+            return jsonify({"status": "error", "message": "Gagal menyimpan perubahan."}), 500
     if paused:
-        send_tg_message(f"⏸️ *Siap Bos, channel {name} saya jeda dulu.* 😌\nTask-nya saya tahan semua, nggak ada yang jalan sampai Bos lanjutkan lagi.")
+        send_tg_message(f"⏸️ *Siap Bos, channel {_tg_escape(name)} saya jeda dulu.* 😌\nTask-nya saya tahan semua, nggak ada yang jalan sampai Bos lanjutkan lagi.")
         return jsonify({"status": "success", "paused": True, "resumed_count": 0,
                         "message": f"Channel {name} dijeda. Task terjadwal ditahan."})
     resumed = _resume_channel_tasks(yt_id)
-    send_tg_message(f"▶️ *Siap Bos, channel {name} jalan lagi!* 💪\n{resumed} task udah masuk antrean render.")
+    send_tg_message(f"▶️ *Siap Bos, channel {_tg_escape(name)} jalan lagi!* 💪\n{resumed} task udah masuk antrean render.")
     return jsonify({"status": "success", "paused": False, "resumed_count": resumed,
                     "message": f"Channel {name} dilanjutkan. {resumed} task masuk antrean."})
 
@@ -4988,12 +5612,13 @@ def set_channel_autopilot():
         try:
             save_channels(database_channel)
         except Exception as e:
-            return jsonify({"status": "error", "message": f"Gagal menyimpan: {e}"}), 500
+            print(f"Gagal simpan autopilot {yt_id}: {e}", flush=True)
+            return jsonify({"status": "error", "message": "Gagal menyimpan perubahan."}), 500
     if mode == 'auto':
-        send_tg_message(f"🤖 *Siap Bos, channel {name} saya set Full-Auto!* 😎\nBatch baru langsung jalan tanpa approval — saya yang urus sampai tayang 💪")
+        send_tg_message(f"🤖 *Siap Bos, channel {_tg_escape(name)} saya set Full-Auto!* 😎\nBatch baru langsung jalan tanpa approval — saya yang urus sampai tayang 💪")
         return jsonify({"status": "success", "autopilot": "auto",
                         "message": f"Channel {name} mode Full-Auto. Batch baru langsung masuk antrean."})
-    send_tg_message(f"👀 *Siap Bos, channel {name} balik ke mode Approval.* 😌\nBatch baru tetap saya kirim preview dulu buat Bos cek.")
+    send_tg_message(f"👀 *Siap Bos, channel {_tg_escape(name)} balik ke mode Approval.* 😌\nBatch baru tetap saya kirim preview dulu buat Bos cek.")
     return jsonify({"status": "success", "autopilot": "approval",
                     "message": f"Channel {name} mode Approval. Batch baru menunggu persetujuan."})
 
@@ -5037,7 +5662,8 @@ def delete_secret():
         os.remove(CLIENT_SECRETS_FILE)
         return jsonify({"status": "success", "message": "API key dihapus!"})
     except Exception as e:
-        return jsonify({"status": "error", "message": f"Gagal menghapus API key: {str(e)}"})
+        print(f"Gagal hapus client_secret: {e}", flush=True)
+        return jsonify({"status": "error", "message": "Gagal menghapus API key."})
 
 @app.route('/api/upload_secret', methods=['POST'])
 def upload_secret():
@@ -5048,7 +5674,8 @@ def upload_secret():
             return jsonify({"status": "success", "message": "API Key diunggah!"})
         return jsonify({"status": "error", "message": "Harus .json!"})
     except Exception as e:
-        return jsonify({"status": "error", "message": f"Izin ditolak server: {str(e)}"})
+        print(f"Gagal upload client_secret: {e}", flush=True)
+        return jsonify({"status": "error", "message": "Gagal mengunggah API key."})
 
 @app.route('/api/generate_tv_link')
 def generate_tv_link():
@@ -5057,11 +5684,20 @@ def generate_tv_link():
 
 @app.route('/device_login')
 def device_login():
+    # 🔒 #3: route ini SUDAH TIDAK di allowed_routes — wajib login panel
+    # (check_security). Device code diikat ke sesi login yang memintanya.
     if not os.path.exists(CLIENT_SECRETS_FILE): return "File rahasia tidak ditemukan!"
     with open(CLIENT_SECRETS_FILE, 'r') as f:
         secret_data = json.load(f); client_config = secret_data.get('installed', secret_data.get('web', {})); client_id = client_config.get('client_id')
     res = requests.post('https://oauth2.googleapis.com/device/code', data={'client_id': client_id, 'scope': ' '.join(SCOPES)}).json()
     if 'error' in res: return f"Error Google: {res['error']}"
+    session['device_code'] = res['device_code']
+    session['device_code_at'] = time.time()
+    _csrf = _get_csrf_token()
+    # Kode + URL di-escape HTML (datang dari Google, tapi jangan pernah
+    # menaruh string luar mentah ke HTML).
+    _vurl = _html.escape(str(res['verification_url']))
+    _ucode = _html.escape(str(res['user_code']))
     html = f"""
     <html><head><title>Aktivasi YouTube</title>
     <style>
@@ -5076,15 +5712,15 @@ def device_login():
             <h2 style="margin-top:0;">🔗 Tautkan Channel Baru</h2>
             <div style="font-size:13px;color:#64748b;margin-bottom:20px">Izin yang diminta: kelola video YouTube (upload &amp; statistik) + <b>baca YouTube Analytics</b> (untuk subs per video &amp; RPM otomatis). Channel yang sudah tertaut sebelum ini perlu ditaut ulang supaya tokennya mendapat izin Analytics.</div>
             <div class="step"><b>Langkah 1:</b> Copy link ini dan Paste di browser target:
-                <div class="input-group"><input type="text" id="glink" value="{res['verification_url']}" readonly><button onclick="document.getElementById('glink').select();document.execCommand('copy');">Copy Link</button></div>
+                <div class="input-group"><input type="text" id="glink" value="{_vurl}" readonly><button onclick="document.getElementById('glink').select();document.execCommand('copy');">Copy Link</button></div>
             </div>
             <div class="step"><b>Langkah 2:</b> Masukkan Kode Rahasia ini:
-                <div class="input-group"><input type="text" id="gcode" value="{res['user_code']}" readonly><button onclick="document.getElementById('gcode').select();document.execCommand('copy');">Copy Kode</button></div>
+                <div class="input-group"><input type="text" id="gcode" value="{_ucode}" readonly><button onclick="document.getElementById('gcode').select();document.execCommand('copy');">Copy Kode</button></div>
             </div>
             <div id="status" style="margin-top:30px; font-weight:bold;">⏳ Menunggu Anda memasukkan kode...</div>
         </div>
         <script>
-            function poll() {{ fetch('/api/poll_device_token', {{ method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{device_code: '{res['device_code']}'}}) }}).then(r => r.json()).then(data => {{ if(data.status === 'success') {{ document.getElementById('status').innerHTML = "🎉 Berhasil! Mengalihkan..."; setTimeout(() => {{ window.location.href = '/'; }}, 2000); }} else if(data.status === 'pending') {{ setTimeout(poll, data.interval || 5000); }} else if(data.status === 'error') {{ document.getElementById('status').innerHTML = "❌ " + (data.error || 'Gagal menautkan channel.'); }} }}); }}
+            function poll() {{ fetch('/api/poll_device_token', {{ method: 'POST', headers: {{'Content-Type': 'application/json', 'X-CSRF-Token': '{_csrf}'}}, body: JSON.stringify({{device_code: '{_html.escape(str(res['device_code']))}'}}) }}).then(r => r.json()).then(data => {{ if(data.status === 'success') {{ document.getElementById('status').textContent = "🎉 Berhasil! Mengalihkan..."; setTimeout(() => {{ window.location.href = '/'; }}, 2000); }} else if(data.status === 'pending') {{ setTimeout(poll, data.interval || 5000); }} else if(data.status === 'error') {{ document.getElementById('status').textContent = "❌ " + (data.error || 'Gagal menautkan channel.'); }} }}); }}
             setTimeout(poll, 5000);
         </script>
     </body></html>
@@ -5093,7 +5729,26 @@ def device_login():
 
 @app.route('/api/poll_device_token', methods=['POST'])
 def poll_device_token():
-    device_code = request.json.get('device_code')
+    # 🔒 #3: wajib login panel (bukan allowed_routes) + device_code harus
+    # sama dengan yang diminta sesi ini + rate-limit + guard body non-JSON
+    # (dulu: body non-JSON → 500, device_code apa pun diterima).
+    data = request.get_json(silent=True)
+    if data is None:
+        return jsonify({"status": "error", "error": "Body request harus JSON."}), 400
+    device_code = data.get('device_code')
+    if not device_code or not isinstance(device_code, str):
+        return jsonify({"status": "error", "error": "device_code wajib diisi."}), 400
+    expected = session.get('device_code')
+    if not expected:
+        return jsonify({"status": "error", "error": "Sesi device login tidak ditemukan. Buka /device_login lagi."}), 400
+    if not hmac.compare_digest(str(device_code), str(expected)):
+        return jsonify({"status": "error", "error": "device_code tidak cocok dengan sesi ini."}), 403
+    if time.time() - float(session.get('device_code_at') or 0) > 900:
+        session.pop('device_code', None)
+        return jsonify({"status": "error", "error": "Kode device sudah kedaluwarsa (15 menit). Buka /device_login lagi."}), 400
+    ip = request.remote_addr or '?'
+    if _poll_rate_limited(ip):
+        return jsonify({"status": "error", "error": "Terlalu banyak percobaan poll. Tunggu sebentar."}), 429
     with open(CLIENT_SECRETS_FILE, 'r') as f:
         s_data = json.load(f); conf = s_data.get('installed', s_data.get('web', {})); c_id = conf.get('client_id'); c_sec = conf.get('client_secret')
     res = requests.post('https://oauth2.googleapis.com/token', data={'client_id': c_id, 'client_secret': c_sec, 'device_code': device_code, 'grant_type': 'urn:ietf:params:oauth:grant-type:device_code'}).json()
@@ -5102,6 +5757,8 @@ def poll_device_token():
         if err == 'authorization_pending': return jsonify({"status": "pending", "interval": 5000})
         elif err == 'slow_down': return jsonify({"status": "pending", "interval": 10000})
         else: return jsonify({"status": "error", "error": err})
+    session.pop('device_code', None)
+    session.pop('device_code_at', None)
     creds = Credentials(token=res['access_token'], refresh_token=res.get('refresh_token'), token_uri='https://oauth2.googleapis.com/token', client_id=c_id, client_secret=c_sec, scopes=SCOPES)
     youtube = build('youtube', 'v3', credentials=creds); chan_res = youtube.channels().list(part="snippet", mine=True).execute()
     if chan_res['items']:
@@ -5279,7 +5936,8 @@ def shorts_muse_create():
 
     # ID milidetik (bukan detik seperti batch_create) supaya klik ganda
     # dalam satu detik tidak membuat dua task dengan ID yang sama.
-    t_id = int(time.time() * 1000)
+    # 🔒 #15: pakai ID monotonik — tidak pernah bentrok antar request.
+    t_id = _next_task_id()
     batch_id = f"sm{t_id}"
     channel_name = channel_rec.get('name', yt_id)
     auto_mode = _autopilot_of(channel_rec) == 'auto'
@@ -5301,6 +5959,13 @@ def shorts_muse_create():
         "source_mode": "mix",
         "batch_id": batch_id,
     }
+    # 🔒 #15: mode Full-Auto langsung masuk antrean — tolak sebelum task
+    # dibuat bila antrean penuh (task yang dibuat tapi tidak ter-queue
+    # akan menggantung dengan status menyesatkan).
+    if auto_mode and not channel_paused and render_queue.qsize() >= QUEUE_MAX_SIZE:
+        return jsonify({"status": "error",
+                        "message": f"Antrean render penuh (maks {QUEUE_MAX_SIZE} task). "
+                                   "Tunggu antrean berkurang lalu coba lagi."}), 429
     with db_lock:
         active_tasks.append({
             "id": t_id, "yt_id": yt_id, "title": title,
@@ -5325,7 +5990,23 @@ def shorts_muse_create():
             try:
                 queue_put(blueprint)
             except Exception as e:
-                return jsonify({"status": "error", "message": f"Gagal masuk antrean: {e}"}), 500
+                # 🔒 #15 (kondisi balap): task dipindah ke riwayat dengan
+                # status "Stuck" supaya bisa dipulihkan via
+                # recover_failed_tasks, bukan dibiarkan "Menunggu Giliran"
+                # selamanya tanpa pernah di-queue.
+                print(f"Gagal queue shorts_muse {t_id}: {e}", flush=True)
+                with db_lock:
+                    for t in list(active_tasks):
+                        if t.get('id') == t_id:
+                            active_tasks.remove(t)
+                            t['status'] = "Gagal ❌ (Stuck — antrean penuh saat dibuat)"
+                            t['updated_at'] = time.time()
+                            history_tasks.insert(0, t)
+                            break
+                    save_tasks_db()
+                return jsonify({"status": "error",
+                                "message": "Gagal masuk antrean render (antrean penuh). "
+                                           "Task ada di Riwayat dan bisa dipulihkan lewat 'Pulihkan Task Gagal'."}), 500
         return jsonify({"status": "success", "message": "Shorts Muse dibuat dan langsung masuk antrean (mode Full-Auto)!", "task_id": t_id})
     preview = {"id": t_id, "title": title, "publish_date": v_date_str,
                "duration_label": f"{duration_sec} detik (Shorts Muse)",
@@ -5363,10 +6044,17 @@ def get_shorts_muse():
 
 @app.route('/api/batch_create', methods=['POST'])
 def batch_create():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     yt_id = data.get('yt_id')
-    count = data.get('count', 1)
-    
+    # 🔒 #15: count divalidasi — non-integer/negatif/0 ditolak 400,
+    # maks 50 video per request (dulu tanpa batas → ribuan job sekaligus).
+    try:
+        count = int(data.get('count', 1))
+    except Exception:
+        return jsonify({"status": "error", "message": "count harus angka bulat 1–50."}), 400
+    if isinstance(data.get('count'), bool) or count < 1 or count > BATCH_MAX_COUNT:
+        return jsonify({"status": "error", "message": f"count harus angka bulat 1–{BATCH_MAX_COUNT}."}), 400
+
     titles = data.get('generated_titles', [])
     # 🔥 TAMBAHKAN BARIS INI UNTUK MENANGKAP DESKRIPSI ACAK 🔥
     descs = data.get('generated_descriptions', []) 
@@ -5396,7 +6084,9 @@ def batch_create():
         save_channels(database_channel)
 
     # 🔥 FASE 2: satu batch = satu batch_id (untuk tombol "Setujui Semua").
-    batch_id = f"b{int(time.time())}"
+    # 🔒 #15: batch_id memakai milidetik + token acak supaya dua batch
+    # dalam milidetik yang sama tidak pernah bentrok.
+    batch_id = f"b{int(time.time() * 1000)}-{secrets.token_hex(3)}"
     channel_name = next((c.get('name', yt_id) for c in database_channel if c.get('yt_id') == yt_id), yt_id or 'Tanpa Channel')
     previews = []
     # 🔥 FASE 6: mode autopilot per channel — 'auto' (channel terpercaya:
@@ -5405,12 +6095,21 @@ def batch_create():
     channel_rec = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
     auto_mode = _autopilot_of(channel_rec) == 'auto'
     channel_paused = _channel_paused(yt_id)
+    # 🔒 #15: batch Full-Auto langsung masuk antrean — tolak lebih awal
+    # bila antrean tidak muat untuk seluruh batch. (Mode approval tidak
+    # memakai antrean sekarang, jadi tidak dicek di sini; saat disetujui,
+    # queue_put menolak bila penuh.)
+    if auto_mode and not channel_paused and render_queue.qsize() + count > QUEUE_MAX_SIZE:
+        return jsonify({"status": "error",
+                        "message": f"Antrean render penuh (maks {QUEUE_MAX_SIZE} task). "
+                                   "Tunggu antrean berkurang lalu coba lagi."}), 429
     auto_blueprints = []
     adjusted_dates = []
     shifted_count = 0
 
     for i in range(count):
-        t_id = int(time.time()) + i
+        # 🔒 #15: ID task monotonik — tidak pernah bentrok antar batch.
+        t_id = _next_task_id()
         
         if publish_dates and i < len(publish_dates):
             v_date_str = publish_dates[i]
@@ -5500,11 +6199,34 @@ def batch_create():
     if auto_mode:
         # 🔥 FASE 6: Full-Auto — langsung masuk antrean render, tanpa
         # preview approval (task lahir approved; yang dijeda tetap ditahan).
+        # Kapasitas sudah dicek di atas, jadi kegagalan di sini tidak
+        # mungkin karena antrean penuh — hanya kondisi balap antar request.
+        # 🔒 #15: task yang gagal masuk antrean dipindah ke riwayat dengan
+        # status "Stuck" supaya bisa dipulihkan via recover_failed_tasks,
+        # bukan dibiarkan "Menunggu Giliran" selamanya tanpa pernah di-queue.
+        failed_bps = []
         for bp in auto_blueprints:
             try:
                 queue_put(bp)
             except Exception as e:
                 print(f"Gagal queue auto task {bp.get('id')}: {e}", flush=True)
+                failed_bps.append(bp)
+        if failed_bps:
+            failed_ids = {bp.get('id') for bp in failed_bps}
+            with db_lock:
+                still_active = []
+                for t in active_tasks:
+                    if t.get('id') in failed_ids:
+                        t['status'] = "Gagal ❌ (Stuck — antrean penuh saat dibuat)"
+                        t['updated_at'] = time.time()
+                        history_tasks.insert(0, t)
+                    else:
+                        still_active.append(t)
+                active_tasks[:] = still_active
+                save_tasks_db()
+            return jsonify({"status": "error",
+                            "message": f"{len(failed_bps)} dari {count} video gagal masuk antrean render (antrean penuh). "
+                                       "Task yang gagal ada di Riwayat dan bisa dipulihkan lewat 'Pulihkan Task Gagal'."}), 500
         return jsonify({"status": "success", "message": f"{count} Video dibuat dan langsung masuk antrean (mode Full-Auto)!{_shift_note}"})
 
     # 🔥 FASE 2: kirim preview ke Telegram di thread background (panel
@@ -5516,7 +6238,15 @@ def batch_create():
     
 @app.route('/uploads/<path:filename>')
 def serve_uploads(filename):
-    return send_from_directory(BASE_UPLOAD, filename)
+    # 🔒 #9: wajib login panel (route ini SUDAH TIDAK di allowed_routes).
+    # 🔒 #6: file di sini disajikan dengan CSP sandbox + nosniff — kalau
+    # ada file HTML yang lolos, browser tidak akan mengeksekusi scriptnya
+    # pada origin panel. Content-Disposition: attachment TIDAK dipakai
+    # karena akan merusak preview gambar/video galeri di panel.
+    resp = send_from_directory(BASE_UPLOAD, filename)
+    resp.headers['Content-Security-Policy'] = 'sandbox'
+    resp.headers['X-Content-Type-Options'] = 'nosniff'
+    return resp
 
 # ==========================================
 # 📱 TELEGRAM REMINDER WORKER
@@ -5549,7 +6279,7 @@ def telegram_reminder_worker():
                     
                     # Jika sisa waktu <= 24 Jam (dan belum kelewat jauh)
                     if timedelta(hours=0) < time_diff <= timedelta(hours=24):
-                        msg = f"⚠️ Notifikasi Ziqva Muse Bot\n\nChannel: *{c['name']}*\nStok jadwal video hampir habis!\nJadwal terakhir: {last_date_str}\n\nWaktunya buat video baru, Bos K!"
+                        msg = f"⚠️ Notifikasi Ziqva Muse Bot\n\nChannel: *{_tg_escape(c['name'])}*\nStok jadwal video hampir habis!\nJadwal terakhir: {_tg_escape(last_date_str)}\n\nWaktunya buat video baru, Bos K!"
                         try:
                             # Kirim pesan ke Telegram
                             requests.post(
@@ -5593,13 +6323,13 @@ def scheduled_task_activator():
                 if diff <= timedelta(hours=1):
                     t['status'] = "In Factory Queue ⚙️ (Dilanjutkan)"
                     try:
-                        queue_put(t["blueprint"])
+                        queue_put(t["blueprint"], allow_overflow=True)
                         activated.append(t['title'][:50])
                     except Exception:
                         pass
         if activated:
             save_tasks_db()
-            msg = "⏳ *Bos, jadwalnya tiba nih!* 😎\n" + "\n".join("• " + a for a in activated)
+            msg = "⏳ *Bos, jadwalnya tiba nih!* 😎\n" + "\n".join("• " + _tg_escape(a) for a in activated)
             send_tg_message(msg)
 
 threading.Thread(target=scheduled_task_activator, daemon=True).start()
@@ -5607,14 +6337,20 @@ threading.Thread(target=scheduled_task_activator, daemon=True).start()
 # --- Endpoint Telegram Settings ---
 @app.route('/api/save_telegram', methods=['POST'])
 def save_telegram():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     bot_config = load_bot_config()
-    bot_config['tg_token'] = data.get('token', '')
-    bot_config['tg_chat_id'] = data.get('chat_id', '')
-    
-    with open(CONFIG_FILE, 'w') as f: 
-        json.dump(bot_config, f, indent=4)
-    
+    # 🔒 #11: token kosong = TIDAK BERUBAH (token utuh tidak pernah
+    # dikirim ke browser, jadi form tidak bisa mengembalikannya). Hapus
+    # token hanya lewat /api/delete_telegram.
+    _new_token = (data.get('token') or '').strip()
+    if _new_token:
+        bot_config['tg_token'] = _new_token
+    elif not bot_config.get('tg_token'):
+        return jsonify({"status": "error", "message": "Token Telegram wajib diisi."}), 400
+    bot_config['tg_chat_id'] = (data.get('chat_id') or '').strip()
+
+    _save_bot_config(bot_config)
+
     # Tes kirim pesan saat disimpan
     if bot_config['tg_token'] and bot_config['tg_chat_id']:
         try:
@@ -5629,9 +6365,13 @@ def save_telegram():
 
 @app.route('/api/get_telegram', methods=['GET'])
 def get_telegram():
+    # 🔒 #11: token bot TIDAK PERNAH dikirim ke browser — hanya status
+    # tersimpan + masking (•••• + 4 digit terakhir) untuk tampilan.
     bot_config = load_bot_config()
+    _tok = bot_config.get('tg_token', '')
     return jsonify({
-        "token": bot_config.get('tg_token', ''), 
+        "configured": bool(_tok),
+        "token_masked": _mask_token(_tok),
         "chat_id": bot_config.get('tg_chat_id', '')
     })
 
@@ -5643,11 +6383,11 @@ def delete_telegram():
         bot_config = load_bot_config()
         bot_config['tg_token'] = ''
         bot_config['tg_chat_id'] = ''
-        with open(CONFIG_FILE, 'w') as f:
-            json.dump(bot_config, f, indent=4)
+        _save_bot_config(bot_config)
         return jsonify({"status": "success", "message": "Konfigurasi Telegram dihapus!"})
     except Exception as e:
-        return jsonify({"status": "error", "message": f"Gagal menghapus konfigurasi Telegram: {str(e)}"})
+        print(f"Gagal hapus konfigurasi Telegram: {e}", flush=True)
+        return jsonify({"status": "error", "message": "Gagal menghapus konfigurasi Telegram."})
 
 @app.route('/api/hub_status')
 def get_hub_status():
@@ -5688,7 +6428,7 @@ def _reschedule_task(t):
         return
     t['status'] = "Menunggu Giliran (Queue) ⏳ (Dilanjutkan)"
     t['updated_at'] = time.time()
-    queue_put(t["blueprint"])
+    queue_put(t["blueprint"], allow_overflow=True)
 
 # 🔥 SISTEM PENYAPU OTOMATIS: Bersihkan hantu sebelum masuk antrean
 valid_yt_ids = {c['yt_id'] for c in database_channel}

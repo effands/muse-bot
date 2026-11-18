@@ -1039,6 +1039,37 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
 
       <div class="card" style="margin-bottom:18px;"><div class="card-body" style="padding:16px"><canvas id="dashChart" style="max-height:260px;width:100%"></canvas></div></div>
 
+      <!-- ════════ FASE 4: STATISTIK PER VIDEO ════════ -->
+      <div class="card" style="margin-bottom:18px;">
+        <div class="card-head">
+          <div>
+            <span class="card-title">STATISTIK PER VIDEO</span>
+            <div class="card-sub">Views, likes &amp; komentar per video yang sudah tayang (YouTube Data API, cache 1 jam)</div>
+          </div>
+          <button type="button" class="btn btn-sm" onclick="fetchVideoStats(true)" title="Ambil data terbaru dari YouTube (lewati cache)">↻ Refresh</button>
+        </div>
+        <div class="card-body">
+          <div class="g2" style="margin-bottom:12px">
+            <div><div style="font-family:var(--font-m);font-size:10px;color:var(--muted)">VIEWS 7 HARI</div><div id="vs-7d" style="font-size:18px;font-weight:700;color:var(--accent)">—</div></div>
+            <div><div style="font-family:var(--font-m);font-size:10px;color:var(--muted)">VIEWS 30 HARI</div><div id="vs-30d" style="font-size:18px;font-weight:700;color:var(--accent)">—</div></div>
+            <div><div style="font-family:var(--font-m);font-size:10px;color:var(--muted)">TOTAL VIEWS (VIDEO TERLACAK)</div><div id="vs-total" style="font-size:18px;font-weight:700;color:var(--accent)">—</div></div>
+            <div><div style="font-family:var(--font-m);font-size:10px;color:var(--muted)">VIDEO TERLACAK</div><div id="vs-count" style="font-size:18px;font-weight:700;color:var(--accent)">—</div></div>
+          </div>
+          <div id="vs-bestworst" style="font-size:12px;color:var(--text);margin-bottom:10px"></div>
+          <div id="vs-error" style="font-size:12px;color:var(--red,#f43f5e);margin-bottom:10px"></div>
+          <div style="overflow-x:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:12px">
+              <thead><tr style="text-align:left;color:var(--muted);font-family:var(--font-m);font-size:10px;border-bottom:1px solid var(--border)">
+                <th style="padding:6px 8px">VIDEO</th><th style="padding:6px 8px">CHANNEL</th><th style="padding:6px 8px">TAYANG</th>
+                <th style="padding:6px 8px;text-align:right">VIEWS</th><th style="padding:6px 8px;text-align:right">LIKES</th><th style="padding:6px 8px;text-align:right">KOMENTAR</th>
+              </tr></thead>
+              <tbody id="vs-tbody"><tr><td colspan="6" style="padding:10px 8px;color:var(--muted)">Memuat statistik…</td></tr></tbody>
+            </table>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:10px"><span id="vs-updated">—</span> · Subscriber per video tidak tersedia via YouTube Data API (butuh scope YouTube Analytics — token saat ini tidak memilikinya); subs channel ada di statistik channel di atas.</div>
+        </div>
+      </div>
+
       <!-- ════════ PUSAT KENDALI CEPAT (QUICK ACTIONS) ════════ -->
       <div style="margin-bottom:18px;">
         <div style="font-size:12px; font-weight:700; letter-spacing:.08em; color:var(--text); margin-bottom:10px; display:flex; align-items:center; gap:6px;">
@@ -4071,7 +4102,7 @@ function recoverFailedTasks() {
 function fetchAnalytics() {
   fetch('/api/get_youtube_analytics').then(r => r.json()).then(data => {
     analyticsData = data; const f = document.getElementById('analytics_filter'); f.innerHTML = '<option value="ALL">⬡ ALL CHANNELS</option>';
-    data.forEach(d => f.innerHTML += `<option value="${d.yt_id}">${d.name}</option>`); renderAnalytics();
+    data.forEach(d => f.innerHTML += `<option value="${d.yt_id}">${d.name}</option>`); renderAnalytics(); fetchVideoStats(false);
   }).catch(() => {});
 }
 
@@ -4093,6 +4124,52 @@ function renderAnalytics() {
     }
   }
   document.getElementById('st-views').textContent = tV.toLocaleString(); document.getElementById('st-watch').textContent = tW.toLocaleString(); document.getElementById('st-subs').textContent = tS.toLocaleString();
+  renderVideoStats();
+}
+
+// ────────────────────────────────────────────────────────
+//  FASE 4: STATISTIK PER VIDEO
+// ────────────────────────────────────────────────────────
+let videoStatsData = null;
+function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function fetchVideoStats(force) {
+  const url = '/api/get_video_stats' + (force ? '?force=1' : '');
+  fetch(url).then(r => r.json()).then(data => { videoStatsData = data; renderVideoStats(); }).catch(() => {
+    const tb = document.getElementById('vs-tbody');
+    if (tb) tb.innerHTML = '<tr><td colspan="6" style="padding:10px 8px;color:var(--muted)">Gagal memuat statistik video.</td></tr>';
+  });
+}
+function renderVideoStats() {
+  const tb = document.getElementById('vs-tbody'); if (!tb) return;
+  const d = videoStatsData;
+  if (!d) { tb.innerHTML = '<tr><td colspan="6" style="padding:10px 8px;color:var(--muted)">Memuat statistik…</td></tr>'; return; }
+  const fv = document.getElementById('analytics_filter') ? document.getElementById('analytics_filter').value : 'ALL';
+  const s = d.summary || {};
+  document.getElementById('vs-7d').textContent = (s.views_7d || 0).toLocaleString();
+  document.getElementById('vs-30d').textContent = (s.views_30d || 0).toLocaleString();
+  document.getElementById('vs-total').textContent = (s.total_views || 0).toLocaleString();
+  document.getElementById('vs-count').textContent = (s.total_videos || 0).toLocaleString();
+  document.getElementById('vs-updated').textContent = d.cache_used ? 'Data dari cache (≤1 jam)' : 'Data baru dari YouTube';
+  const errs = (d.channels || []).filter(c => c.status === 'error');
+  document.getElementById('vs-error').textContent = errs.length ? '⚠️ ' + errs.map(c => c.name + ': ' + c.error).join(' | ') : '';
+  const bw = s.best_worst || {};
+  const bwKeys = Object.keys(bw).filter(k => fv === 'ALL' || k === fv);
+  document.getElementById('vs-bestworst').innerHTML = bwKeys.length ? bwKeys.map(k => {
+    const b = bw[k]; const ch = (d.channels || []).find(c => c.yt_id === k);
+    return '🏆 <b>' + escapeHtml(ch ? ch.name : k) + '</b> — Terbaik: ' + escapeHtml(b.best.title) + ' (' + (b.best.views || 0).toLocaleString() + ' views) · Terendah: ' + escapeHtml(b.worst.title) + ' (' + (b.worst.views || 0).toLocaleString() + ' views)';
+  }).join('<br>') : '';
+  const rows = (d.videos || []).filter(v => fv === 'ALL' || v.yt_id === fv);
+  if (!rows.length) {
+    tb.innerHTML = '<tr><td colspan="6" style="padding:10px 8px;color:var(--muted)">Belum ada video yang tayang / belum ada data statistik. Video yang di-upload setelah Fase 4 akan terlacak otomatis.</td></tr>';
+    return;
+  }
+  tb.innerHTML = rows.map(v => '<tr style="border-bottom:1px solid var(--border)">'
+    + '<td style="padding:6px 8px"><a href="' + escapeHtml(v.url) + '" target="_blank" style="color:var(--accent)">' + escapeHtml(v.title) + '</a>' + (v.has_stats ? '' : ' <span style="color:var(--muted)">(statistik belum tersedia)</span>') + '</td>'
+    + '<td style="padding:6px 8px">' + escapeHtml(v.channel) + '</td>'
+    + '<td style="padding:6px 8px">' + escapeHtml(v.publish_date || '—') + '</td>'
+    + '<td style="padding:6px 8px;text-align:right">' + (v.views || 0).toLocaleString() + '</td>'
+    + '<td style="padding:6px 8px;text-align:right">' + (v.likes || 0).toLocaleString() + '</td>'
+    + '<td style="padding:6px 8px;text-align:right">' + (v.comments || 0).toLocaleString() + '</td></tr>').join('');
 }
 
 function drawChart(title, labels, d1, d2, type) {

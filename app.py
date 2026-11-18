@@ -2118,7 +2118,18 @@ def background_worker():
                                 time.sleep(10)
                         
                         video_id = resp.get('id')
-                        
+                        # 🔥 FASE 4: simpan video_id di task supaya statistik per
+                        # video bisa diambil (sebelumnya hanya ada di link status).
+                        try:
+                            with db_lock:
+                                for d in active_tasks:
+                                    if d['id'] == task_id:
+                                        d['video_id'] = video_id
+                                        d['video_url'] = f"https://youtu.be/{video_id}"
+                            save_tasks_db()
+                        except Exception:
+                            pass
+
                         thumb_path = get_and_consume_thumbnail(yt_id)
                         if thumb_path and os.path.exists(thumb_path):
                             try:
@@ -2329,6 +2340,227 @@ def get_youtube_analytics():
                 continue
         data.append({"yt_id": c["yt_id"], "name": c["name"], "views": views, "subs": subs, "watch_hours": 0, "videos": videos})
     return jsonify(data)
+
+# ==========================================
+# 📊 FASE 4 STATISTIK PER VIDEO
+# ==========================================
+# Per-video: views/likes/komentar via YouTube Data API v3 videos().list
+# (biaya 1 unit kuota per panggilan, maks 50 video/panggilan).
+# Jujur soal batas API: Data API TIDAK menyediakan subscriber per video —
+# itu hanya ada di YouTube Analytics API yang butuh scope
+# 'youtubeAnalytics.readonly' (token lama tidak punya scope itu, jadi
+# tidak dipanggil). Subs channel tetap dari channels().list (endpoint lama).
+# video_id disimpan di task saat upload sukses (field baru); riwayat lama
+# di-backfill dari link youtu.be di status. Cache 1 jam/channel di
+# video_stats_cache.json (di-gitignore) + snapshot harian {tanggal,
+# video_id, views} sebagai fondasi lingkaran analitik Fase 5/6.
+VIDEO_STATS_CACHE_FILE = os.path.join(BASE_DIR, 'video_stats_cache.json')
+VIDEO_STATS_CACHE_TTL = 3600  # detik
+_VIDEO_ID_RE = re.compile(r'(?:youtu\.be/|youtube\.com/watch\?v=)([A-Za-z0-9_-]{11})')
+
+def _extract_video_id_from_status(status):
+    if not status:
+        return None
+    m = _VIDEO_ID_RE.search(str(status))
+    return m.group(1) if m else None
+
+def _history_task_video_id(t):
+    return t.get('video_id') or _extract_video_id_from_status(t.get('status', ''))
+
+def _history_task_yt_id(t):
+    return t.get('yt_id') or (t.get('blueprint') or {}).get('yt_id')
+
+def _load_video_stats_cache():
+    try:
+        if os.path.exists(VIDEO_STATS_CACHE_FILE):
+            with open(VIDEO_STATS_CACHE_FILE, 'r') as f:
+                d = json.load(f)
+            if isinstance(d, dict) and isinstance(d.get('videos'), dict):
+                return d
+    except Exception:
+        pass
+    return {"videos": {}, "snapshots": []}
+
+def _save_video_stats_cache(cache):
+    try:
+        tmp = VIDEO_STATS_CACHE_FILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(cache, f)
+        os.replace(tmp, VIDEO_STATS_CACHE_FILE)
+    except Exception:
+        pass
+
+def _record_video_snapshots(cache, stats_by_id, today_str):
+    """Satu snapshot {tanggal, video_id, views} per video per hari.
+    Fondasi tren untuk lingkaran analitik (formula menang vs sepi)."""
+    try:
+        seen = {(s.get('date'), s.get('video_id')) for s in cache.get('snapshots', [])}
+        for vid, st in stats_by_id.items():
+            key = (today_str, vid)
+            if key not in seen:
+                cache.setdefault('snapshots', []).append(
+                    {"date": today_str, "video_id": vid, "views": int(st.get('views', 0))})
+                seen.add(key)
+        # Batasi 90 hari terakhir supaya file tidak membengkak.
+        cutoff = (_wib_now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        cache['snapshots'] = [s for s in cache.get('snapshots', []) if s.get('date', '') >= cutoff]
+    except Exception:
+        pass
+
+def _build_youtube_client_for_channel(channel):
+    """Kembalikan (youtube_client, None) atau (None, pesan_error).
+    Failover antar kredensial seperti endpoint analytics lama."""
+    creds_list = channel.get('creds_list', [channel.get('creds_json')])
+    tried = False
+    last_err = ''
+    for cred_str in creds_list:
+        if not cred_str:
+            continue
+        tried = True
+        try:
+            creds = Credentials.from_authorized_user_info(json.loads(cred_str))
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            return build('youtube', 'v3', credentials=creds), None
+        except Exception as e:
+            last_err = str(e)
+            continue
+    if not tried:
+        return None, "Tidak ada kredensial tersimpan — taut ulang channel."
+    return None, f"Token kedaluwarsa / tidak bisa refresh ({last_err[:80]}). Taut ulang channel."
+
+def _fetch_channel_video_stats(youtube, video_ids):
+    """videos().list per 50 id. Kembalikan {video_id: {views, likes, comments, published_at}}."""
+    out = {}
+    for i in range(0, len(video_ids), 50):
+        chunk = video_ids[i:i + 50]
+        try:
+            res = youtube.videos().list(part="statistics,snippet", id=",".join(chunk)).execute()
+        except Exception:
+            continue
+        for item in res.get('items', []):
+            st = item.get('statistics', {})
+            sn = item.get('snippet', {})
+            out[item.get('id')] = {
+                "views": int(st.get('viewCount', 0)),
+                "likes": int(st.get('likeCount', 0)),
+                "comments": int(st.get('commentCount', 0)),
+                "published_at": sn.get('publishedAt', ''),
+            }
+    return out
+
+@app.route('/api/get_video_stats')
+def get_video_stats():
+    force = request.args.get('force') == '1'
+    now_wib = _wib_now()
+    today_str = now_wib.strftime("%Y-%m-%d")
+    cache = _load_video_stats_cache()
+    cached_videos = cache.get('videos', {})
+
+    # Kumpulkan video yang tayang dari riwayat (video_id baru / backfill link lama).
+    by_channel = {}
+    for t in history_tasks:
+        vid = _history_task_video_id(t)
+        if not vid:
+            continue
+        if not t.get('video_id') and "Tayang" not in str(t.get('status', '')):
+            continue
+        yt_id = _history_task_yt_id(t)
+        if not yt_id:
+            continue
+        by_channel.setdefault(yt_id, {})[vid] = t
+
+    name_by_yt = {c.get('yt_id'): c.get('name', c.get('yt_id')) for c in database_channel}
+    videos_out = []
+    channels_out = []
+    cache_used = True
+    for yt_id, tasks in by_channel.items():
+        ch_name = name_by_yt.get(yt_id, yt_id)
+        entry = {"yt_id": yt_id, "name": ch_name, "status": "ok", "error": None}
+        ids = list(tasks.keys())
+        fresh = {}
+        stale = []
+        for vid in ids:
+            cv = cached_videos.get(vid)
+            if (not force and cv and (time.time() - float(cv.get('fetched_at', 0)) < VIDEO_STATS_CACHE_TTL)):
+                fresh[vid] = cv
+            else:
+                stale.append(vid)
+        fetched = {}
+        if stale:
+            # Negative-cache: channel yang fetch-nya gagal tidak dicoba lagi
+            # dalam 1 jam (TTL sama) supaya dashboard tidak menghantam API
+            # yang rusak di setiap buka halaman.
+            errs = cache.setdefault('channel_errors', {})
+            prev_err = errs.get(yt_id)
+            if prev_err and (time.time() - float(prev_err.get('at', 0)) < VIDEO_STATS_CACHE_TTL):
+                entry["status"] = "error"
+                entry["error"] = prev_err.get('error')
+            else:
+                channel = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+                if channel is None:
+                    entry["status"] = "error"
+                    entry["error"] = "Channel sudah tidak terhubung — statistik tidak bisa diambil."
+                    errs[yt_id] = {"error": entry["error"], "at": time.time()}
+                    _save_video_stats_cache(cache)
+                else:
+                    youtube, err = _build_youtube_client_for_channel(channel)
+                    if err:
+                        entry["status"] = "error"
+                        entry["error"] = err
+                        errs[yt_id] = {"error": err, "at": time.time()}
+                        _save_video_stats_cache(cache)
+                    else:
+                        fetched = _fetch_channel_video_stats(youtube, stale)
+                        if fetched:
+                            cache_used = False
+                            errs.pop(yt_id, None)
+                            for vid, st in fetched.items():
+                                cached_videos[vid] = dict(st, fetched_at=time.time())
+                            _record_video_snapshots(cache, fetched, today_str)
+                        # Video yang API tidak kembalikan (dihapus/private):
+                        # tombstone supaya tidak di-fetch ulang tiap buka halaman.
+                        for vid in stale:
+                            if vid not in fetched:
+                                cached_videos[vid] = {"views": 0, "likes": 0, "comments": 0,
+                                                      "published_at": "", "fetched_at": time.time(),
+                                                      "missing": True}
+                        _save_video_stats_cache(cache)
+        stats = dict(fresh)
+        stats.update(fetched)
+        for vid, t in tasks.items():
+            st = stats.get(vid)
+            pub = (st or {}).get('published_at', '')[:10] or t.get('finished_date') or (t.get('publish_date') or '')[:10]
+            videos_out.append({
+                "video_id": vid, "title": t.get('title', '?'), "channel": ch_name, "yt_id": yt_id,
+                "publish_date": pub, "views": int((st or {}).get('views', 0)),
+                "likes": int((st or {}).get('likes', 0)), "comments": int((st or {}).get('comments', 0)),
+                "url": f"https://youtu.be/{vid}", "has_stats": bool(st) and not st.get('missing'),
+            })
+        channels_out.append(entry)
+
+    # Ringkasan: views 7/30 hari dihitung dari tanggal tayang (WIB).
+    def _in_days(pub, days):
+        try:
+            d = datetime.strptime(pub, "%Y-%m-%d").date()
+            return 0 <= (now_wib.date() - d).days < days
+        except Exception:
+            return False
+    views_7d = sum(v['views'] for v in videos_out if _in_days(v['publish_date'], 7))
+    views_30d = sum(v['views'] for v in videos_out if _in_days(v['publish_date'], 30))
+    best_worst = {}
+    for yt_id in by_channel:
+        vs = [v for v in videos_out if v['yt_id'] == yt_id and v['has_stats']]
+        if vs:
+            best_worst[yt_id] = {"best": max(vs, key=lambda x: x['views']), "worst": min(vs, key=lambda x: x['views'])}
+    return jsonify({
+        "videos": sorted(videos_out, key=lambda x: x['publish_date'], reverse=True),
+        "summary": {"total_videos": len(videos_out), "total_views": sum(v['views'] for v in videos_out),
+                    "views_7d": views_7d, "views_30d": views_30d, "best_worst": best_worst},
+        "channels": channels_out,
+        "cache_used": cache_used,
+        "subs_note": "Subscriber per video tidak tersedia via YouTube Data API — butuh scope YouTube Analytics (token saat ini tidak memilikinya). Subs channel ada di statistik channel di atas.",
+    })
 
 @app.route('/api/get_schedule')
 def get_schedule(): return jsonify({"active": active_tasks, "history": history_tasks})

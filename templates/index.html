@@ -8,29 +8,81 @@
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Clash+Display:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 /* ═══════════════════════════════════════════
-   PABRIK KONTEN — DESIGN SYSTEM
+   ZIQVA MUSE BOT — DUAL THEME ENGINE (NEON DARK & CRISP LIGHT)
 ═══════════════════════════════════════════ */
 :root {
-  --bg:        #05080d;
-  --surface:   #090d14;
-  --card:      #0d1520;
-  --card2:     #111c2a;
-  --border:    #162030;
-  --border2:   #1e2e42;
-  --accent:    #00d4ff;
-  --accent-dim:rgba(0,212,255,.08);
-  --accent2:   #ff4d6d;
-  --accent3:   #7c5cfc;
-  --green:     #00e887;
-  --yellow:    #ffc94d;
-  --orange:    #ff8c42;
-  --text:      #c8daea;
-  --text2:     #7a9ab8;
-  --muted:     #3a5470;
+  --bg:        #040711;
+  --surface:   #080e1a;
+  --card:      #0b1322;
+  --card2:     #101b30;
+  --border:    #1c2d46;
+  --border2:   #253b5c;
+  --accent:    #00e5ff;
+  --accent-dim:rgba(0, 229, 255, 0.12);
+  --accent2:   #ff3366;
+  --accent3:   #8b5cf6;
+  --green:     #10b981;
+  --yellow:    #fbbf24;
+  --orange:    #f97316;
+  --text:      #ffffff;
+  --text2:     #e2e8f0;
+  --muted:     #94a3b8;
   --font-d:    'Clash Display', sans-serif;
   --font-m:    'DM Mono', monospace;
   --r:         10px;
   --r2:        14px;
+  --glow-accent: 0 0 16px rgba(0, 229, 255, 0.45);
+  --glow-btn:    0 0 18px rgba(0, 229, 255, 0.5);
+  --glow-purple: 0 0 16px rgba(139, 92, 246, 0.45);
+  --glow-green:  0 0 16px rgba(16, 185, 129, 0.45);
+  --glow-danger: 0 0 16px rgba(255, 51, 102, 0.45);
+}
+
+[data-theme="light"] {
+  --bg:        #f1f5f9;
+  --surface:   #ffffff;
+  --card:      #ffffff;
+  --card2:     #f8fafc;
+  --border:    #cbd5e1;
+  --border2:   #94a3b8;
+  --accent:    #0284c7;
+  --accent-dim:rgba(2, 132, 199, 0.12);
+  --accent2:   #e11d48;
+  --accent3:   #7c3aed;
+  --green:     #059669;
+  --yellow:    #d97706;
+  --orange:    #ea580c;
+  --text:      #0f172a;
+  --text2:     #334155;
+  --muted:     #64748b;
+  --glow-accent: 0 4px 14px rgba(2, 132, 199, 0.25);
+  --glow-btn:    0 4px 16px rgba(2, 132, 199, 0.35);
+  --glow-purple: 0 4px 14px rgba(124, 58, 237, 0.25);
+  --glow-green:  0 4px 14px rgba(5, 150, 105, 0.25);
+  --glow-danger: 0 4px 14px rgba(225, 29, 72, 0.25);
+}
+
+[data-theme="light"] body::before {
+  background:
+    radial-gradient(ellipse 60% 40% at 15% 0%, rgba(2, 132, 199, 0.08) 0%, transparent 100%),
+    radial-gradient(ellipse 40% 50% at 90% 80%, rgba(124, 58, 237, 0.08) 0%, transparent 100%);
+}
+[data-theme="light"] .card,
+[data-theme="light"] .stat,
+[data-theme="light"] .ch-group-head,
+[data-theme="light"] .task-row,
+[data-theme="light"] .form-section {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+}
+[data-theme="light"] .topbar {
+  background: rgba(255, 255, 255, 0.95);
+  border-bottom: 1px solid var(--border);
+}
+[data-theme="light"] .sidebar {
+  box-shadow: 4px 0 20px rgba(0, 0, 0, 0.04);
+}
+[data-theme="light"] .bottom-nav {
+  background: rgba(255, 255, 255, 0.98);
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -214,16 +266,59 @@ body::before {
 .btn {
   display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px;
   border-radius: 8px; font-family: var(--font-d); font-size: 12px; font-weight: 700;
-  cursor: pointer; border: none; transition: all .15s; letter-spacing: .02em;
+  cursor: pointer; border: none; transition: all .2s cubic-bezier(0.16, 1, 0.3, 1); letter-spacing: .02em;
 }
-.btn-p { background: linear-gradient(135deg, var(--accent), #0099bb); color: #000; }
-.btn-p:hover { filter: brightness(1.1); transform: translateY(-1px); }
-.btn-g { background: transparent; color: var(--text2); border: 1px solid var(--border2); }
-.btn-g:hover { border-color: var(--accent); color: var(--accent); }
-.btn-danger { background: rgba(255,77,109,.1); color: var(--accent2); border: 1px solid rgba(255,77,109,.25); cursor:pointer; padding:7px 14px; border-radius:8px; font-family:var(--font-d); font-size:12px; font-weight:700; transition:.15s; }
-.btn-danger:hover { background: var(--accent2); color: #fff; }
-.btn-purple { background: rgba(124,92,252,.12); color: var(--accent3); border: 1px solid rgba(124,92,252,.25); }
-.btn-purple:hover { background: var(--accent3); color: #fff; }
+.btn-p { 
+  background: linear-gradient(135deg, var(--accent), #00a8cc); 
+  color: #040711; 
+  font-weight: 800;
+  box-shadow: var(--glow-btn);
+}
+.btn-p:hover { 
+  filter: brightness(1.15); 
+  transform: translateY(-1px);
+  box-shadow: 0 0 24px var(--accent);
+}
+.btn-g { 
+  background: var(--surface); 
+  color: var(--text2); 
+  border: 1px solid var(--border); 
+}
+.btn-g:hover { 
+  border-color: var(--accent); 
+  color: var(--accent); 
+  box-shadow: 0 0 12px var(--accent-dim);
+}
+.btn-danger { 
+  background: linear-gradient(135deg, rgba(255,51,102,.25), rgba(255,51,102,.45)); 
+  color: #ffffff; 
+  border: 1px solid var(--accent2); 
+  cursor: pointer; 
+  padding: 7px 14px; 
+  border-radius: 8px; 
+  font-family: var(--font-d); 
+  font-size: 12px; 
+  font-weight: 700; 
+  transition: .15s; 
+  box-shadow: var(--glow-danger);
+}
+.btn-danger:hover { 
+  background: var(--accent2); 
+  color: #fff; 
+  box-shadow: 0 0 22px var(--accent2);
+}
+.btn-purple { 
+  background: linear-gradient(135deg, var(--accent3), #6366f1); 
+  color: #ffffff; 
+  border: none; 
+  font-weight: 800;
+  box-shadow: var(--glow-purple);
+}
+.btn-purple:hover { 
+  filter: brightness(1.15); 
+  transform: translateY(-1px);
+  box-shadow: 0 0 22px var(--accent3); 
+}
 .btn-full { width: 100%; justify-content: center; padding: 13px; font-size: 13px; }
 .btn-sm { padding: 6px 12px; font-size: 11px; }
 
@@ -585,6 +680,11 @@ input[type=color] { padding:0; height:36px; width:100%; border:1px solid var(--b
       <div class="tb-sub" id="tb-sub">Overview sistem & analytics</div>
     </div>
     <div class="tb-right">
+
+      <!-- TOMBOL GANTI TEMA -->
+      <button id="theme-toggle-btn" class="btn btn-g" onclick="toggleTheme()" style="padding: 6px 12px; font-size: 11px; margin-right: 4px; display: flex; align-items: center; gap: 6px; cursor: pointer;" title="Ganti Tema">
+         <span id="theme-icon">☀️</span> <span id="theme-text">Light Mode</span>
+      </button>
 
       <!-- TOMBOL KEMBALI KE HUB -->
       <a href="/hub" class="btn btn-g" style="text-decoration: none; display: flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 11px; margin-right: 4px;">
@@ -3726,6 +3826,35 @@ function toggleSidebarDrawer() {
     bd.classList.toggle('active');
   }
 }
+
+// ════════ THEME ENGINE (DARK GLOW & CRISP LIGHT) ════════
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem('ziqva_theme', theme);
+  const icon = document.getElementById('theme-icon');
+  const text = document.getElementById('theme-text');
+  if (icon && text) {
+    if (theme === 'light') {
+      icon.innerText = '🌙';
+      text.innerText = 'Dark Mode';
+    } else {
+      icon.innerText = '☀️';
+      text.innerText = 'Light Mode';
+    }
+  }
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme') || 'dark';
+  const next = current === 'light' ? 'dark' : 'light';
+  applyTheme(next);
+}
+
+// Run immediately on page load
+(function() {
+  const saved = localStorage.getItem('ziqva_theme') || 'dark';
+  applyTheme(saved);
+})();
 </script>
 </body>
 </html>

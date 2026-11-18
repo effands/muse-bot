@@ -48,6 +48,77 @@
             border-color: rgba(168, 85, 247, 0.4);
             box-shadow: 0 15px 35px -10px rgba(168, 85, 247, 0.15);
         }
+        .btn-glow-cyan {
+            box-shadow: 0 0 18px rgba(0, 229, 255, 0.45);
+            transition: all 0.2s ease;
+        }
+        .btn-glow-cyan:hover {
+            box-shadow: 0 0 28px rgba(0, 229, 255, 0.8);
+            transform: translateY(-1px);
+        }
+        .btn-glow-purple {
+            box-shadow: 0 0 18px rgba(168, 85, 247, 0.45);
+            transition: all 0.2s ease;
+        }
+        .btn-glow-purple:hover {
+            box-shadow: 0 0 28px rgba(168, 85, 247, 0.8);
+            transform: translateY(-1px);
+        }
+
+        /* LIGHT THEME RULES */
+        [data-theme="light"] body {
+            background: #f1f5f9;
+            color: #0f172a;
+        }
+        [data-theme="light"] .bg-mesh {
+            background-image: 
+                radial-gradient(circle at 15% 15%, rgba(2, 132, 199, 0.09) 0%, transparent 40%),
+                radial-gradient(circle at 85% 85%, rgba(124, 58, 237, 0.09) 0%, transparent 40%),
+                radial-gradient(circle at 50% 50%, rgba(16, 185, 129, 0.04) 0%, transparent 50%),
+                linear-gradient(rgba(0, 0, 0, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 0, 0, 0.03) 1px, transparent 1px);
+        }
+        [data-theme="light"] .glass-card {
+            background: rgba(255, 255, 255, 0.92);
+            border-color: rgba(203, 213, 225, 0.8);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.06);
+        }
+        [data-theme="light"] .module-box {
+            background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+            border-color: rgba(203, 213, 225, 0.8);
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.05);
+        }
+        [data-theme="light"] .module-box:hover {
+            border-color: rgba(2, 132, 199, 0.5);
+            box-shadow: 0 15px 35px -10px rgba(2, 132, 199, 0.2);
+        }
+        [data-theme="light"] .text-white {
+            color: #0f172a !important;
+        }
+        [data-theme="light"] .text-slate-400 {
+            color: #64748b !important;
+        }
+        [data-theme="light"] .text-slate-300 {
+            color: #334155 !important;
+        }
+        [data-theme="light"] .bg-slate-900 {
+            background-color: #f1f5f9 !important;
+            border-color: #cbd5e1 !important;
+        }
+        [data-theme="light"] .bg-slate-900\/90 {
+            background-color: #ffffff !important;
+            border-color: #e2e8f0 !important;
+        }
+        [data-theme="light"] .bg-slate-900\/80 {
+            background-color: #f8fafc !important;
+            border-color: #e2e8f0 !important;
+        }
+        [data-theme="light"] .border-slate-800 {
+            border-color: #e2e8f0 !important;
+        }
+        [data-theme="light"] .border-slate-700 {
+            border-color: #cbd5e1 !important;
+        }
     </style>
 </head>
 <body class="h-screen w-screen overflow-hidden flex flex-col justify-between p-3 sm:p-5 select-none relative">
@@ -77,6 +148,12 @@
                     <span class="text-slate-400 hidden md:inline">Server:</span>
                     <span class="font-semibold text-emerald-400 mono">Port 8000</span>
                 </div>
+
+                <!-- Theme Toggle Button -->
+                <button onclick="toggleTheme()" class="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[11px] font-semibold text-slate-200 transition-all flex items-center gap-1.5 hover:border-cyan-500 cursor-pointer" title="Ganti Tema">
+                    <span id="theme-icon">☀️</span>
+                    <span id="theme-text" class="hidden sm:inline">Light</span>
+                </button>
 
                 <!-- Telegram Button -->
                 <button onclick="openTelegramModal()" class="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[11px] font-semibold text-slate-200 transition-all flex items-center gap-1.5 hover:border-cyan-500">
@@ -194,7 +271,7 @@
                     </div>
                 </div>
 
-                <a href="/factory" class="w-full py-3 px-4 rounded-xl font-bold text-slate-950 bg-cyan-400 hover:bg-cyan-300 flex items-center justify-center gap-2 text-xs sm:text-sm uppercase tracking-wider transition-all shadow-lg shadow-cyan-500/20">
+                <a href="/factory" class="w-full py-3 px-4 rounded-xl font-bold text-slate-950 bg-cyan-400 hover:bg-cyan-300 flex items-center justify-center gap-2 text-xs sm:text-sm uppercase tracking-wider transition-all btn-glow-cyan">
                     <span>Masuk ke Dashboard Factory</span>
                     <i class="fa-solid fa-arrow-right"></i>
                 </a>
@@ -240,7 +317,7 @@
                     </div>
                 </div>
 
-                <a href="/clipper" class="w-full py-3 px-4 rounded-xl font-bold text-white bg-purple-600 hover:bg-purple-500 flex items-center justify-center gap-2 text-xs sm:text-sm uppercase tracking-wider transition-all shadow-lg shadow-purple-600/20">
+                <a href="/clipper" class="w-full py-3 px-4 rounded-xl font-bold text-white bg-purple-600 hover:bg-purple-500 flex items-center justify-center gap-2 text-xs sm:text-sm uppercase tracking-wider transition-all btn-glow-purple">
                     <span>Masuk ke Dashboard Clipper</span>
                     <i class="fa-solid fa-arrow-right"></i>
                 </a>
@@ -339,6 +416,33 @@
                 setTimeout(closeTelegramModal, 1200);
             }
         }
+        // ════════ THEME ENGINE ════════
+        function applyTheme(theme) {
+            document.documentElement.setAttribute('data-theme', theme);
+            localStorage.setItem('ziqva_theme', theme);
+            const icon = document.getElementById('theme-icon');
+            const text = document.getElementById('theme-text');
+            if (icon && text) {
+                if (theme === 'light') {
+                    icon.innerText = '🌙';
+                    text.innerText = 'Dark';
+                } else {
+                    icon.innerText = '☀️';
+                    text.innerText = 'Light';
+                }
+            }
+        }
+
+        function toggleTheme() {
+            const current = document.documentElement.getAttribute('data-theme') || 'dark';
+            const next = current === 'light' ? 'dark' : 'light';
+            applyTheme(next);
+        }
+
+        (function() {
+            const saved = localStorage.getItem('ziqva_theme') || 'dark';
+            applyTheme(saved);
+        })();
     </script>
 </body>
 </html>

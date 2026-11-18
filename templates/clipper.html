@@ -11,13 +11,56 @@
         .cardborder { border-color: #1e2e42; }
         .bg-card { background-color: #111722; }
         .text-primary { color: #00e5ff; }
-        .bg-primary { background-color: #00e5ff; color: #000; }
-        .bg-primaryhover:hover { background-color: #00b3cc; }
+        .bg-primary { 
+            background: linear-gradient(135deg, #00e5ff, #00a8cc); 
+            color: #040711; 
+            font-weight: 800;
+            box-shadow: 0 0 16px rgba(0, 229, 255, 0.45);
+        }
+        .bg-primaryhover:hover { 
+            background: linear-gradient(135deg, #33ebff, #00bfe6); 
+            box-shadow: 0 0 24px rgba(0, 229, 255, 0.75);
+            transform: translateY(-1px);
+        }
         
         input, select { background-color: #0a0f1c; border: 1px solid #1e2e42; color: #fff; outline: none; }
         input:focus, select:focus { border-color: #00e5ff; box-shadow: 0 0 0 2px rgba(0,229,255,0.2); }
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-thumb { background: #1e2e42; border-radius: 4px; }
+
+        /* LIGHT THEME */
+        [data-theme="light"] body { 
+            background-color: #f1f5f9; 
+            color: #0f172a; 
+        }
+        [data-theme="light"] .bg-card { 
+            background-color: #ffffff; 
+            border-color: #cbd5e1;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.05);
+        }
+        [data-theme="light"] .cardborder { 
+            border-color: #cbd5e1; 
+        }
+        [data-theme="light"] .text-primary { 
+            color: #0284c7; 
+        }
+        [data-theme="light"] input, 
+        [data-theme="light"] select { 
+            background-color: #f8fafc; 
+            border-color: #cbd5e1; 
+            color: #0f172a; 
+        }
+        [data-theme="light"] input:focus, 
+        [data-theme="light"] select:focus { 
+            border-color: #0284c7; 
+            box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.25); 
+        }
+        [data-theme="light"] .text-gray-400 { 
+            color: #64748b; 
+        }
+        [data-theme="light"] .text-white { 
+            color: #0f172a; 
+        }
     </style>
 </head>
 <body class="min-h-screen flex flex-col items-center p-6">
@@ -30,6 +73,11 @@
         </div>
         
         <div class="flex items-center gap-3">
+    <!-- Tombol Ganti Tema -->
+    <button onclick="toggleTheme()" class="bg-[#111722] hover:bg-[#1a2332] border border-gray-700 px-3 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 cursor-pointer" title="Ganti Tema">
+        <span id="theme-icon">☀️</span> <span id="theme-text" class="hidden sm:inline">Light</span>
+    </button>
+
     <!-- Tombol Kembali ke Hub -->
     <a href="/hub" class="bg-[#111722] hover:bg-[#1a2332] border border-gray-700 px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2">
         <i class="fa-solid fa-house"></i> Kembali ke Hub
@@ -347,6 +395,34 @@
         });
 
         refreshCookieStatus();
+
+        // ════════ THEME ENGINE ════════
+        function applyTheme(theme) {
+            document.documentElement.setAttribute('data-theme', theme);
+            localStorage.setItem('ziqva_theme', theme);
+            const icon = document.getElementById('theme-icon');
+            const text = document.getElementById('theme-text');
+            if (icon && text) {
+                if (theme === 'light') {
+                    icon.innerText = '🌙';
+                    text.innerText = 'Dark';
+                } else {
+                    icon.innerText = '☀️';
+                    text.innerText = 'Light';
+                }
+            }
+        }
+
+        function toggleTheme() {
+            const current = document.documentElement.getAttribute('data-theme') || 'dark';
+            const next = current === 'light' ? 'dark' : 'light';
+            applyTheme(next);
+        }
+
+        (function() {
+            const saved = localStorage.getItem('ziqva_theme') || 'dark';
+            applyTheme(saved);
+        })();
     </script>
 </body>
 </html>

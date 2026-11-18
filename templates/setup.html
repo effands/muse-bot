@@ -50,6 +50,15 @@
             border-color: #00e5ff;
             box-shadow: 0 0 0 3px rgba(0, 229, 255, 0.2);
         }
+
+        /* LIGHT THEME */
+        [data-theme="light"] body { background: #f1f5f9; color: #0f172a; }
+        [data-theme="light"] .glass-card { background: rgba(255, 255, 255, 0.95); border-color: #cbd5e1; box-shadow: 0 20px 40px rgba(0,0,0,0.08); }
+        [data-theme="light"] .text-white { color: #0f172a !important; }
+        [data-theme="light"] .text-slate-400 { color: #64748b !important; }
+        [data-theme="light"] .text-slate-300 { color: #334155 !important; }
+        [data-theme="light"] .bg-slate-900\/90 { background-color: #f8fafc !important; border-color: #cbd5e1 !important; color: #0f172a !important; }
+        [data-theme="light"] .border-slate-800 { border-color: #e2e8f0 !important; }
     </style>
 </head>
 <body class="p-4">
@@ -153,6 +162,10 @@
                 icon.classList.add('fa-eye');
             }
         }
+        (function() {
+            const saved = localStorage.getItem('ziqva_theme') || 'dark';
+            document.documentElement.setAttribute('data-theme', saved);
+        })();
     </script>
 </body>
 </html>

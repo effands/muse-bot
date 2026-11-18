@@ -289,6 +289,493 @@ def build_daily_report():
     return "\n".join(lines)
 
 # ==========================================
+# 🔥 PERLUASAN PERINTAH — LAPORAN DETAIL (baca saja)
+# Semua builder di bawah ini READ-ONLY: hanya membaca file JSON lokal
+# (channels_db, tasks_db, video_stats_cache) dan folder galeri di disk.
+# Tidak ada yang mengubah data, memanggil endpoint tulis, atau mencetak
+# token/kredensial. Daftar dibatasi maks 8 item supaya pesan < 4096 karakter.
+# ==========================================
+_START_TIME = time.time()  # uptime operator sejak proses ini jalan
+_VIDEO_ID_RE = re.compile(r'(?:youtu\.be/|v=|/shorts/)([A-Za-z0-9_-]{11})')
+_VIDEO_STATS_CACHE_FILE = os.path.join(BASE_DIR, 'video_stats_cache.json')
+_GALLERY_FOLDERS = ['audios', 'backgrounds', 'thumbnails', 'base_videos', 'overlays', 'special_songs']
+_GALLERY_LABELS = {'audios': '🎵 Musik', 'backgrounds': '🖼️ Background',
+                   'thumbnails': '🖼️ Thumbnail', 'base_videos': '🎬 Video dasar',
+                   'overlays': '✨ Overlay', 'special_songs': '🎶 Lagu khusus'}
+
+
+def _load_video_stats_cache():
+    """Cache statistik Fase 4 (views/likes/komentar per video). Kosong kalau
+    belum ada video tayang / cache belum terisi — pemanggil harus jujur
+    bilang 'belum ada data', jangan mengarang angka."""
+    try:
+        if os.path.exists(_VIDEO_STATS_CACHE_FILE):
+            with open(_VIDEO_STATS_CACHE_FILE, 'r') as f:
+                d = json.load(f)
+            if isinstance(d, dict) and isinstance(d.get('videos'), dict):
+                return d
+    except Exception:
+        pass
+    return {"videos": {}}
+
+
+def _project_id_of_channel(ch):
+    """Nomor project Google dari prefix client_id kredensial utama channel
+    (angka sebelum '-', cerminan app.py). Hanya nomor project — BUKAN secret,
+    dan kredensial tidak pernah dicetak/dikirim ke mana pun."""
+    try:
+        if not ch:
+            return None
+        creds_list = ch.get('creds_list') or [ch.get('creds_json')]
+        cred_str = next((s for s in creds_list if s), '')
+        if not cred_str:
+            return None
+        client_id = (json.loads(cred_str) or {}).get('client_id', '')
+        if not client_id:
+            return None
+        return str(client_id).split('-')[0] or None
+    except Exception:
+        return None
+
+
+def _extract_video_id_from_status(status):
+    if not status:
+        return None
+    m = _VIDEO_ID_RE.search(str(status))
+    return m.group(1) if m else None
+
+
+def _history_task_video_id(t):
+    return t.get('video_id') or _extract_video_id_from_status(t.get('status', ''))
+
+
+def _history_task_yt_id(t):
+    return t.get('yt_id') or (t.get('blueprint') or {}).get('yt_id')
+
+
+def _fmt_num(n):
+    """12.345 (pemisah ribuan gaya Indonesia) supaya angka enak dibaca."""
+    try:
+        return f"{int(n):,}".replace(",", ".")
+    except Exception:
+        return str(n)
+
+
+def _uptime_str(seconds):
+    """'2 hari 3 jam 15 mnt' dari detik."""
+    try:
+        seconds = int(seconds)
+    except Exception:
+        return "-"
+    days, rem = divmod(max(0, seconds), 86400)
+    hours, rem = divmod(rem, 3600)
+    mins, _ = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append(f"{days} hari")
+    if hours:
+        parts.append(f"{hours} jam")
+    parts.append(f"{mins} mnt")
+    return " ".join(parts)
+
+
+def _clip(text, limit=4000):
+    """Pengaman batas 4096 karakter Telegram: potong di baris terakhir yang
+    utuh sebelum batas, jangan di tengah kata/baris."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit("\n", 1)[0]
+    return cut + "\n_(pesan dipotong — kepanjangan)_"
+
+
+def _count_gallery(yt_id):
+    """Hitung isi galeri channel: {folder: (jumlah_file, byte)} + total.
+    Folder tidak ada = 0. Hanya hitung file, bukan subfolder."""
+    out = {}
+    total_files = 0
+    total_bytes = 0
+    base = os.path.join(BASE_DIR, 'uploads', str(yt_id or ''))
+    for folder in _GALLERY_FOLDERS:
+        count = 0
+        size = 0
+        try:
+            path = os.path.join(base, folder)
+            if os.path.isdir(path):
+                for name in os.listdir(path):
+                    fp = os.path.join(path, name)
+                    if os.path.isfile(fp):
+                        count += 1
+                        try:
+                            size += os.path.getsize(fp)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        out[folder] = (count, size)
+        total_files += count
+        total_bytes += size
+    return out, total_files, total_bytes
+
+
+def _stats_by_channel():
+    """Gabungkan riwayat tayang + cache statistik Fase 4 per channel.
+    Kembalikan {yt_id: {name, videos: [...], views, likes, comments,
+    views_7d, views_30d, hours}}. Video tanpa statistik di cache dilewati
+    (belum sempat di-fetch API) — totalnya jadi jujur 'yang tercatat'."""
+    channels = load_channels()
+    name_by_yt = {c.get('yt_id'): _channel_display_name(c) for c in channels}
+    cached = _load_video_stats_cache().get('videos', {})
+    history = load_tasks().get('history', [])
+    now = _wib_now().date()
+    per_channel = {}
+
+    def _in_days(pub, days):
+        try:
+            d = datetime.strptime(pub, "%Y-%m-%d").date()
+            return 0 <= (now - d).days < days
+        except Exception:
+            return False
+
+    for t in history:
+        vid = _history_task_video_id(t)
+        if not vid:
+            continue
+        yt = _history_task_yt_id(t)
+        if not yt:
+            continue
+        st = cached.get(vid) or {}
+        if not st or st.get('missing'):
+            continue
+        pub = (st.get('published_at', '') or '')[:10] or (t.get('finished_date') or '')[:10] or ''
+        views = int(st.get('views', 0) or 0)
+        likes = int(st.get('likes', 0) or 0)
+        comments = int(st.get('comments', 0) or 0)
+        e = per_channel.setdefault(yt, {"name": name_by_yt.get(yt, yt), "videos": [],
+                                        "views": 0, "likes": 0, "comments": 0,
+                                        "views_7d": 0, "views_30d": 0, "hours": 0.0})
+        e["videos"].append({"title": t.get('title', '?'), "views": views,
+                            "likes": likes, "comments": comments, "pub": pub,
+                            "video_id": vid})
+        e["views"] += views
+        e["likes"] += likes
+        e["comments"] += comments
+        if _in_days(pub, 7):
+            e["views_7d"] += views
+        if _in_days(pub, 30):
+            e["views_30d"] += views
+        bp = t.get('blueprint') or {}
+        try:
+            kind = t.get('kind') or bp.get('kind')
+            if kind == 'shorts_muse':
+                e["hours"] += float(t.get('shorts_duration_sec') or bp.get('shorts_duration_sec') or 0) / 3600.0
+            else:
+                e["hours"] += float(bp.get('target_duration_hours') or t.get('target_duration_hours') or 0)
+        except Exception:
+            pass
+    return per_channel
+
+
+def build_quota_report():
+    """Kuota upload: per project Google (batas 6/hari/project) + per channel."""
+    channels = load_channels()
+    today = _wib_today_str()
+    lines = [
+        "🎯 *Kuota Upload Buat Bos* 😎",
+        f"_{_wib_now().strftime('%d %b %Y, %H:%M')} WIB_",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+    if not channels:
+        lines.append("📺 Belum ada channel terhubung nih Bos 😅")
+        lines.append("Tautkan dulu dari panel, baru kuota bisa saya hitung.")
+        return "\n".join(lines)
+    projects = {}
+    for ch in channels:
+        pid = _project_id_of_channel(ch) or 'tidak-diketahui'
+        e = projects.setdefault(pid, {"channels": [], "used": 0})
+        e["channels"].append(ch)
+        du = ch.get('daily_uploads') or {}
+        if du.get('date') == today:
+            e["used"] += int(du.get('count', 0))
+    lines.append("☁️ *Per Project Google* (batas 6 upload/hari/project):")
+    for pid in sorted(projects):
+        e = projects[pid]
+        used = e["used"]
+        left = max(0, MAX_UPLOADS_PER_DAY - used)
+        names = ", ".join(_channel_display_name(c) for c in e["channels"][:4])
+        cd = any((c.get('cooldown_until') or 0) > time.time() for c in e["channels"])
+        lines.append(f"• Project `{_tg_escape(pid)}`: `{used}/{MAX_UPLOADS_PER_DAY}` (sisa `{left}`)"
+                     + (" ⏸️ cooldown sampai tengah malam" if cd else ""))
+        lines.append(f"  Channel: {_tg_escape(names)}")
+        if len(e["channels"]) > 4:
+            lines.append(f"  _...dan {len(e['channels']) - 4} channel lainnya._")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("📺 *Per channel hari ini:*")
+    for ch in channels[:8]:
+        name = _channel_display_name(ch)
+        used, left = get_channel_quota(ch)
+        pause = " ⏸️ Dijeda" if ch.get('paused') else ""
+        lines.append(f"• *{_tg_escape(name)}*: `{used}/{MAX_UPLOADS_PER_DAY}` (sisa `{left}`){pause}")
+    if len(channels) > 8:
+        lines.append(f"_...dan {len(channels) - 8} channel lainnya._")
+    lines.append("Bos, kalau kuota project udah 6/6, upload baru nunggu reset tengah malam WIB ya 😌")
+    return "\n".join(lines)
+
+
+def build_stock_report():
+    """Sisa stok jadwal + isi galeri per channel."""
+    channels = load_channels()
+    lines = [
+        "📦 *Stok Jadwal & Galeri Buat Bos* 😎",
+        f"_{_wib_now().strftime('%d %b %Y, %H:%M')} WIB_",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+    if not channels:
+        lines.append("📺 Belum ada channel terhubung nih Bos 😅")
+        return "\n".join(lines)
+    for ch in channels[:8]:
+        name = _channel_display_name(ch)
+        stock = get_stock_days(ch)
+        last = ch.get('last_scheduled_date', '-') or '-'
+        counts, total_files, total_bytes = _count_gallery(ch.get('yt_id', ''))
+        if stock is None:
+            stock_txt = "belum ada jadwal"
+        elif stock < 0:
+            stock_txt = "⚠️ stok HABIS"
+        elif stock <= 2:
+            stock_txt = f"⚠️ sisa ~{max(0, int(stock))} hari"
+        else:
+            stock_txt = f"sisa ~{int(stock)} hari"
+        lines.append(f"📺 *{_tg_escape(name)}* — stok: {stock_txt}")
+        lines.append(f"  Jadwal terakhir: `{_tg_escape(last)}`")
+        if total_files:
+            parts = [f"{_GALLERY_LABELS[f]} {c}" for f, (c, _s) in counts.items() if c]
+            lines.append(f"  Galeri: {', '.join(parts)} (total {total_files} file, {round(total_bytes / (1024 * 1024), 1)} MB)")
+        else:
+            lines.append("  Galeri: masih kosong — upload dulu dari panel ya Bos 😌")
+        lines.append("")
+    if len(channels) > 8:
+        lines.append(f"_...dan {len(channels) - 8} channel lainnya._")
+    lines.append("Bos, stok ≤2 hari itu tanda waktunya bikin batch baru 💪")
+    return "\n".join(lines)
+
+
+def build_history_report():
+    """8 upload terakhir dari riwayat (tanggal, judul, status, channel)."""
+    tasks_data = load_tasks()
+    history = tasks_data.get('history', [])
+    channels = load_channels()
+    name_by_yt = {c.get('yt_id'): _channel_display_name(c) for c in channels}
+    lines = [
+        "🕘 *Riwayat Upload Terakhir Buat Bos* 😎",
+        f"_{_wib_now().strftime('%d %b %Y, %H:%M')} WIB_",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+    if not history:
+        lines.append("Belum ada riwayat Bos 😌 Video pertama yang tayang bakal muncul di sini.")
+        return "\n".join(lines)
+    ok = sum(1 for t in history if 'Tayang' in str(t.get('status', '')) or 'Selesai' in str(t.get('status', '')) or 'Sukses' in str(t.get('status', '')))
+    fail = sum(1 for t in history if 'Gagal' in str(t.get('status', '')))
+    lines.append(f"Total riwayat: `{len(history)} task` (✅ tayang/selesai `{ok}` • ❌ gagal `{fail}`)")
+    lines.append("")
+    for t in history[:8]:
+        date = (t.get('finished_date') or (t.get('publish_date') or '')[:10] or '-')[:10]
+        title = (t.get('title') or '?')[:45]
+        st = str(t.get('status', '-'))
+        if 'Tayang' in st or 'Selesai' in st or 'Sukses' in st:
+            icon = "✅"
+        elif 'Gagal' in st:
+            icon = "❌"
+        elif 'Ditolak' in st:
+            icon = "🚫"
+        else:
+            icon = "•"
+        ch_name = name_by_yt.get(_history_task_yt_id(t), '')
+        ch_txt = f" ({_tg_escape(ch_name)})" if ch_name else ""
+        lines.append(f"{icon} `{_tg_escape(date)}` — {_tg_escape(title)}{ch_txt}")
+        lines.append(f"   Status: {_tg_escape(st[:60])}")
+    if len(history) > 8:
+        lines.append(f"_...dan {len(history) - 8} riwayat lainnya (cek di panel)._")
+    return "\n".join(lines)
+
+
+def build_stats_report():
+    """Views/likes/komentar 7/30 hari + video terbaik & terburuk per channel."""
+    per_channel = _stats_by_channel()
+    lines = [
+        "📈 *Statistik Video Buat Bos* 😎",
+        f"_{_wib_now().strftime('%d %b %Y, %H:%M')} WIB_",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+    if not per_channel:
+        lines.append("Belum ada data statistik Bos 😌")
+        lines.append("Statistik muncul setelah ada video yang tayang dan datanya sempat di-fetch (maks 1 jam sekali). Coba lagi nanti ya!")
+        return "\n".join(lines)
+    total_views = sum(e["views"] for e in per_channel.values())
+    total_likes = sum(e["likes"] for e in per_channel.values())
+    total_comments = sum(e["comments"] for e in per_channel.values())
+    total_videos = sum(len(e["videos"]) for e in per_channel.values())
+    lines.append(f"🎬 Total video tercatat: `{total_videos}` • 👁️ Views: `{_fmt_num(total_views)}` • 👍 Likes: `{_fmt_num(total_likes)}` • 💬 Komentar: `{_fmt_num(total_comments)}`")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    for yt, e in list(per_channel.items())[:8]:
+        lines.append(f"📺 *{_tg_escape(e['name'])}* — `{len(e['videos'])} video`")
+        lines.append(f"  👁️ {_fmt_num(e['views'])} views • 7 hari: {_fmt_num(e['views_7d'])} • 30 hari: {_fmt_num(e['views_30d'])}")
+        lines.append(f"  👍 {_fmt_num(e['likes'])} • 💬 {_fmt_num(e['comments'])}")
+        vids = sorted(e["videos"], key=lambda v: v["views"], reverse=True)
+        if vids:
+            best = vids[0]
+            lines.append(f"  🏆 Terbaik: {_tg_escape(best['title'][:45])} ({_fmt_num(best['views'])} views)")
+            if len(vids) > 1:
+                worst = vids[-1]
+                lines.append(f"  📉 Terendah: {_tg_escape(worst['title'][:45])} ({_fmt_num(worst['views'])} views)")
+        lines.append("")
+    if len(per_channel) > 8:
+        lines.append(f"_...dan {len(per_channel) - 8} channel lainnya._")
+    lines.append("Data dari cache statistik panel (diperbarui maks 1 jam sekali) 😌")
+    return "\n".join(lines)
+
+
+def build_monetization_report():
+    """Estimasi penghasilan dari RPM MANUAL yang diisi owner di Settings.
+    Ditulis jelas: ini BUKAN data penghasilan YouTube — YouTube Data API
+    tidak memberi data uang. Tanpa RPM, tidak ada estimasi sama sekali."""
+    per_channel = _stats_by_channel()
+    channels = load_channels()
+    rpm_by_yt = {}
+    for c in channels:
+        try:
+            rpm = float(c.get('rpm_usd') or 0)
+        except Exception:
+            rpm = 0.0
+        if rpm > 0:
+            rpm_by_yt[c.get('yt_id')] = rpm
+    lines = [
+        "💰 *Estimasi Penghasilan Buat Bos* 😎",
+        f"_{_wib_now().strftime('%d %b %Y, %H:%M')} WIB_",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+    if not per_channel:
+        lines.append("Belum ada video tayang yang tercatat Bos 😌")
+        lines.append("Estimasi muncul setelah ada video tayang + RPM diisi di Settings.")
+        return "\n".join(lines)
+    if not rpm_by_yt:
+        lines.append("⚠️ *Belum ada RPM yang diisi Bos* 😅")
+        lines.append("Isi dulu RPM (USD per 1000 views) tiap channel di Settings panel, baru saya bisa hitung estimasinya.")
+        total_views = sum(e["views"] for e in per_channel.values())
+        lines.append(f"Total views tercatat sejauh ini: `{_fmt_num(total_views)}` — lumayan Bos 💪")
+        return "\n".join(lines)
+    grand_total = 0.0
+    grand_30d = 0.0
+    for yt, e in list(per_channel.items())[:8]:
+        rpm = rpm_by_yt.get(yt)
+        lines.append(f"📺 *{_tg_escape(e['name'])}* — `{len(e['videos'])} video`, {_fmt_num(e['views'])} views")
+        if not rpm:
+            lines.append("  RPM belum diisi — isi di Settings biar ada estimasinya 😌")
+            continue
+        est_total = e["views"] / 1000.0 * rpm
+        est_30d = e["views_30d"] / 1000.0 * rpm
+        grand_total += est_total
+        grand_30d += est_30d
+        lines.append(f"  RPM: `${rpm}` /1000 views • Jam tayang: `{round(e['hours'], 1)} jam`")
+        lines.append(f"  💵 Estimasi total: `${est_total:,.2f}` • 30 hari terakhir: `${est_30d:,.2f}`")
+        lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"💵 *Total estimasi semua channel: `${grand_total:,.2f}`* (30 hari: `${grand_30d:,.2f}`)")
+    lines.append("_Estimasi dari RPM MANUAL yang Bos isi di Settings — bukan data penghasilan dari YouTube (API YouTube tidak memberi data uang)._")
+    return "\n".join(lines)
+
+
+def build_server_report():
+    """Detail mesin: CPU/RAM/disk/uptime + status panel + beban kerja."""
+    stats = get_system_telemetry()
+    panel_ok = check_panel_online()
+    tasks_data = load_tasks()
+    active = tasks_data.get('active', [])
+    history = tasks_data.get('history', [])
+    channels = load_channels()
+    try:
+        total, used, free = shutil.disk_usage(BASE_DIR)
+        disk_total = round(total / (1024 ** 3), 1)
+        disk_used = round(used / (1024 ** 3), 1)
+    except Exception:
+        disk_total = disk_used = 0
+    try:
+        uptime_sys = _uptime_str(time.time() - psutil.boot_time())
+    except Exception:
+        uptime_sys = "-"
+    uptime_op = _uptime_str(time.time() - _START_TIME)
+    in_progress = len([t for t in active if 'Selesai' not in t.get('status', '')
+                       and 'Gagal' not in t.get('status', '')
+                       and 'Dibatalkan' not in t.get('status', '')])
+    lines = [
+        "🖥️ *Detail Server Buat Bos* 😎",
+        f"_{_wib_now().strftime('%d %b %Y, %H:%M')} WIB_",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"🖥️ *Panel Web (8000):* {'🟢 Online' if panel_ok else '🔴 Mati/tidak menjawab'}",
+        "🤖 *Operator Telegram:* 🟢 Online",
+        f"⏱️ *Uptime server:* `{uptime_sys}` • Operator jalan: `{uptime_op}`",
+        f"⚡ *CPU:* `{stats['cpu']}%`",
+        f"🧠 *RAM:* `{stats['ram_used_gb']} GB / {stats['ram_total_gb']} GB ({stats['ram_pct']}%)`",
+        f"💾 *Disk:* `{disk_used} GB / {disk_total} GB` terpakai (sisa `{stats['disk_free_gb']} GB`)",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"📺 *Channel terhubung:* `{len(channels)}`",
+        f"🏭 *Antrean aktif:* `{len(active)} task` (`{in_progress}` sedang berjalan/menunggu)",
+        f"📁 *Riwayat:* `{len(history)} task`",
+    ]
+    if stats['ram_pct'] >= 90 or stats['disk_free_gb'] < 5:
+        lines.append("⚠️ Bos, resource udah mepet nih — kabari saya kalau mau dibersihin 😅")
+    else:
+        lines.append("Mesin sehat Bos, saya yang jagain 💪")
+    return "\n".join(lines)
+
+
+def build_failed_report():
+    """Task gagal terbaru dari riwayat + tombol inline 🔁 Retry per task.
+    Retry memakai callback 'retry:<id>' yang sudah ditangani
+    handle_callback_query — endpoint panel menolak task yang ditolak saat
+    approval / sudah sukses / tanpa blueprint. Kembalikan (pesan, markup)."""
+    tasks_data = load_tasks()
+    history = tasks_data.get('history', [])
+    active = tasks_data.get('active', [])
+    failed_hist = [t for t in history if 'Gagal' in str(t.get('status', ''))]
+    failed_active = [t for t in active if 'Gagal' in str(t.get('status', ''))]
+    lines = [
+        "❌ *Task Gagal Buat Bos* 😅",
+        f"_{_wib_now().strftime('%d %b %Y, %H:%M')} WIB_",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+    retryable = []
+    if not failed_hist and not failed_active:
+        lines.append("Nggak ada yang gagal Bos, semua mulus 💪")
+        return "\n".join(lines), None
+    if failed_hist:
+        lines.append(f"Di riwayat: `{len(failed_hist)} task` gagal.")
+        for t in failed_hist[:5]:
+            title = (t.get('title') or '?')[:45]
+            st = str(t.get('status', ''))[:60]
+            date = (t.get('finished_date') or '')[:10] or '-'
+            lines.append(f"• `{_tg_escape(date)}` {_tg_escape(title)}")
+            lines.append(f"  Status: {_tg_escape(st)}")
+            if t.get('blueprint') and t.get('approval') != 'rejected' and isinstance(t.get('id'), int):
+                retryable.append(t)
+        if len(failed_hist) > 5:
+            lines.append(f"_...dan {len(failed_hist) - 5} task gagal lainnya._")
+    if failed_active:
+        lines.append(f"Di antrean aktif: `{len(failed_active)} task` berstatus gagal (masih diproses ulang sistem).")
+    lines.append("")
+    if retryable:
+        lines.append("Pencet tombol 🔁 di bawah buat coba lagi task-nya ya Bos 👇")
+    else:
+        lines.append("Tidak ada task yang bisa di-retry dari sini Bos 😌")
+    markup = None
+    if retryable:
+        markup = {"inline_keyboard": [
+            [{"text": f"🔁 Retry #{t['id']} — {(t.get('title') or '?')[:18]}",
+              "callback_data": f"retry:{t['id']}"}] for t in retryable[:5]
+        ]}
+    return "\n".join(lines), markup
+
+
+# ==========================================
 # 🔥 FASE 3 — JADWAL PUBLISH (/jadwal)
 # ==========================================
 _DAYS_ID = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu']
@@ -411,8 +898,11 @@ def _tg_escape(text):
 def get_main_keyboard():
     return {
         "keyboard": [
-            [{"text": "📊 Status Server"}, {"text": "💡 10 Judul Sleep"}],
+            [{"text": "📊 Status Server"}, {"text": "🎯 Kuota Upload"}],
             [{"text": "📺 Cek Channel"}, {"text": "📂 Antrean Render"}],
+            [{"text": "🗓️ Jadwal 7 Hari"}, {"text": "📈 Statistik Video"}],
+            [{"text": "💰 Monetisasi"}, {"text": "❌ Task Gagal"}],
+            [{"text": "💡 10 Judul Sleep"}, {"text": "🎬 Ide Shorts"}],
             [{"text": "📝 Template Deskripsi"}, {"text": "📐 Blueprint Resep"}]
         ],
         "resize_keyboard": True,
@@ -420,6 +910,8 @@ def get_main_keyboard():
     }
 
 def send_message(token, chat_id, text, parse_mode="Markdown", reply_markup=None):
+    # Pengaman batas 4096 karakter Telegram — pesan kepanjangan dipotong rapi.
+    text = _clip(str(text or ''))
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": chat_id,
@@ -615,7 +1107,59 @@ def generate_seo_titles(niche, count=10):
             "Sleep Like a Baby • Soothing Piano & Soft White Noise for Deep Rest",
             "Midnight Rest: 80 Minutes of Pure Calming Soundscapes for Insomnia Relief"
         ]
-    elif "lofi" in niche_lower or "study" in niche_lower or "fokus" in niche_lower or "chill" in niche_lower:
+    elif "piano" in niche_lower:
+        templates = [
+            "Relaxing Piano Music for Deep Sleep 😴 Beautiful Melodies to Calm Your Mind Instantly",
+            "Peaceful Piano & Soft Rain: Fall Asleep Fast with Gentle Night Melodies",
+            "Calming Piano for Anxiety Relief • Soothing Instrumental for Stress-Free Nights",
+            "Beautiful Piano Melodies for Sleep, Meditation & Deep Relaxation (60 Mins)",
+            "Midnight Piano: Gentle Keys to Release Stress and Drift into Sweet Dreams",
+            "Piano Lullaby for Insomnia • Soft, Slow Melodies for Peaceful Rest",
+            "Healing Piano Tones 432Hz • Deep Relaxation Music for Mind and Body",
+            "Cozy Evening Piano • Warm Melodies for Reading, Resting & Unwinding",
+            "Emotional Piano Collection: Tender Melodies for Quiet Nights Alone",
+            "Sleep Piano Radio 🎹 Continuous Calming Melodies All Night Long"
+        ]
+    elif "hujan" in niche_lower or "rain" in niche_lower:
+        templates = [
+            "Rain Sounds for Sleeping 😴 Gentle Rain on Roof & Distant Thunder for Deep Sleep",
+            "Cozy Rainy Night Ambience • Rain on Window for Instant Relaxation & Sleep",
+            "Heavy Rain & Thunderstorm Sounds for Deep Sleep (No Ads, All Night)",
+            "Rain in a Cabin in the Woods • Peaceful Night Ambience for Insomnia Relief",
+            "Soft Rain & Piano: The Perfect Combination to Fall Asleep in Minutes",
+            "Rain Sounds for Focus & Study • Calm Rainy Day Ambience for Deep Work",
+            "Midnight Rainstorm • Soothing Rain Sounds to Block Noise & Sleep Better",
+            "Gentle Rain on Leaves • Nature Sounds for Meditation & Stress Relief",
+            "Rainy Day in Tokyo • Cozy Rain Ambience with Soft City Sounds",
+            "Fall Asleep to Rain • 8 Hours of Pure Relaxing Rain Sounds"
+        ]
+    elif "meditasi" in niche_lower or "meditation" in niche_lower:
+        templates = [
+            "Guided Meditation Music 🧘 Deep Relaxation & Inner Peace (60 Mins)",
+            "Morning Meditation: Calm Your Mind, Breathe Slowly & Start Fresh",
+            "Healing Meditation Music 432Hz • Release Anxiety & Find Stillness",
+            "Zen Garden Ambience • Peaceful Meditation Sounds for Mindfulness",
+            "Deep Breathing Meditation Music • Slow Tones for Stress Relief",
+            "Chakra Healing Meditation • Soothing Sounds for Balance & Energy",
+            "Sleep Meditation: Drift into Deep Rest with Gentle Ambient Tones",
+            "Mindfulness Meditation Music for Focus, Calm & Emotional Healing",
+            "Sunrise Meditation • Soft Ambient Music for a Peaceful Morning",
+            "Let Go of Stress: Guided Relaxation Music for Body & Mind"
+        ]
+    elif "fokus" in niche_lower or "focus" in niche_lower:
+        templates = [
+            "Deep Focus Music 🎯 Concentration Sounds for Studying, Working & Reading",
+            "Focus Flow State • Steady Rhythms to Keep Your Brain in the Zone (60 Mins)",
+            "Deep Work Music for Maximum Productivity • No Distractions, Pure Focus",
+            "Study Music for Concentration • Calm Instrumental for Exams & Deadlines",
+            "Pomodoro Focus Session • 25 Minutes of Pure Concentration Music",
+            "Brain Food: Focus Music Backed by Science for Deep Thinking",
+            "Concentration Boost • Ambient Focus Sounds for Coding & Writing",
+            "Flow State Music: Enter Deep Focus in 5 Minutes (Study & Work)",
+            "Morning Focus Ritual • Energizing Yet Calm Music for a Productive Day",
+            "Silent Mind, Sharp Focus • Minimal Ambient Music for Deep Work"
+        ]
+    elif "lofi" in niche_lower or "study" in niche_lower or "chill" in niche_lower:
         templates = [
             "Lofi Hip Hop Radio ☕ Beats to Relax/Study to [Cozy Rain Ambience]",
             "Late Night Study Session • Chill Lofi Beats for Focus & Concentration",
@@ -646,6 +1190,227 @@ def generate_seo_titles(niche, count=10):
         templates.append(f"Ultimate {niche.title()} Relaxation Vol. {len(templates)+1} (60 Mins)")
     return templates[:count]
 
+# ==========================================
+# 🔥 PERLUASAN KONTEN — NICHE, HASHTAG, CTA, IDE SHORTS
+# Bank konten statis (bukan data live): judul/deskripsi/tag/CTA/ide Shorts
+# per niche. Niche yang dikenal: sleep, lofi, piano, hujan, meditasi, fokus.
+# ==========================================
+_NICHES = {
+    'sleep': 'Deep Sleep Music',
+    'lofi': 'Lofi Study',
+    'piano': 'Piano',
+    'hujan': 'Hujan',
+    'meditasi': 'Meditasi',
+    'fokus': 'Fokus',
+}
+
+
+def _parse_niche_arg(clean_cmd, parts, default='sleep'):
+    """(kunci_niche, label) dari kata kunci di pesan. Urutan penting: yang
+    spesifik dulu supaya 'fokus' tidak ketangkap cabang 'lofi'."""
+    if 'piano' in clean_cmd:
+        return 'piano', 'Piano'
+    if 'hujan' in clean_cmd or 'rain' in clean_cmd:
+        return 'hujan', 'Hujan'
+    if 'meditasi' in clean_cmd or 'meditation' in clean_cmd:
+        return 'meditasi', 'Meditasi'
+    if 'fokus' in clean_cmd or 'focus' in clean_cmd:
+        return 'fokus', 'Fokus'
+    if 'lofi' in clean_cmd or 'chill' in clean_cmd or 'study' in clean_cmd:
+        return 'lofi', 'Lofi Study'
+    return default, _NICHES.get(default, 'Deep Sleep Music')
+
+
+def _parse_count(parts, default=10, max_count=20):
+    """Jumlah dari angka di akhir pesan ('/judul lofi 15' -> 15), dibatasi
+    1..20 supaya pesan tidak kepanjangan."""
+    if parts and parts[-1].isdigit():
+        return max(1, min(max_count, int(parts[-1])))
+    return default
+
+
+_HASHTAG_BANK = {
+    'sleep': ['#deepsleep', '#sleepmusic', '#sleepaid', '#relaxingmusic', '#insomniarelief',
+              '#calmmusic', '#ambientmusic', '#sleepsounds', '#nightmusic', '#peacefulsleep',
+              '#stressrelief', '#meditationmusic', '#calm', '#sleepbetter', '#lullaby'],
+    'lofi': ['#lofi', '#lofimusic', '#lofihiphop', '#chillbeats', '#studybeats',
+             '#chillmusic', '#lofivibes', '#cozybeats', '#studymusic', '#relaxingbeats',
+             '#nightdrive', '#aesthetic', '#chillvibes', '#beats', '#focusmusic'],
+    'piano': ['#piano', '#pianomusic', '#relaxingpiano', '#calmpiano', '#pianocover',
+              '#instrumental', '#peacefulpiano', '#classicalpiano', '#pianorelaxation', '#softpiano',
+              '#pianolove', '#musicforsleep', '#pianoambient', '#solopiano', '#beautifulpiano'],
+    'hujan': ['#rain', '#rainsounds', '#rainyday', '#rainambience', '#sleeprain',
+              '#rainymood', '#relaxingrain', '#rainydays', '#asmrrain', '#cozyrain',
+              '#rainmusic', '#thunderstorm', '#rainfall', '#peacefulrain', '#nature'],
+    'meditasi': ['#meditation', '#meditationmusic', '#mindfulness', '#yoga', '#healing',
+                 '#zen', '#calm', '#innerpeace', '#relaxation', '#spiritual',
+                 '#breathe', '#chakra', '#peace', '#wellness', '#mindful'],
+    'fokus': ['#focus', '#focusmusic', '#deepfocus', '#studymusic', '#concentration',
+              '#productivity', '#workmusic', '#studysession', '#deepwork', '#brainfood',
+              '#instrumental', '#ambient', '#studymotivation', '#focusbeats', '#flowstate'],
+}
+
+
+def build_hashtag_report(niche_key):
+    """Bank hashtag per niche — tinggal salin ke deskripsi video."""
+    label = _NICHES.get(niche_key, 'Deep Sleep Music')
+    tags = _HASHTAG_BANK.get(niche_key, _HASHTAG_BANK['sleep'])
+    lines = [
+        f"🏷️ *Bank Hashtag Buat Bos* 😎",
+        f"🎯 *Niche:* `{label}`",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        " ".join(tags),
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        "Tips dari saya Bos: pakai maks 15 hashtag, taruh di AKHIR deskripsi, dan jangan diulang-ulang di semua video ya — campur dikit-dikit biar nggak dikira spam 😌",
+    ]
+    return "\n".join(lines)
+
+
+_CTA_IDEAS = [
+    ("🔔 Subscribe", "Suka videonya? Pencet Subscribe — gratis, dan bikin kami makin semangat upload tiap hari!"),
+    ("💬 Komen", "Komen 'TIDUR' kalau kamu ketiduran pas dengerin ini 😴"),
+    ("💾 Save", "Save video ini buat nanti malam — badan capek butuh ini."),
+    ("↗️ Share", "Share ke temanmu yang susah tidur — siapa tahu dia butuh ini."),
+    ("🔔 Lonceng", "Tekan loncengnya 🔔 supaya nggak ketinggalan upload jam 7 malam."),
+    ("▶️ Lanjut nonton", "Part 2 ada di video berikutnya — tonton sampai habis ya!"),
+    ("❤️ Follow", "Follow biar tiap malam ada teman tidur baru."),
+    ("🕘 Komen jam", "Komen jam berapa kamu nonton ini — yang paling malam menang 😄"),
+]
+
+
+def build_cta_report():
+    """Ide teks CTA buat kartu akhir Shorts (5 detik terakhir)."""
+    lines = [
+        "📣 *Ide CTA Buat Shorts Bos* 😎",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+    for icon_title, text in _CTA_IDEAS:
+        lines.append(f"{icon_title}\n“{text}”\n")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("Tips dari saya Bos: 1 Shorts cukup 1 CTA, taruh di kartu akhir (5 detik terakhir), teksnya BESAR dan gampang dibaca sambil scroll 😌")
+    return "\n".join(lines)
+
+
+_SHORTS_IDEAS = {
+    'sleep': [
+        {"hook": "Susah tidur? Coba dengerin ini 60 detik.",
+         "naskah": ["0–4 dtk: teks hook + piano lembut masuk", "5–40 dtk: hujan rintik + melodi pelan, teks 'tarik napas... hembuskan...'", "41–55 dtk: suara makin pelan, layar gelap perlahan"],
+         "cta": "Follow buat tidur nyenyak tiap malam."},
+        {"hook": "Otak nggak bisa berhenti mikir?",
+         "naskah": ["0–4 dtk: teks hook, zoom pelan ke gambar hujan", "5–40 dtk: piano + suara hujan, teks 'biarkan pikiran lewat seperti awan'", "41–55 dtk: nada terakhir, jeda hening 2 detik"],
+         "cta": "Save video ini buat nanti malam."},
+        {"hook": "3 menit lagi kamu ketiduran.",
+         "naskah": ["0–4 dtk: teks hook + jam dinding berdetak pelan", "5–40 dtk: melodi tidur 432Hz, teks 'mata makin berat...'", "41–55 dtk: fade out, teks 'selamat tidur'"],
+         "cta": "Komen 'TIDUR' kalau kamu ketiduran."},
+        {"hook": "Ini suara yang dicari 2 juta orang sebelum tidur.",
+         "naskah": ["0–4 dtk: teks hook, gambar kabin hujan", "5–40 dtk: hujan di atap + piano jauh, teks 'tidak ada iklan, tidak ada suara tiba-tiba'", "41–55 dtk: hujan mereda"],
+         "cta": "Share ke temanmu yang susah tidur."},
+        {"hook": "Jangan skip — 10 detik pertama bikin ngantuk.",
+         "naskah": ["0–4 dtk: teks hook + hitung mundur 3-2-1", "5–40 dtk: delta wave + napas pelan, teks 'satu... dua...'", "41–55 dtk: layar hampir gelap"],
+         "cta": "Subscribe biar tiap malam ada teman tidur baru."},
+    ],
+    'lofi': [
+        {"hook": "Lagi belajar tapi nggak fokus?",
+         "naskah": ["0–4 dtk: teks hook + beat lofi masuk", "5–40 dtk: beat pelan + hujan, teks 'satu lagu, satu bab, selesai'", "41–55 dtk: beat mereda, teks 'lanjutkan...'"],
+         "cta": "Save buat sesi belajar berikutnya."},
+        {"hook": "Suasana kafe hujan, tanpa harus keluar rumah.",
+         "naskah": ["0–4 dtk: teks hook, gambar jendela hujan", "5–40 dtk: lofi + suara hujan, teks 'kopi hangat, tugas beres'", "41–55 dtk: fade ke logo channel"],
+         "cta": "Follow buat teman begadang tiap malam."},
+        {"hook": "Beat ini bikin tugas 2 jam kerasa 20 menit.",
+         "naskah": ["0–4 dtk: teks hook + vinyl berputar", "5–40 dtk: chill beat, teks 'fokus mode: ON'", "41–55 dtk: beat terakhir + jeda"],
+         "cta": "Komen mata kuliah tersulitmu di bawah."},
+        {"hook": "Tengah malam, lampu kamar, dan satu lagu ini.",
+         "naskah": ["0–4 dtk: teks hook, lampu kuning temaram", "5–40 dtk: lofi malam + jangkrik jauh, teks 'tenang... kerjakan pelan-pelan'", "41–55 dtk: redup perlahan"],
+         "cta": "Share ke teman begadangmu."},
+        {"hook": "Coba belajar pakai ini — nilai ikut naik.",
+         "naskah": ["0–4 dtk: teks hook + buku terbuka", "5–40 dtk: beat fokus, teks 'pomodoro: 25 menit, gas!'", "41–55 dtk: bel kecil, teks 'istirahat 5 menit'"],
+         "cta": "Subscribe buat playlist belajar tiap minggu."},
+    ],
+}
+
+
+def build_shorts_ideas_report(niche_key):
+    """Ide Shorts: hook 4 detik pertama + alur naskah + CTA. Niche yang
+    punya bank khusus: sleep & lofi; niche lain memakai bank sleep."""
+    label = _NICHES.get(niche_key, 'Deep Sleep Music')
+    ideas = _SHORTS_IDEAS.get(niche_key) or _SHORTS_IDEAS['sleep']
+    lines = [
+        f"🎬 *Ide Shorts Buat Bos* 😎",
+        f"🎯 *Niche:* `{label}`",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+    for i, idea in enumerate(ideas, 1):
+        lines.append(f"*{i}. Hook:* “{idea['hook']}”")
+        for beat in idea["naskah"]:
+            lines.append(f"   • {beat}")
+        lines.append(f"   📣 CTA: _{idea['cta']}_")
+        lines.append("")
+    lines.append("Tips dari saya Bos: hook harus bikin orang BERHENTI scroll dalam 4 detik pertama — pertanyaan atau janji paling ampuh 😌")
+    return "\n".join(lines)
+
+
+_DESC_TEMPLATES = {
+    'sleep': ("Welcome to your ultimate sanctuary for relaxation and deep sleep. 🌙✨\n\n"
+              "This deep sleep music compilation is carefully crafted to help ease insomnia, relieve mental fatigue, and release stress after a demanding day.\n\n"
+              "🎧 Listening Advice:\n"
+              "• Use low-medium volume (30-40%)\n"
+              "• Dim the lights in your bedroom\n"
+              "• Close your eyes and breathe gently\n\n"
+              "Tracklist & Audio Engineering by Ziqva Muse Bot Cloud System.\n\n"
+              "#deepsleep #relaxingmusic #sleepaid #ambientmusic #insomniarelief #calmmind"),
+    'lofi': ("Welcome to your cozy corner for focus and chill. ☕🌧️\n\n"
+             "This lofi beats compilation is made for late-night study sessions, deep work, and slow rainy afternoons — smooth instrumentals, warm vinyl crackle, and gentle rain in the background.\n\n"
+             "🎧 Listening Advice:\n"
+             "• Put on your headphones for the full vibe\n"
+             "• One song, one chapter — keep going\n"
+             "• Perfect for studying, reading, and working\n\n"
+             "Beats & Audio Engineering by Ziqva Muse Bot Cloud System.\n\n"
+             "#lofi #lofimusic #chillbeats #studybeats #cozybeats #focusmusic"),
+    'piano': ("Welcome to a quiet room full of piano. 🎹🌙\n\n"
+              "This relaxing piano compilation is carefully played to calm your mind, ease anxiety, and help you fall asleep or simply breathe slower after a long day.\n\n"
+              "🎧 Listening Advice:\n"
+              "• Use low-medium volume (30-40%)\n"
+              "• Dim the lights and close your eyes\n"
+              "• Let every note melt the tension away\n\n"
+              "Performance & Audio Engineering by Ziqva Muse Bot Cloud System.\n\n"
+              "#piano #pianomusic #relaxingpiano #calmpiano #peacefulpiano #instrumental"),
+    'hujan': ("Welcome to the sound of rain. 🌧️😌\n\n"
+              "This rain sounds compilation captures gentle rain on the roof, distant thunder, and soft night ambience — perfect for deep sleep, focus, and quiet evenings at home.\n\n"
+              "🎧 Listening Advice:\n"
+              "• Use low-medium volume (30-40%)\n"
+              "• Play it all night — no sudden sounds, promise\n"
+              "• Great as a background for reading and working too\n\n"
+              "Recording & Audio Engineering by Ziqva Muse Bot Cloud System.\n\n"
+              "#rain #rainsounds #rainyday #rainambience #sleeprain #relaxingrain"),
+    'meditasi': ("Welcome to your moment of stillness. 🧘✨\n\n"
+                 "This meditation music compilation blends soft tones, slow breathing cues, and gentle ambient pads to help you relax, refocus, and reconnect with yourself.\n\n"
+                 "🎧 Listening Advice:\n"
+                 "• Sit comfortably, back straight, shoulders relaxed\n"
+                 "• Breathe in for 4 counts, out for 6 counts\n"
+                 "• Use headphones for the deepest effect\n\n"
+                 "Composition & Audio Engineering by Ziqva Muse Bot Cloud System.\n\n"
+                 "#meditation #meditationmusic #mindfulness #healing #innerpeace #calm"),
+    'fokus': ("Welcome to your deep focus zone. 🎯🎧\n\n"
+              "This deep focus music compilation is designed for concentration — steady rhythms, minimal distractions, and a calm pulse that keeps your brain in flow state for hours.\n\n"
+              "🎧 Listening Advice:\n"
+              "• Use headphones and set a 25-minute timer\n"
+              "• One task at a time — no multitasking\n"
+              "• Perfect for studying, coding, and writing\n\n"
+              "Composition & Audio Engineering by Ziqva Muse Bot Cloud System.\n\n"
+              "#focus #focusmusic #deepfocus #studymusic #concentration #productivity"),
+}
+
+
+def build_description_report(niche_key, niche_label):
+    """Template deskripsi SEO per niche — tinggal salin ke panel."""
+    body = _DESC_TEMPLATES.get(niche_key, _DESC_TEMPLATES['sleep'])
+    return (
+        f"📝 *Template Deskripsi SEO buat Bos* 😎\n"
+        f"🎯 *Niche:* `{niche_label}`\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{body}"
+    )
+
 def handle_user_command(token, chat_id, text):
     try:
         raw_cmd = text.strip()
@@ -661,15 +1426,93 @@ def handle_user_command(token, chat_id, text):
             msg = (
                 "🤖 *ZIQVA MUSE BOT — CLOUD OPERATOR* 😎\n\n"
                 "Halo Bos! Saya siap kerja, tinggal perintah aja. Sentuh tombol di bawah atau klik perintah berikut:\n\n"
-                "👉 /status — Cek channel, antrean, kuota upload & kesehatan server\n"
-                "👉 /channel — Cek channel YouTube terdaftar\n"
-                "👉 /antrean — Cek daftar video yang sedang diproses\n"
-                "👉 /jadwal — Lihat jadwal publish 7 hari ke depan & channel yang dijeda\n"
-                "👉 /judul — Buatkan 10 judul video tidur viral\n"
-                "👉 /deskripsi — Buatkan template deskripsi SEO\n"
-                "👉 /blueprint — Cek resep settingan video"
+                "*📊 Pantau:*\n"
+                "👉 /status — Channel, antrean, kuota & kesehatan server\n"
+                "👉 /server — Detail mesin: CPU, RAM, disk, uptime, panel\n"
+                "👉 /kuota — Kuota upload per project Google & per channel\n"
+                "👉 /stok — Sisa stok jadwal & isi galeri per channel\n"
+                "👉 /channel — Daftar channel YouTube terhubung\n"
+                "👉 /antrean — Video yang sedang diproses\n"
+                "👉 /jadwal — Jadwal publish 7 hari ke depan\n"
+                "👉 /riwayat — 8 upload terakhir\n"
+                "👉 /gagal — Task gagal + tombol Retry\n"
+                "👉 /laporan — Laporan harian, kapan saja\n\n"
+                "*📈 Hasil:*\n"
+                "👉 /statistik — Views/likes/komentar + video terbaik & terburuk\n"
+                "👉 /monetisasi — Estimasi penghasilan dari RPM manual\n\n"
+                "*💡 Konten:*\n"
+                "👉 /judul [niche] [jumlah] — Judul SEO, mis. /judul lofi 15\n"
+                "👉 /deskripsi [niche] — Template deskripsi SEO\n"
+                "👉 /tag [niche] — Bank hashtag, mis. /tag piano\n"
+                "👉 /cta — Ide teks CTA buat Shorts\n"
+                "👉 /ideashorts [niche] — Hook + naskah singkat Shorts\n"
+                "👉 /blueprint — Resep settingan video\n\n"
+                "Niche: sleep, lofi, piano, hujan, meditasi, fokus."
             )
             send_message(token, chat_id, msg)
+            return
+
+        # --- PERINTAH BARU (baca saja) — dicek dulu supaya tidak ketangkap
+        # cabang lama: "server" ketangkap /status, "ide shorts" ketangkap /judul.
+        # 8. SERVER DETAIL (laporan mesin lengkap, bukan /status)
+        if first_word in ("/server",) or clean_cmd in ("server", "server detail", "detail server"):
+            send_message(token, chat_id, build_server_report())
+            return
+
+        # 9. KUOTA UPLOAD
+        if "kuota" in clean_cmd:
+            send_message(token, chat_id, build_quota_report())
+            return
+
+        # 10. STOK JADWAL + GALERI
+        if "stok" in clean_cmd:
+            send_message(token, chat_id, build_stock_report())
+            return
+
+        # 11. RIWAYAT UPLOAD
+        if "riwayat" in clean_cmd or "history" in clean_cmd:
+            send_message(token, chat_id, build_history_report())
+            return
+
+        # 12. STATISTIK VIDEO
+        if "statistik" in clean_cmd or "stats" in clean_cmd:
+            send_message(token, chat_id, build_stats_report())
+            return
+
+        # 13. MONETISASI (estimasi RPM manual)
+        if ("monetisasi" in clean_cmd or "penghasilan" in clean_cmd
+                or "rpm" in clean_cmd or first_word in ("/uang",)):
+            send_message(token, chat_id, build_monetization_report())
+            return
+
+        # 14. LAPORAN HARIAN (on-demand, pakai builder yang sudah ada)
+        if "laporan" in clean_cmd or "report" in clean_cmd:
+            send_message(token, chat_id, build_daily_report())
+            return
+
+        # 15. TASK GAGAL + tombol inline Retry
+        if "gagal" in clean_cmd:
+            fail_msg, fail_markup = build_failed_report()
+            send_message(token, chat_id, fail_msg, reply_markup=fail_markup)
+            return
+
+        # 16. BANK HASHTAG
+        if ("hashtag" in clean_cmd or first_word in ("/tag", "/hashtag", "tagar")
+                or clean_cmd.startswith("tag ") or clean_cmd.startswith("tagar ")):
+            niche_key, _label = _parse_niche_arg(clean_cmd, parts)
+            send_message(token, chat_id, build_hashtag_report(niche_key))
+            return
+
+        # 17. IDE CTA SHORTS
+        if first_word in ("/cta",) or clean_cmd.startswith("cta"):
+            send_message(token, chat_id, build_cta_report())
+            return
+
+        # 18. IDE SHORTS (hook + naskah singkat)
+        if ("ideashorts" in clean_cmd or "ide shorts" in clean_cmd
+                or "shorts" in clean_cmd):
+            niche_key, _label = _parse_niche_arg(clean_cmd, parts)
+            send_message(token, chat_id, build_shorts_ideas_report(niche_key))
             return
 
         # 2. STATUS SERVER (FASE 1 MONITORING: channel + kuota + upload hari ini)
@@ -690,8 +1533,8 @@ def handle_user_command(token, chat_id, text):
             else:
                 msg = f"📺 *Channel-nya Bos ({len(channels)})*\n━━━━━━━━━━━━━━━━━━━━━━\n"
                 for idx, ch in enumerate(channels, 1):
-                    name = ch.get('channel_name', 'Tanpa Nama')
-                    connected = "🟢 Terhubung" if ch.get('access_token') or ch.get('refresh_token') else "🔴 Putus"
+                    name = _channel_display_name(ch)
+                    connected = "🟢 Terhubung" if _channel_connected(ch) else "🔴 Putus"
                     msg += f"*{idx}. {_tg_escape(name)}*\nStatus: {connected}\nID: `{_tg_escape(ch.get('yt_id', '-'))}`\n\n"
             send_message(token, chat_id, msg)
             return
@@ -719,14 +1562,10 @@ def handle_user_command(token, chat_id, text):
             send_message(token, chat_id, build_schedule_report())
             return
 
-        # 5. GENERATOR JUDUL
+        # 5. GENERATOR JUDUL (niche + jumlah, mis. "/judul lofi 15")
         if "judul" in clean_cmd or "ide" in clean_cmd or "sleep" in clean_cmd or "titles" in clean_cmd:
-            niche = "Deep Sleep Music"
-            count = 10
-            if parts and parts[-1].isdigit():
-                count = int(parts[-1])
-            if "lofi" in clean_cmd or "chill" in clean_cmd:
-                niche = "Lofi Study"
+            niche_key, niche = _parse_niche_arg(clean_cmd, parts)
+            count = _parse_count(parts, default=10, max_count=20)
 
             titles = generate_seo_titles(niche, count)
             title_list = "\n\n".join([f"*{i+1}.* {t}" for i, t in enumerate(titles)])
@@ -742,22 +1581,10 @@ def handle_user_command(token, chat_id, text):
             send_message(token, chat_id, msg)
             return
 
-        # 6. TEMPLATE DESKRIPSI
+        # 6. TEMPLATE DESKRIPSI (varian per niche, mis. "/deskripsi piano")
         if "deskripsi" in clean_cmd or "description" in clean_cmd:
-            niche = "Deep Sleep Music"
-            msg = (
-                f"📝 *Template Deskripsi SEO buat Bos:*\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Welcome to your ultimate sanctuary for relaxation and deep sleep. 🌙✨\n\n"
-                f"This {niche.lower()} compilation is carefully crafted to help ease insomnia, relieve mental fatigue, and release stress after a demanding day.\n\n"
-                "🎧 Listening Advice:\n"
-                "• Use low-medium volume (30-40%)\n"
-                "• Dim the lights in your bedroom\n"
-                "• Close your eyes and breathe gently\n\n"
-                "Tracklist & Audio Engineering by Ziqva Muse Bot Cloud System.\n\n"
-                "#deepsleep #relaxingmusic #sleepaid #ambientmusic #insomniarelief #calmmind"
-            )
-            send_message(token, chat_id, msg)
+            niche_key, niche = _parse_niche_arg(clean_cmd, parts)
+            send_message(token, chat_id, build_description_report(niche_key, niche))
             return
 
         # 7. BLUEPRINT RESEP
@@ -778,8 +1605,8 @@ def handle_user_command(token, chat_id, text):
         # DEFAULT FALLBACK
         msg = (
             f"🤖 *Eh Bos, pesan \"{_tg_escape(raw_cmd)}\" saya terima tapi saya nggak ngerti maksudnya* 😅\n\n"
-            "Coba sentuh tombol di bawah atau ketik:\n"
-            "👉 /status | /channel | /antrean | /jadwal | /judul"
+            "Coba sentuh tombol di bawah atau ketik /start buat lihat semua perintah ya Bos!\n"
+            "Perintah cepat: /status /server /kuota /stok /statistik /monetisasi /judul /ideashorts"
         )
         send_message(token, chat_id, msg)
 

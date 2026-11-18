@@ -1069,7 +1069,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
               <tbody id="vs-tbody"><tr><td colspan="7" style="padding:10px 8px;color:var(--muted)">Memuat statistik…</td></tr></tbody>
             </table>
           </div>
-          <div style="font-size:11px;color:var(--muted);margin-top:10px"><span id="vs-updated">—</span> · Subs per video dari YouTube Analytics API (butuh token channel dengan scope Analytics — channel lama perlu ditaut ulang); subs channel ada di statistik channel di atas.</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:10px"><span id="vs-updated">—</span> · Subs per video nonaktif — login device tidak mengizinkan scope YouTube Analytics; subs channel ada di statistik channel di atas.</div>
         </div>
       </div>
 
@@ -1109,7 +1109,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         <div class="card-head">
           <div>
             <span class="card-title">MONETISASI &amp; BEBAN</span>
-            <div class="card-sub">Views dari statistik Fase 4 + riwayat tayang. RPM diutamakan dari YouTube Analytics API (otomatis, bila token channel punya scope Analytics); RPM manual di Settings hanya cadangan.</div>
+            <div class="card-sub">Views dari statistik Fase 4 + riwayat tayang. Estimasi penghasilan dari RPM manual yang diisi di Settings (RPM otomatis dari YouTube Analytics tidak tersedia — login device tidak mengizinkan scope Analytics).</div>
           </div>
           <button type="button" class="btn btn-sm" onclick="fetchMonetization()" title="Muat ulang data monetisasi">↻ Refresh</button>
         </div>

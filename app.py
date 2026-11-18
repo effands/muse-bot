@@ -492,12 +492,17 @@ DB_FILE = os.path.join(BASE_DIR, 'channels_db.json')
 TASKS_FILE = os.path.join(BASE_DIR, 'tasks_db.json')
 PRESETS_FILE = os.path.join(BASE_DIR, 'presets.json')
 CLIENT_SECRETS_FILE = os.path.join(BASE_DIR, 'client_secret.json')
-SCOPES = ['https://www.googleapis.com/auth/youtube', 'https://www.googleapis.com/auth/youtube.upload',
-          'https://www.googleapis.com/auth/yt-analytics.readonly',
-          'https://www.googleapis.com/auth/yt-analytics-monetary.readonly']  # 🔥 FASE 10: scope Analytics
-# ditambah supaya token baru membawa izin baca YouTube Analytics (subs per
-# video + RPM otomatis). Token LAMA tanpa scope ini tetap jalan normal —
-# panggilan Analytics yang ditolak 403 dicatat per channel dan panel
+SCOPES = ['https://www.googleapis.com/auth/youtube', 'https://www.googleapis.com/auth/youtube.upload']
+# ⚠️ Scope Analytics (yt-analytics.readonly + yt-analytics-monetary.readonly)
+# TIDAK BOLEH masuk SCOPES: endpoint device-code Google menolaknya dengan
+# "invalid_scope / Invalid device flow scope" (diverifikasi langsung ke
+# oauth2.googleapis.com/device/code 2026-11-18: youtube & youtube.upload
+# lolos, kedua scope Analytics ditolak). Device flow (client TV) hanya
+# mengizinkan scope YouTube biasa — Analytics butuh auth-code flow lewat
+# browser (client Desktop), belum dibangun. Akibatnya subs per video
+# tampil '—' dan RPM memakai isian manual di Settings (fallback Fase 9);
+# helper Analytics di bawah tetap ada tapi _query_analytics tidak
+# memanggil API selama scope-nya tidak ada di SCOPES.
 # menampilkan "perlu taut ulang" (lihat blok FASE 10).
 
 os.makedirs(BASE_UPLOAD, exist_ok=True)
@@ -3378,7 +3383,7 @@ def get_video_stats():
     elif any(s is False for s in _scope_states):
         subs_note = "Subscriber per video hanya untuk channel yang tokennya punya scope YouTube Analytics. Channel yang ditandai 'perlu taut ulang' harus ditautkan ulang (kode device baru) supaya tokennya mendapat scope baru — RPM otomatis juga ikut aktif."
     else:
-        subs_note = "Subscriber per video dari YouTube Analytics API bila token channel punya scope yt-analytics.readonly; bila belum, tampil '—' — taut ulang channel (kode device baru) untuk mengaktifkannya."
+        subs_note = "Subscriber per video (YouTube Analytics API) nonaktif — login device tidak mengizinkan scope Analytics, jadi subs tampil '—'. RPM isi manual di Settings."
     return jsonify({
         "videos": sorted(videos_out, key=lambda x: x['publish_date'], reverse=True),
         "summary": {"total_videos": len(videos_out), "total_views": sum(v['views'] for v in videos_out),
@@ -3392,15 +3397,16 @@ def get_video_stats():
 # 📈 FASE 10 SCOPE ANALYTICS API (RPM + SUBS OTOMATIS)
 # ==========================================
 # Token lama hanya punya scope youtube + youtube.upload, jadi subs per
-# video (Fase 4) dan RPM otomatis (Fase 9) tidak tersedia. Mulai Fase 10,
-# SCOPES ditambah 'yt-analytics.readonly' — token yang dibuat /
-# diperbarui setelah deploy ini sudah membawa scope Analytics.
-# Token LAMA tetap jalan normal: panggilan Analytics yang ditolak 403
-# (insufficientPermissions) dicatat per channel di cache (TTL 1 jam) dan
-# panel menampilkan "perlu taut ulang" — data lama tidak rusak, dan
-# RPM manual tetap jadi fallback bila API tidak mengembalikan RPM
-# (mis. channel belum monetisasi). Data Analytics terlambat ~48 jam;
-# video tanpa baris data = subs None (tampil '—', bukan 0).
+# video (Fase 4) dan RPM otomatis (Fase 9) tidak tersedia. Fase 10
+# menambahkan scope Analytics ke SCOPES — TETAPI endpoint device-code
+# Google menolak kedua scope Analytics ("Invalid device flow scope",
+# diverifikasi 2026-11-18), jadi scope itu DIHAPUS lagi dari SCOPES dan
+# fitur Analytics NONAKTIF sampai ada auth-code flow lewat browser
+# (client Desktop). Helper di bawah tetap dipertahankan untuk masa itu;
+# _query_analytics tidak memanggil API selama scope tidak ada di SCOPES.
+# Subs per video tampil '—' (bukan 0) dan RPM memakai isian manual
+# di Settings sebagai satu-satunya sumber. Data Analytics terlambat
+# ~48 jam; video tanpa baris data = subs None (tampil '—', bukan 0).
 # YouTube Analytics API (googleapiclient, pola get_fresh_credentials +
 # failover kredensial yang sama seperti Data API; tanpa dependensi baru):
 #  - subs per video: reports.query ids=channel==MINE,
@@ -3449,7 +3455,15 @@ def _query_analytics(channel, metrics, start_date, end_date, dimensions=None, fi
     False bila semua kredensial ditolak 403 insufficientPermissions,
     None bila gagal karena sebab lain (jaringan/dll — status scope
     tidak diubah). Fungsi ini murni: tidak membaca/menulis file cache,
-    pemanggil yang menyimpan state scope."""
+    pemanggil yang menyimpan state scope.
+
+    ⚠️ NONAKTIF: bila ANALYTICS_SCOPE tidak ada di SCOPES (login device
+    tidak mengizinkan scope Analytics — lihat komentar SCOPES), jangan
+    panggil API sama sekali: kembalikan (None, None) supaya channel
+    TIDAK ditandai 'perlu taut ulang' dan tidak ada panggilan 403 yang
+    sia-sia. Subs tetap None ('—'), RPM jatuh ke manual."""
+    if ANALYTICS_SCOPE not in SCOPES:
+        return None, None
     creds_list = channel.get('creds_list', [channel.get('creds_json')])
     saw_403 = False
     for cred_str in creds_list:
@@ -5711,7 +5725,7 @@ def device_login():
     </style></head><body>
         <div class="box">
             <h2 style="margin-top:0;">🔗 Tautkan Channel Baru</h2>
-            <div style="font-size:13px;color:#64748b;margin-bottom:20px">Izin yang diminta: kelola video YouTube (upload &amp; statistik) + <b>baca YouTube Analytics</b> (untuk subs per video &amp; RPM otomatis). Channel yang sudah tertaut sebelum ini perlu ditaut ulang supaya tokennya mendapat izin Analytics.</div>
+            <div style="font-size:13px;color:#64748b;margin-bottom:20px">Izin yang diminta: kelola video YouTube (upload &amp; statistik).</div>
             <div class="step"><b>Langkah 1:</b> Copy link ini dan Paste di browser target:
                 <div class="input-group"><input type="text" id="glink" value="{_vurl}" readonly><button onclick="document.getElementById('glink').select();document.execCommand('copy');">Copy Link</button></div>
             </div>

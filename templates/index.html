@@ -284,6 +284,8 @@ body::before {
   overflow-y: auto;
 }
 
+.logo-link { display: block; text-decoration: none; }
+.logo-link:hover { opacity: .85; }
 .logo {
   padding: 20px 16px 16px;
   border-bottom: 1px solid var(--border);
@@ -293,18 +295,22 @@ body::before {
   align-items: center;
   gap: 9px;
 }
+/* Logo simpel: huruf Z putih di kotak flat warna aksen (tanpa gambar/glow). */
 .logo-sq {
   width: 32px; height: 32px;
-  background: transparent;
+  background: var(--accent);
   border-radius: 7px;
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  overflow: hidden;
+  color: #fff;
+  font-family: var(--font-d);
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
 }
-.logo-sq img { width: 100%; height: 100%; object-fit: cover; }
 .logo-name { font-size: 15px; font-weight: 700; letter-spacing: .05em; color: var(--text); }
-.logo-ver { font-family: var(--font-m); font-size: 9px; color: var(--accent); letter-spacing: .15em; margin-top: 2px; }
+.logo-ver { font-family: var(--font-m); font-size: 10px; color: var(--accent); letter-spacing: .08em; margin-top: 2px; white-space: nowrap; }
 
 .nav { padding: 12px 10px; flex: 1; }
 .nav-section {
@@ -821,7 +827,7 @@ body::before { display: none; }
 .stat-lbl { font-size: 11px; }
 .stat-note { font-size: 11px; }
 .logo-name { font-size: 16px; text-shadow: none; }
-.logo-ver { font-size: 11px; }
+.logo-ver { font-size: 10px; }
 .nav-section { font-size: 11px; }
 .nav-item { font-size: 13px; }
 .nav-badge { font-size: 11px; }
@@ -926,15 +932,17 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
 <div class="sidebar-backdrop" id="sidebar-backdrop" onclick="toggleSidebarDrawer()"></div>
 
 <aside class="sidebar" id="app-sidebar">
+  <a href="/hub" class="logo-link" title="Kembali ke Home">
   <div class="logo">
     <div class="logo-mark">
-      <div class="logo-sq"><img src="/static/logo.png" alt="Z" style="color:var(--accent); font-weight:bold; font-size:18px;"></div>
+      <div class="logo-sq">Z</div>
       <div>
         <div class="logo-name">ZIQVA MUSE BOT</div>
         <div class="logo-ver">CLOUD VPS · BATCH ENGINE</div>
       </div>
     </div>
   </div>
+  </a>
   <nav class="nav">
     <div class="nav-section">OVERVIEW</div>
     <button class="nav-item active" onclick="go('dashboard',this)" id="nb-dashboard"><span class="nav-icon">⬡</span> Dashboard</button>
@@ -3778,8 +3786,12 @@ function renderTasks() {
             return `<div class="task-row"><div class="task-icon">📤</div><div class="task-info"><div class="task-name">${t.judul || 'Task'}</div><div class="task-meta">${t.jadwal || ''}</div></div><span class="pill p-yellow" style="flex-shrink:0">${t.status || 'Menunggu'}</span><button class="cancel-btn" onclick="cancelBrowserTask(${JSON.stringify(t.id)})">Batalkan</button></div>`;
           } else {
             const _st = String(t.status || '');
-            const _qw = _st.includes('Queue') || _st.includes('Menunggu reset') || _st.includes('Cooldown') || _st.includes('Ditunda') || _st.includes('Dijadwalkan');
-            return `<div class="task-row${_qw ? ' q-waiting' : ''}"><div class="task-icon">${_qw ? '⏳' : '⚙️'}</div><div class="task-info"><div class="task-name">${t.title || 'Task'}</div><div class="task-meta">${t.time || ''}${t.thumb_status ? `<span style="color:var(--text2);font-size:10px"> · 🖼️ ${t.thumb_status}</span>` : ''}</div></div><span class="pill ${_qw ? 'p-yellow' : 'p-cyan'}" style="flex-shrink:0;max-width:200px;white-space:normal;line-height:1.3">${t.status || '—'}</span><button class="stop-btn" onclick="stopTask(${Number(t.id)})">Stop</button></div>`;
+            const _pend = t.approval === 'pending';
+            const _qw = _pend || _st.includes('Queue') || _st.includes('Menunggu reset') || _st.includes('Cooldown') || _st.includes('Ditunda') || _st.includes('Dijadwalkan');
+            // 🔥 FASE 2: task pending menampilkan tombol approval langsung di panel
+            // (cadangan kalau operator Telegram mati).
+            const _apprBtns = _pend ? `<button class="stop-btn" style="background:var(--green);color:#fff" title="Setujui & masuk antrean" onclick="approveTask(${Number(t.id)})">✅</button><button class="stop-btn" style="background:var(--accent2);color:#fff" title="Tolak (tidak dieksekusi)" onclick="rejectTask(${Number(t.id)})">❌</button>` : '';
+            return `<div class="task-row${_qw ? ' q-waiting' : ''}"><div class="task-icon">${_qw ? '⏳' : '⚙️'}</div><div class="task-info"><div class="task-name">${t.title || 'Task'}</div><div class="task-meta">${t.time || ''}${t.thumb_status ? `<span style="color:var(--text2);font-size:10px"> · 🖼️ ${t.thumb_status}</span>` : ''}</div></div><span class="pill ${_qw ? 'p-yellow' : 'p-cyan'}" style="flex-shrink:0;max-width:200px;white-space:normal;line-height:1.3">${t.status || '—'}</span>${_apprBtns}<button class="stop-btn" onclick="stopTask(${Number(t.id)})">Stop</button></div>`;
           }
         }).join('');
         html += `<div class="q-group-content">${rows}</div>`;
@@ -3848,6 +3860,21 @@ function stopTask(id) {
 function cancelBrowserTask(id) {
   const idx = browserQueue.findIndex(t => t.id === id);
   if (idx !== -1) { browserQueue.splice(idx, 1); renderTasks(); toast('Task dibatalkan', 'info'); }
+}
+
+// 🔥 FASE 2: approve/reject task pending langsung dari panel (cadangan kalau
+// operator Telegram mati). Endpoint butuh login panel, tanpa operator_key.
+function approveTask(id) {
+  fetch('/api/approve_task', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task_id: id }) })
+    .then(r => r.json()).then(d => { toast(d.message, d.status === 'success' ? 'success' : 'error'); fetchServerTasks(); })
+    .catch(() => toast('Gagal menyetujui task', 'error'));
+}
+
+function rejectTask(id) {
+  if (!confirm('Tolak task ini? Task tidak akan dieksekusi dan pindah ke riwayat.')) return;
+  fetch('/api/reject_task', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task_id: id }) })
+    .then(r => r.json()).then(d => { toast(d.message, d.status === 'success' ? 'success' : 'error'); fetchServerTasks(); })
+    .catch(() => toast('Gagal menolak task', 'error'));
 }
 
 function clearHistory() {

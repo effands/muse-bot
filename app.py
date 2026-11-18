@@ -118,7 +118,7 @@ app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
 
 @app.before_request
 def check_security():
-    allowed_routes = ['login', 'setup', 'static', 'serve_uploads', 'device_login', 'poll_device_token', 'operator_retry_task']
+    allowed_routes = ['login', 'setup', 'static', 'serve_uploads', 'device_login', 'poll_device_token', 'operator_retry_task', 'operator_approve_task', 'operator_reject_task', 'operator_approve_batch']
     if request.endpoint in allowed_routes: return
     if not is_configured(): return redirect(url_for('setup'))
     if 'logged_in' not in session: return redirect(url_for('login'))
@@ -2333,6 +2333,177 @@ def recover_failed_tasks():
 # ==========================================
 # 🔁 FASE 1 MONITORING — RETRY TASK VIA TELEGRAM
 # ==========================================
+# ==========================================
+# 🔥 FASE 2 APPROVAL PREVIEW — GATE BATCH
+# ==========================================
+# Aturan: task batch BARU lahir dengan approval='pending' dan TIDAK masuk
+# antrean render (tidak ada queue_put) sampai owner menyetujui lewat
+# Telegram atau panel. Task LAMA (tanpa field 'approval') dianggap
+# 'approved' supaya batch yang sudah berjalan sebelum Fase 2 tidak tiba-tiba
+# terkunci. Status pending mengandung kata "Menunggu" supaya watchdog
+# stuck dan scheduled_task_activator menganggapnya menunggu, bukan macet.
+APPROVAL_PENDING_STATUS = "⏳ Menunggu Approval"
+
+def _approval_of(t):
+    """Status approval sebuah task. Legacy (tanpa field) = approved."""
+    return t.get('approval') or 'approved'
+
+def _validate_operator_key(data):
+    """Cek `key` == operator_key (HMAC, pola sama seperti retry_task).
+    Mengembalikan (True, '') kalau valid, kalau tidak (False, pesan)."""
+    import hmac as _hmac
+    key = data.get('key', '')
+    expected = load_bot_config().get('operator_key', '')
+    if not expected or not _hmac.compare_digest(str(key), str(expected)):
+        return False, "Kunci operator tidak valid."
+    return True, ''
+
+def _apply_approval(task_id, decision):
+    """Terapkan keputusan approval ke SATU task pending. Dipakai bersama
+    oleh endpoint operator (Telegram) dan endpoint panel (login).
+    decision: 'approved' atau 'rejected'.
+    Mengembalikan (ok, pesan, judul). Harus dipanggil dengan db_lock
+    TIDAK sedang dipegang (fungsi ini mengambil lock sendiri)."""
+    global active_tasks, history_tasks
+    try:
+        task_id = int(task_id)
+    except Exception:
+        return False, "task_id tidak valid.", ""
+    with db_lock:
+        target = None
+        for t in active_tasks:
+            if t.get('id') == task_id:
+                target = t
+                break
+        if target is None:
+            return False, "Task tidak ditemukan di antrean aktif.", ""
+        if _approval_of(target) != 'pending':
+            return False, "Task ini sudah diputuskan (bukan pending lagi).", target.get('title', '')[:60]
+        if not target.get('blueprint'):
+            return False, "Task ini tidak punya blueprint.", target.get('title', '')[:60]
+        title = target.get('title', '?')[:60]
+        if decision == 'approved':
+            target['approval'] = 'approved'
+            target['status'] = "Menunggu Giliran (Queue) ⏳"
+            target['updated_at'] = time.time()
+            active_tasks.sort(key=lambda x: x.get('blueprint', {}).get('publish_date', ''))
+            save_tasks_db()
+            try:
+                queue_put(target["blueprint"])
+            except Exception as e:
+                return False, f"Gagal masuk antrean: {e}", title
+            return True, "Task disetujui dan masuk antrean render.", title
+        # decision == 'rejected': pindah ke riwayat supaya terlihat di panel,
+        # bukan hilang diam-diam — dan TIDAK pernah dieksekusi.
+        target['approval'] = 'rejected'
+        target['status'] = "Ditolak (Approval) ❌"
+        active_tasks.remove(target)
+        history_tasks.insert(0, target)
+        save_tasks_db()
+        return True, "Task ditolak dan tidak akan dieksekusi.", title
+
+def _apply_approve_batch(batch_id):
+    """Setujui SEMUA task pending dalam satu batch. Mengembalikan
+    (jumlah_disetujui, [judul...]). Task yang sudah diputuskan dilewati."""
+    approved_titles = []
+    with db_lock:
+        pending = [t for t in active_tasks
+                   if t.get('batch_id') == batch_id and _approval_of(t) == 'pending'
+                   and t.get('blueprint')]
+        for t in pending:
+            t['approval'] = 'approved'
+            t['status'] = "Menunggu Giliran (Queue) ⏳"
+            t['updated_at'] = time.time()
+            approved_titles.append(t.get('title', '?')[:60])
+        if approved_titles:
+            active_tasks.sort(key=lambda x: x.get('blueprint', {}).get('publish_date', ''))
+            save_tasks_db()
+        blueprints = [t["blueprint"] for t in pending]
+    for bp in blueprints:
+        try:
+            queue_put(bp)
+        except Exception as e:
+            print(f"Gagal queue batch approve: {e}", flush=True)
+    return len(approved_titles), approved_titles
+
+def _operator_approval_endpoint(decision):
+    """Kerangka endpoint operator approve/reject satu task. Mengembalikan
+    respons JSON Flask (dipakai kedua route di bawah)."""
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), 403
+    if data.get('task_id') is None:
+        return jsonify({"status": "error", "message": "task_id wajib diisi."}), 400
+    ok, msg, title = _apply_approval(data.get('task_id'), decision)
+    if not ok:
+        return jsonify({"status": "error", "message": msg}), 400
+    word = "disetujui ✅" if decision == 'approved' else "ditolak ❌"
+    send_tg_message(f"{'✅' if decision == 'approved' else '❌'} *Approval: task {word}*\n`{title}`\n_{msg}_")
+    return jsonify({"status": "success", "message": msg, "title": title})
+
+@app.route('/api/operator/approve_task', methods=['POST'])
+def operator_approve_task():
+    """Setujui SATU task pending dari tombol inline Telegram.
+    Keamanan: sama seperti retry_task — wajib operator_key, route ini
+    masuk allowed_routes di check_security."""
+    try:
+        return _operator_approval_endpoint('approved')
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Gagal approve: {e}"}), 500
+
+@app.route('/api/operator/reject_task', methods=['POST'])
+def operator_reject_task():
+    """Tolak SATU task pending dari tombol inline Telegram. Task pindah
+    ke riwayat berstatus 'Ditolak (Approval)' dan tidak dieksekusi."""
+    try:
+        return _operator_approval_endpoint('rejected')
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Gagal reject: {e}"}), 500
+
+@app.route('/api/operator/approve_batch', methods=['POST'])
+def operator_approve_batch():
+    """Setujui SEMUA task pending dalam satu batch (tombol 'Setujui Semua').
+    Keamanan: wajib operator_key seperti endpoint operator lain."""
+    try:
+        data = request.get_json(silent=True) or {}
+        ok_key, msg_key = _validate_operator_key(data)
+        if not ok_key:
+            return jsonify({"status": "error", "message": msg_key}), 403
+        batch_id = data.get('batch_id')
+        if not batch_id:
+            return jsonify({"status": "error", "message": "batch_id wajib diisi."}), 400
+        count, titles = _apply_approve_batch(batch_id)
+        if count == 0:
+            return jsonify({"status": "error", "message": "Tidak ada task pending di batch ini (mungkin sudah diputuskan)."}), 400
+        send_tg_message(f"✅ *Approval batch:* `{count} task` disetujui dan masuk antrean render.\n_" + "; ".join(titles[:5]) + ("…" if len(titles) > 5 else "") + "_")
+        return jsonify({"status": "success", "message": f"{count} task disetujui dan masuk antrean.", "count": count})
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Gagal approve batch: {e}"}), 500
+
+# --- Approval dari panel (login) — cadangan kalau operator Telegram mati. ---
+@app.route('/api/approve_task', methods=['POST'])
+def panel_approve_task():
+    """Setujui satu task pending dari panel web (butuh login panel)."""
+    data = request.get_json(silent=True) or {}
+    if data.get('task_id') is None:
+        return jsonify({"status": "error", "message": "task_id wajib diisi."}), 400
+    ok, msg, title = _apply_approval(data.get('task_id'), 'approved')
+    if not ok:
+        return jsonify({"status": "error", "message": msg}), 400
+    return jsonify({"status": "success", "message": msg, "title": title})
+
+@app.route('/api/reject_task', methods=['POST'])
+def panel_reject_task():
+    """Tolak satu task pending dari panel web (butuh login panel)."""
+    data = request.get_json(silent=True) or {}
+    if data.get('task_id') is None:
+        return jsonify({"status": "error", "message": "task_id wajib diisi."}), 400
+    ok, msg, title = _apply_approval(data.get('task_id'), 'rejected')
+    if not ok:
+        return jsonify({"status": "error", "message": msg}), 400
+    return jsonify({"status": "success", "message": msg, "title": title})
+
 @app.route('/api/operator/retry_task', methods=['POST'])
 def operator_retry_task():
     """Retry SATU task gagal dari tombol inline Telegram.
@@ -2344,15 +2515,12 @@ def operator_retry_task():
     Satu klik = satu percobaan ulang; kalau task sudah kembali ke antrean,
     klik berikutnya ditolak supaya tidak dobel."""
     global active_tasks, history_tasks
-    import hmac as _hmac
     try:
         data = request.get_json(silent=True) or {}
         task_id = data.get('task_id')
-        key = data.get('key', '')
-        bot_config = load_bot_config()
-        expected = bot_config.get('operator_key', '')
-        if not expected or not _hmac.compare_digest(str(key), str(expected)):
-            return jsonify({"status": "error", "message": "Kunci operator tidak valid."}), 403
+        ok_key, msg_key = _validate_operator_key(data)
+        if not ok_key:
+            return jsonify({"status": "error", "message": msg_key}), 403
         if task_id is None:
             return jsonify({"status": "error", "message": "task_id wajib diisi."}), 400
         try:
@@ -2370,6 +2538,11 @@ def operator_retry_task():
                     break
             if target is None:
                 return jsonify({"status": "error", "message": "Task tidak ditemukan di riwayat."})
+            # 🔥 FASE 2: task yang DITOLAK saat approval tidak boleh hidup lagi
+            # lewat retry — keputusan tolak itu final. Task pending tidak ada
+            # di riwayat (masih di antrean aktif), jadi tidak sampai ke sini.
+            if _approval_of(target) == 'rejected':
+                return jsonify({"status": "error", "message": "Task ini ditolak saat approval, tidak bisa di-retry. Buat batch baru."}), 400
             if not target.get('blueprint'):
                 return jsonify({"status": "error", "message": "Task ini tidak punya blueprint, tidak bisa diulang."})
             if "Selesai" in target.get('status', '') or "Tayang" in target.get('status', '') or "Sukses" in target.get('status', ''):
@@ -2923,6 +3096,43 @@ def poll_device_token():
     return jsonify({"status": "error", "error": "Akun Google ini tidak memiliki channel YouTube. Ulangi dengan akun yang punya channel."})
 
 # --- BATCH CREATOR ---
+def _tg_escape(text):
+    """Escape karakter Markdown Telegram supaya judul/deskripsi video
+    (yang bisa mengandung *, _, [, ] dll.) tidak merusak format pesan."""
+    for ch in ['\\', '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']:
+        text = text.replace(ch, '\\' + ch)
+    return text
+
+def _send_approval_previews(batch_id, channel_name, previews):
+    """Kirim SATU pesan preview per video ke owner Telegram (dijalankan di
+    thread background supaya respons batch_create tidak menunggu Telegram).
+    Setiap pesan membawa tombol ✅ Setujui / ❌ Tolak + tombol Setujui
+    Semua di pesan pertama. Kalau token Telegram belum diset / operator
+    mati, pengiriman gagal silent — task tetap aman berstatus pending
+    dan terlihat di panel. Thumbnail TIDAK dikirim: blueprint tidak
+    menyimpan file thumbnail, jadi tidak ada gambar yang dikarang."""
+    total = len(previews)
+    for idx, pv in enumerate(previews):
+        desc = (pv.get('description') or '').strip()
+        desc_txt = _tg_escape(desc[:200]) + ("…" if len(desc) > 200 else "") if desc else "_tidak ada deskripsi_"
+        text = (
+            f"📋 *Preview Batch — Butuh Approval* ({idx + 1}/{total})\n"
+            f"📺 Channel: *{_tg_escape(channel_name)}*\n"
+            f"🎬 Judul: *{_tg_escape(pv.get('title', '?'))}*\n"
+            f"🗓️ Jadwal publish: `{_tg_escape(pv.get('publish_date', '-'))}`\n"
+            f"⏱️ Durasi target: `{pv.get('duration', '-')} jam` • 🔒 `{_tg_escape(pv.get('privacy', 'public'))}`\n"
+            f"📝 Deskripsi: {desc_txt}"
+        )
+        markup = {"inline_keyboard": [
+            [{"text": "✅ Setujui", "callback_data": f"approve:{pv['id']}"},
+             {"text": "❌ Tolak", "callback_data": f"reject:{pv['id']}"}],
+        ]}
+        if idx == 0 and total > 1:
+            markup["inline_keyboard"].append(
+                [{"text": f"✅ Setujui Semua ({total} video)", "callback_data": f"approve_all:{batch_id}"}])
+        send_tg_message(text, reply_markup=markup)
+        time.sleep(0.3)  # jeda kecil supaya tidak kena rate-limit Telegram
+
 @app.route('/api/batch_create', methods=['POST'])
 def batch_create():
     data = request.json
@@ -2956,7 +3166,12 @@ def batch_create():
                 c['reminder_sent'] = False  
                 break
         save_channels(database_channel)
-        
+
+    # 🔥 FASE 2: satu batch = satu batch_id (untuk tombol "Setujui Semua").
+    batch_id = f"b{int(time.time())}"
+    channel_name = next((c.get('name', yt_id) for c in database_channel if c.get('yt_id') == yt_id), yt_id or 'Tanpa Channel')
+    previews = []
+
     for i in range(count):
         t_id = int(time.time()) + i
         
@@ -2993,24 +3208,39 @@ def batch_create():
             
             "tags": data.get('tags', ''), "privacy": data.get('privacy', 'public'), "playlist_id": data.get('playlist_id', ''),
             "use_floating_card": data.get('use_floating_card', False),
-            "source_mode": data.get('source_mode', 'mix')  # 🔥 BARU: simpan jalur render engine di blueprint
+            "source_mode": data.get('source_mode', 'mix'),  # 🔥 BARU: simpan jalur render engine di blueprint
+            "batch_id": batch_id  # 🔥 FASE 2: batch pemilik task (untuk "Setujui Semua")
         }
         with db_lock:
             active_tasks.append({
                 "id": t_id,
                 "yt_id": yt_id,  # 🔥 FIX v1.8: simpan yt_id di level atas juga (sebelumnya cuma di blueprint)
                 "title": blueprint['title'],
-                "time": blueprint['publish_date'], 
-                # 🔥 FIX 1: Frontend membaca "Queue" (Kuning), Watchdog membaca "Menunggu" (Aman)
-                "status": "Menunggu Giliran (Queue) ⏳", 
+                "time": blueprint['publish_date'],
+                # 🔥 FASE 2: task baru lahir PENDING — tidak masuk antrean render
+                # (tidak ada queue_put di sini) sampai owner menyetujui.
+                "status": APPROVAL_PENDING_STATUS,
+                "approval": "pending",
+                "batch_id": batch_id,
                 "type": "📺 VOD",
-                "blueprint": blueprint 
+                "blueprint": blueprint
             })
-        queue_put(blueprint)
-        
+        previews.append({
+            "id": t_id, "title": blueprint['title'],
+            "publish_date": blueprint['publish_date'],
+            "duration": blueprint['target_duration_hours'],
+            "description": blueprint.get('description', ''),
+            "privacy": blueprint.get('privacy', 'public'),
+        })
+
     save_tasks_db()
-    
-    return jsonify({"status": "success", "message": f"{count} Video diproses!"})
+
+    # 🔥 FASE 2: kirim preview ke Telegram di thread background (panel
+    # langsung merespons; kalau Telegram mati, task tetap pending di panel).
+    threading.Thread(target=_send_approval_previews,
+                     args=(batch_id, channel_name, previews), daemon=True).start()
+
+    return jsonify({"status": "success", "message": f"{count} Video dibuat dan menunggu approval di Telegram!"})
     
 @app.route('/uploads/<path:filename>')
 def serve_uploads(filename):
@@ -3172,6 +3402,11 @@ def get_hub_status():
 # 🚀 STARTUP & RECOVERY SCRIPT
 # ==========================================
 def _reschedule_task(t):
+    # 🔥 FASE 2: task yang masih menunggu approval TIDAK boleh masuk antrean
+    # render saat startup — gate approval harus bertahan melewati restart.
+    if _approval_of(t) == 'pending':
+        t['status'] = APPROVAL_PENDING_STATUS
+        return
     t['status'] = "Menunggu Giliran (Queue) ⏳ (Dilanjutkan)"
     t['updated_at'] = time.time()
     queue_put(t["blueprint"])

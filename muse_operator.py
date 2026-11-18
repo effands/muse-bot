@@ -174,6 +174,8 @@ def build_status_report():
     in_progress = len([t for t in active if 'Selesai' not in t.get('status', '')
                        and 'Gagal' not in t.get('status', '')
                        and 'Dibatalkan' not in t.get('status', '')])
+    # 🔥 FASE 2: task batch baru yang menunggu keputusan owner.
+    pending = [t for t in active if t.get('approval') == 'pending']
     panel_ok = check_panel_online()
 
     lines = [
@@ -215,6 +217,7 @@ def build_status_report():
     lines += [
         "━━━━━━━━━━━━━━━━━━━━━━",
         f"🏭 *Antrean aktif:* `{len(active)} task` (`{in_progress}` sedang berjalan/menunggu)",
+        f"⏳ *Menunggu approval:* `{len(pending)} task`" + (" — cek pesan preview di atas, atau setujui dari panel." if pending else ""),
         f"✅ *Upload sukses hari ini:* `{ok_today}`",
         f"❌ *Gagal hari ini:* `{fail_today}`",
         f"📁 *Riwayat:* `{len(history)} task`",
@@ -300,8 +303,9 @@ def send_message(token, chat_id, text, parse_mode="Markdown", reply_markup=None)
 
 # ==========================================
 # 🔥 FASE 1 MONITORING — TOMBOL INLINE RETRY
+# 🔥 FASE 2 APPROVAL — TOMBOL ✅ SETUJUI / ❌ TOLAK
 # ==========================================
-_retry_in_flight = set()  # task_id yang sedang diproses retry-nya (anti dobel-klik)
+_cb_in_flight = set()  # data callback yang sedang diproses (anti dobel-klik)
 
 def answer_callback(token, callback_query_id, text):
     """Jawab callback query supaya tombol berhenti berputar di Telegram."""
@@ -334,9 +338,36 @@ def request_retry(task_id):
     except Exception as e:
         return False, f"Tidak bisa menghubungi panel: {e}"
 
+def request_approval(action, task_id=None, batch_id=None):
+    """Panggil endpoint approval di panel (approve_task / reject_task /
+    approve_batch). Pola sama seperti request_retry: operator_key dibaca
+    fresh dari config.json — TIDAK pernah dikirim ke chat.
+    action: 'approve_task' | 'reject_task' | 'approve_batch'."""
+    config = load_config()
+    key = config.get('operator_key', '')
+    if not key:
+        return False, "Kunci operator belum siap (panel mungkin baru restart). Coba lagi sebentar lagi."
+    payload = {"key": key}
+    if task_id is not None:
+        payload["task_id"] = task_id
+    if batch_id is not None:
+        payload["batch_id"] = batch_id
+    try:
+        res = requests.post(
+            PANEL_URL + f'/api/operator/{action}',
+            json=payload,
+            timeout=20
+        )
+        data = res.json()
+        if res.status_code == 200 and data.get('status') == 'success':
+            return True, data.get('message', 'Berhasil.')
+        return False, data.get('message', f"Panel menjawab HTTP {res.status_code}.")
+    except Exception as e:
+        return False, f"Tidak bisa menghubungi panel: {e}"
+
 def handle_callback_query(token, chat_id, callback_query):
-    """Proses tombol inline (saat ini: 🔁 Coba Lagi). Hanya owner yang
-    sampai ke sini — pengecekan owner dilakukan di loop utama."""
+    """Proses tombol inline (Fase 1: 🔁 Coba Lagi; Fase 2: ✅/❌ approval).
+    Hanya owner yang sampai ke sini — pengecekan owner dilakukan di loop utama."""
     cq_id = callback_query.get('id', '')
     data = (callback_query.get('data') or '').strip()
     if data.startswith('retry:'):
@@ -345,10 +376,10 @@ def handle_callback_query(token, chat_id, callback_query):
         except Exception:
             answer_callback(token, cq_id, "Data tombol tidak valid.")
             return
-        if task_id in _retry_in_flight:
+        if data in _cb_in_flight:
             answer_callback(token, cq_id, "⏳ Retry task ini masih diproses, tunggu sebentar.")
             return
-        _retry_in_flight.add(task_id)
+        _cb_in_flight.add(data)
         try:
             answer_callback(token, cq_id, "🔁 Mengirim retry ke panel...")
             ok, info = request_retry(task_id)
@@ -359,7 +390,57 @@ def handle_callback_query(token, chat_id, callback_query):
                 send_message(token, chat_id,
                              f"⚠️ *Retry gagal*\nTask #{task_id}: {info}")
         finally:
-            _retry_in_flight.discard(task_id)
+            _cb_in_flight.discard(data)
+        return
+    # --- FASE 2: approval satu task ---
+    if data.startswith('approve:') or data.startswith('reject:'):
+        action, _, _raw_id = data.partition(':')
+        try:
+            task_id = int(_raw_id)
+        except Exception:
+            answer_callback(token, cq_id, "Data tombol tidak valid.")
+            return
+        if data in _cb_in_flight:
+            answer_callback(token, cq_id, "⏳ Keputusan ini masih diproses, tunggu sebentar.")
+            return
+        _cb_in_flight.add(data)
+        try:
+            word = "Menyetujui" if action == 'approve' else "Menolak"
+            answer_callback(token, cq_id, f"{word} task...")
+            ok, info = request_approval('approve_task' if action == 'approve' else 'reject_task',
+                                        task_id=task_id)
+            if ok:
+                icon = "✅" if action == 'approve' else "❌"
+                verb = "disetujui dan masuk antrean render" if action == 'approve' else "ditolak dan tidak akan dieksekusi"
+                send_message(token, chat_id,
+                             f"{icon} *Task #{task_id} {verb}.*\n_{info}_")
+            else:
+                send_message(token, chat_id,
+                             f"⚠️ *Keputusan gagal*\nTask #{task_id}: {info}")
+        finally:
+            _cb_in_flight.discard(data)
+        return
+    # --- FASE 2: approval satu batch sekaligus ---
+    if data.startswith('approve_all:'):
+        batch_id = data.split(':', 1)[1].strip()
+        if not batch_id:
+            answer_callback(token, cq_id, "Data tombol tidak valid.")
+            return
+        if data in _cb_in_flight:
+            answer_callback(token, cq_id, "⏳ Batch ini masih diproses, tunggu sebentar.")
+            return
+        _cb_in_flight.add(data)
+        try:
+            answer_callback(token, cq_id, "✅ Menyetujui semua task batch ini...")
+            ok, info = request_approval('approve_batch', batch_id=batch_id)
+            if ok:
+                send_message(token, chat_id,
+                             f"✅ *Batch disetujui*\n{info}")
+            else:
+                send_message(token, chat_id,
+                             f"⚠️ *Approve batch gagal*\nBatch `{batch_id}`: {info}")
+        finally:
+            _cb_in_flight.discard(data)
         return
     answer_callback(token, cq_id, "Tombol tidak dikenal.")
 

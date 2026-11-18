@@ -91,11 +91,9 @@
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
         }
 
-        /* ── Logo: gradien cyan→biru yang bergeser pelan ── */
+        /* ── Logo simpel: huruf Z putih di kotak flat warna aksen ── */
         .logo-mark {
-            background: linear-gradient(135deg, #38bdf8, #2563eb, #38bdf8);
-            background-size: 200% 200%;
-            animation: gradient-shift 9s ease infinite;
+            background: #38bdf8;
         }
         @keyframes gradient-shift {
             0% { background-position: 0% 50%; }
@@ -321,9 +319,9 @@
 
         <!-- ════════ COMPACT HEADER ════════ -->
         <header class="glass-card rounded-xl px-4 py-2.5 sm:px-5 sm:py-3 flex items-center justify-between gap-3 reveal d1">
-            <div class="flex items-center gap-3">
-                <div class="logo-mark w-9 h-9 rounded-lg flex items-center justify-center text-slate-950 font-black shadow-md shadow-cyan-500/20">
-                    <i class="fa-solid fa-cube text-base"></i>
+            <a href="/hub" class="flex items-center gap-3" title="Kembali ke Home">
+                <div class="logo-mark w-9 h-9 rounded-lg flex items-center justify-center text-white font-black">
+                    <span class="text-lg leading-none">Z</span>
                 </div>
                 <div>
                     <div class="flex items-center gap-2">
@@ -332,7 +330,7 @@
                     </div>
                     <p class="text-[10px] text-slate-400 hidden sm:block">Pusat Kendali Batch Engine &amp; Cloud Content Factory</p>
                 </div>
-            </div>
+            </a>
 
             <div class="flex items-center gap-2">
                 <!-- Status Node -->

@@ -331,7 +331,8 @@ app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
 # perbaikan sisa #12, clipper.js mengirim token yang sama seperti panel).
 _OPERATOR_ENDPOINTS = {'operator_retry_task', 'operator_approve_task',
                       'operator_reject_task', 'operator_approve_batch',
-                      'operator_register_node'}
+                      'operator_register_node', 'operator_create_shorts',
+                      'operator_create_long'}
 _CSRF_EXEMPT_ENDPOINTS = {'login', 'setup', 'static'} | _OPERATOR_ENDPOINTS
 
 @app.before_request
@@ -5892,24 +5893,41 @@ def _stagger_publish_date(v_date_str, yt_id):
 # ============================================================
 @app.route('/api/shorts_muse_create', methods=['POST'])
 def shorts_muse_create():
-    """Buat SATU Shorts Muse. Alurnya SAMA seperti batch_create (bukan
-    jalur paralel): stagger jam (Fase 6), autopilot auto vs approval
+    """Buat SATU Shorts Muse (panel). Butuh login panel (route TIDAK masuk
+    allowed_routes). Inti pembuatan ada di _create_shorts_muse_task —
+    dipakai bersama route operator Telegram."""
+    data = request.get_json(silent=True) or {}
+    res = _create_shorts_muse_task(data)
+    if not res["ok"]:
+        return jsonify({"status": "error", "message": res["message"]}), res["http"]
+    if res.get("preview"):
+        threading.Thread(target=_send_approval_previews,
+                         args=(res["batch_id"], res["channel_name"], [res["preview"]]), daemon=True).start()
+    return jsonify({"status": "success", "message": res["message"], "task_id": res["task_id"]})
+
+
+def _create_shorts_muse_task(data):
+    """Inti pembuatan SATU Shorts Muse — dipakai route panel (login) dan
+    route operator Telegram (operator_key). Alurnya SAMA seperti
+    batch_create: stagger jam (Fase 6), autopilot auto vs approval
     (Fase 6/2), dijeda → ditahan (Fase 3), lalu worker yang sama
     (disk → render vertikal → QC → upload → kuota). Privacy dipaksa
     'private' seperti Clipper — owner yang mengubahnya di YouTube.
-    Butuh login panel (route TIDAK masuk allowed_routes)."""
-    data = request.get_json(silent=True) or {}
+    Mengembalikan dict: ok/message/http/task_id/auto_mode/batch_id/
+    preview (dict preview approval, atau None bila auto)/channel_name/
+    publish_date. TIDAK mengirim preview Telegram — pemanggil yang
+    memicu _send_approval_previews bila preview tidak None."""
     yt_id = (data.get('yt_id') or '').strip()
     title = (data.get('title') or '').strip()
     if not yt_id or not title:
-        return jsonify({"status": "error", "message": "Channel dan judul wajib diisi."}), 400
+        return {"ok": False, "message": "Channel dan judul wajib diisi.", "http": 400}
     channel_rec = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
     if channel_rec is None:
-        return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
+        return {"ok": False, "message": "Channel tidak ditemukan.", "http": 404}
     hook = (data.get('hook') or '').strip()
     script = (data.get('script') or '').strip()
     if not hook and not script:
-        return jsonify({"status": "error", "message": "Isi Hook atau Naskah — salah satunya wajib ada."}), 400
+        return {"ok": False, "message": "Isi Hook atau Naskah — salah satunya wajib ada.", "http": 400}
     cta_text = (data.get('cta') or SHORTS_MUSE_DEFAULT_CTA).strip() or SHORTS_MUSE_DEFAULT_CTA
     try:
         duration_sec = int(float(data.get('duration_sec') or 30))
@@ -5922,7 +5940,7 @@ def shorts_muse_create():
         try:
             pub_dt = datetime.strptime(data.get('publish_date', ''), '%Y-%m-%d %H:%M')
         except Exception:
-            return jsonify({"status": "error", "message": "Format tanggal salah (pakai YYYY-MM-DD HH:MM)."}), 400
+            return {"ok": False, "message": "Format tanggal salah (pakai YYYY-MM-DD HH:MM).", "http": 400}
     v_date_str = _stagger_publish_date(pub_dt.strftime('%Y-%m-%d %H:%M'), yt_id)
     text_color = (data.get('text_color') or '#FFFFFF').strip()
     if not re.fullmatch(r'#[0-9A-Fa-f]{6}', text_color):
@@ -5931,12 +5949,12 @@ def shorts_muse_create():
     if bg_file:
         bg_path = os.path.join(get_channel_folder(yt_id, "backgrounds"), os.path.basename(bg_file))
         if not os.path.isfile(bg_path):
-            return jsonify({"status": "error", "message": f"Background '{bg_file}' tidak ditemukan di galeri channel."}), 400
+            return {"ok": False, "message": f"Background '{bg_file}' tidak ditemukan di galeri channel.", "http": 400}
     bgm_file = (data.get('bgm_file') or '').strip()
     if bgm_file and bgm_file.lower() != 'none':
         bgm_path = os.path.join(get_channel_folder(yt_id, "audios"), os.path.basename(bgm_file))
         if not os.path.isfile(bgm_path):
-            return jsonify({"status": "error", "message": f"Musik '{bgm_file}' tidak ditemukan di galeri channel."}), 400
+            return {"ok": False, "message": f"Musik '{bgm_file}' tidak ditemukan di galeri channel.", "http": 400}
     else:
         bgm_file = 'none'
     description = (data.get('description') or '').strip()
@@ -5978,9 +5996,9 @@ def shorts_muse_create():
     # dibuat bila antrean penuh (task yang dibuat tapi tidak ter-queue
     # akan menggantung dengan status menyesatkan).
     if auto_mode and not channel_paused and render_queue.qsize() >= QUEUE_MAX_SIZE:
-        return jsonify({"status": "error",
-                        "message": f"Antrean render penuh (maks {QUEUE_MAX_SIZE} task). "
-                                   "Tunggu antrean berkurang lalu coba lagi."}), 429
+        return {"ok": False,
+                "message": f"Antrean render penuh (maks {QUEUE_MAX_SIZE} task). "
+                           "Tunggu antrean berkurang lalu coba lagi.", "http": 429}
     with db_lock:
         active_tasks.append({
             "id": t_id, "yt_id": yt_id, "title": title,
@@ -6019,16 +6037,45 @@ def shorts_muse_create():
                             history_tasks.insert(0, t)
                             break
                     save_tasks_db()
-                return jsonify({"status": "error",
-                                "message": "Gagal masuk antrean render (antrean penuh). "
-                                           "Task ada di Riwayat dan bisa dipulihkan lewat 'Pulihkan Task Gagal'."}), 500
-        return jsonify({"status": "success", "message": "Shorts Muse dibuat dan langsung masuk antrean (mode Full-Auto)!", "task_id": t_id})
+                return {"ok": False,
+                        "message": "Gagal masuk antrean render (antrean penuh). "
+                                   "Task ada di Riwayat dan bisa dipulihkan lewat 'Pulihkan Task Gagal'.", "http": 500}
+        return {"ok": True, "message": "Shorts Muse dibuat dan langsung masuk antrean (mode Full-Auto)!",
+                "http": 200, "task_id": t_id, "auto_mode": True, "batch_id": batch_id,
+                "preview": None, "channel_name": channel_name, "publish_date": v_date_str}
     preview = {"id": t_id, "title": title, "publish_date": v_date_str,
                "duration_label": f"{duration_sec} detik (Shorts Muse)",
                "description": description, "privacy": "private"}
-    threading.Thread(target=_send_approval_previews,
-                     args=(batch_id, channel_name, [preview]), daemon=True).start()
-    return jsonify({"status": "success", "message": "Shorts Muse dibuat dan menunggu approval di Telegram!", "task_id": t_id})
+    return {"ok": True, "message": "Shorts Muse dibuat dan menunggu approval di Telegram!",
+            "http": 200, "task_id": t_id, "auto_mode": False, "batch_id": batch_id,
+            "preview": preview, "channel_name": channel_name, "publish_date": v_date_str}
+
+
+@app.route('/api/operator/create_shorts', methods=['POST'])
+def operator_create_shorts():
+    """Buat SATU Shorts Muse dari Telegram (alur terpandu /buatshort).
+    Keamanan: tanpa login panel, tapi wajib membawa `key` == operator_key
+    di config.json (HMAC, pola sama seperti retry_task). Route ini masuk
+    _OPERATOR_ENDPOINTS di check_security (bebas login/CSRF, auth HMAC).
+    Validasi + pembuatan SAMA PERSIS seperti shorts_muse_create (helper
+    _create_shorts_muse_task) — termasuk stagger, autopilot, dijeda,
+    dan antrean penuh → 429."""
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    if not _valid_yt_id(data.get('yt_id') or ''):
+        return jsonify({"status": "error", "message": "Channel tidak valid."}), 400
+    res = _create_shorts_muse_task(data)
+    if not res["ok"]:
+        return jsonify({"status": "error", "message": res["message"]}), res["http"]
+    if res.get("preview"):
+        threading.Thread(target=_send_approval_previews,
+                         args=(res["batch_id"], res["channel_name"], [res["preview"]]), daemon=True).start()
+    return jsonify({"status": "success", "message": res["message"],
+                    "task_id": res["task_id"],
+                    "approval": "approved" if res["auto_mode"] else "pending",
+                    "publish_date": res.get("publish_date")})
 
 
 @app.route('/api/get_shorts_muse')
@@ -6058,28 +6105,55 @@ def get_shorts_muse():
 
 
 @app.route('/api/batch_create', methods=['POST'])
+@app.route('/api/batch_create', methods=['POST'])
 def batch_create():
+    """Buat batch video long (panel). Butuh login panel (route TIDAK masuk
+    allowed_routes). Inti pembuatan ada di _create_long_batch — dipakai
+    bersama route operator Telegram."""
     data = request.get_json(silent=True) or {}
+    res = _create_long_batch(data, max_count=BATCH_MAX_COUNT)
+    if not res["ok"]:
+        return jsonify({"status": "error", "message": res["message"]}), res["http"]
+    if res.get("previews"):
+        threading.Thread(target=_send_approval_previews,
+                         args=(res["batch_id"], res["channel_name"], res["previews"]), daemon=True).start()
+    return jsonify({"status": "success", "message": res["message"]})
+
+
+def _create_long_batch(data, max_count=BATCH_MAX_COUNT):
+    """Inti pembuatan batch video long — dipakai route panel (login) dan
+    route operator Telegram (operator_key). data memakai bentuk yang sama
+    seperti batch_create: yt_id, count, generated_titles,
+    generated_descriptions, target_durations_array, start_date
+    ('%Y-%m-%dT%H:%M'), interval_days, generated_publish_dates, plus
+    field blueprint lain (mp3_per_video, vid_per_video, bg_count,
+    vis_*, render_preset, use_special_song, description, tags, privacy,
+    playlist_id, use_floating_card, source_mode). max_count membatasi
+    jumlah video (panel 50, Telegram 7).
+    Mengembalikan dict: ok/message/http/count/batch_id/auto_mode/
+    previews (list dict preview approval)/tasks (list {id,title,
+    publish_date})/channel_name. TIDAK mengirim preview Telegram —
+    pemanggil yang memicu _send_approval_previews bila previews ada."""
     yt_id = data.get('yt_id')
     # 🔒 #15: count divalidasi — non-integer/negatif/0 ditolak 400,
-    # maks 50 video per request (dulu tanpa batas → ribuan job sekaligus).
+    # maks max_count video per request (dulu tanpa batas → ribuan job sekaligus).
     try:
         count = int(data.get('count', 1))
     except Exception:
-        return jsonify({"status": "error", "message": "count harus angka bulat 1–50."}), 400
-    if isinstance(data.get('count'), bool) or count < 1 or count > BATCH_MAX_COUNT:
-        return jsonify({"status": "error", "message": f"count harus angka bulat 1–{BATCH_MAX_COUNT}."}), 400
+        return {"ok": False, "message": f"count harus angka bulat 1–{max_count}.", "http": 400}
+    if isinstance(data.get('count'), bool) or count < 1 or count > max_count:
+        return {"ok": False, "message": f"count harus angka bulat 1–{max_count}.", "http": 400}
 
     titles = data.get('generated_titles', [])
     # 🔥 TAMBAHKAN BARIS INI UNTUK MENANGKAP DESKRIPSI ACAK 🔥
-    descs = data.get('generated_descriptions', []) 
-    
+    descs = data.get('generated_descriptions', [])
+
     durations_array = data.get('target_durations_array', [])
-    
+
     try:
         base_date = datetime.strptime(data['start_date'], '%Y-%m-%dT%H:%M')
     except:
-        return jsonify({"status": "error", "message": "Format tanggal salah"}), 400
+        return {"ok": False, "message": "Format tanggal salah", "http": 400}
         
     interval_days = float(data.get('interval_days', 1))
     publish_dates = data.get('generated_publish_dates', [])
@@ -6115,9 +6189,9 @@ def batch_create():
     # memakai antrean sekarang, jadi tidak dicek di sini; saat disetujui,
     # queue_put menolak bila penuh.)
     if auto_mode and not channel_paused and render_queue.qsize() + count > QUEUE_MAX_SIZE:
-        return jsonify({"status": "error",
-                        "message": f"Antrean render penuh (maks {QUEUE_MAX_SIZE} task). "
-                                   "Tunggu antrean berkurang lalu coba lagi."}), 429
+        return {"ok": False,
+                "message": f"Antrean render penuh (maks {QUEUE_MAX_SIZE} task). "
+                           "Tunggu antrean berkurang lalu coba lagi.", "http": 429}
     auto_blueprints = []
     adjusted_dates = []
     shifted_count = 0
@@ -6239,18 +6313,113 @@ def batch_create():
                         still_active.append(t)
                 active_tasks[:] = still_active
                 save_tasks_db()
+            return {"ok": False,
+                    "message": f"{len(failed_bps)} dari {count} video gagal masuk antrean render (antrean penuh). "
+                               "Task yang gagal ada di Riwayat dan bisa dipulihkan lewat 'Pulihkan Task Gagal'.",
+                    "http": 500, "count": count, "batch_id": batch_id, "auto_mode": True,
+                    "previews": previews, "channel_name": channel_name}
+        _ok_tasks = [{"id": p["id"], "title": p["title"], "publish_date": p["publish_date"]} for p in previews]
+        return {"ok": True,
+                "message": f"{count} Video dibuat dan langsung masuk antrean (mode Full-Auto)!{_shift_note}",
+                "http": 200, "count": count, "batch_id": batch_id, "auto_mode": True,
+                "previews": [], "tasks": _ok_tasks, "channel_name": channel_name}
+
+    # 🔥 FASE 2: preview approval dikirim pemanggil di thread background
+    # (panel langsung merespons; kalau Telegram mati, task tetap pending).
+    _ok_tasks = [{"id": p["id"], "title": p["title"], "publish_date": p["publish_date"]} for p in previews]
+    return {"ok": True,
+            "message": f"{count} Video dibuat dan menunggu approval di Telegram!{_shift_note}",
+            "http": 200, "count": count, "batch_id": batch_id, "auto_mode": False,
+            "previews": previews, "tasks": _ok_tasks, "channel_name": channel_name}
+
+
+@app.route('/api/operator/create_long', methods=['POST'])
+def operator_create_long():
+    """Buat batch video long 60–80 menit dari Telegram (alur terpandu
+    /buatlong). Keamanan: tanpa login panel, tapi wajib membawa `key` ==
+    operator_key di config.json (HMAC, pola sama seperti retry_task).
+    Route ini masuk _OPERATOR_ENDPOINTS di check_security.
+    Beda dengan batch_create panel: count dibatasi 1–7 (supaya ringkasan
+    di chat tetap terbaca), judul kosong diambil dari bank judul channel,
+    durasi diacak 60–80 menit per video (seperti panel), tanggal mulai
+    boleh hanya tanggal (jam default 19:00). Pembuatan memakai helper
+    _create_long_batch yang sama — stagger, autopilot, dijeda, dan
+    antrean penuh → 429 berlaku persis seperti panel."""
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    yt_id = (data.get('yt_id') or '').strip()
+    if not _valid_yt_id(yt_id):
+        return jsonify({"status": "error", "message": "Channel tidak valid."}), 400
+    channel_rec = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+    if channel_rec is None:
+        return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
+    try:
+        count = int(data.get('count', 1))
+    except Exception:
+        return jsonify({"status": "error", "message": "count harus angka bulat 1–7."}), 400
+    if isinstance(data.get('count'), bool) or count < 1 or count > 7:
+        return jsonify({"status": "error", "message": "count harus angka bulat 1–7."}), 400
+    # Tanggal mulai: 'YYYY-MM-DD HH:MM' / 'YYYY-MM-DDTHH:MM' / 'YYYY-MM-DD'
+    # (hanya tanggal → jam 19:00).
+    start_raw = (data.get('start_date') or '').strip()
+    base_date = None
+    for _fmt in ('%Y-%m-%d %H:%M', '%Y-%m-%dT%H:%M', '%Y-%m-%d'):
+        try:
+            base_date = datetime.strptime(start_raw, _fmt)
+            break
+        except Exception:
+            continue
+    if base_date is None:
+        return jsonify({"status": "error", "message": "Format tanggal salah (pakai YYYY-MM-DD HH:MM)."}), 400
+    if len(start_raw) == 10:
+        base_date = base_date.replace(hour=19, minute=0)
+    try:
+        interval_days = float(data.get('interval_days', 1))
+    except Exception:
+        return jsonify({"status": "error", "message": "interval_days harus angka."}), 400
+    interval_days = max(0.5, min(30.0, interval_days))
+    # Judul: dari request (list / string pisah '|') atau bank judul channel.
+    titles = data.get('titles') or []
+    if isinstance(titles, str):
+        titles = [t.strip() for t in titles.replace('\n', '|').split('|') if t.strip()]
+    titles = [str(t).strip() for t in titles if str(t).strip()][:50]
+    if not titles:
+        bank = [t for t in (channel_rec.get('title_bank') or [])
+                if isinstance(t, str) and t.strip()]
+        if not bank:
             return jsonify({"status": "error",
-                            "message": f"{len(failed_bps)} dari {count} video gagal masuk antrean render (antrean penuh). "
-                                       "Task yang gagal ada di Riwayat dan bisa dipulihkan lewat 'Pulihkan Task Gagal'."}), 500
-        return jsonify({"status": "success", "message": f"{count} Video dibuat dan langsung masuk antrean (mode Full-Auto)!{_shift_note}"})
+                            "message": "Bank judul channel ini kosong — isi Bank Judul di panel dulu, atau kirim judul videonya."}), 400
+        titles = [bank[i % len(bank)] for i in range(count)]
+    titles = [titles[i % len(titles)] for i in range(count)]
+    # Durasi acak 60–80 menit per video (sama seperti panel: bilangan bulat).
+    durations = [random.randint(60, 80) / 60.0 for _ in range(count)]
+    ch_name = channel_rec.get('name', yt_id)
+    descs = [f"{t}\n\n{ch_name}" for t in titles]
+    prepared = {
+        "yt_id": yt_id, "count": count,
+        "generated_titles": titles,
+        "generated_descriptions": descs,
+        "target_durations_array": durations,
+        "start_date": base_date.strftime('%Y-%m-%dT%H:%M'),
+        "interval_days": interval_days,
+        "mp3_per_video": 5, "vid_per_video": 1, "bg_count": 1,
+        "render_preset": "ultrafast", "source_mode": "mix",
+        "privacy": "public",
+    }
+    res = _create_long_batch(prepared, max_count=7)
+    if not res["ok"]:
+        return jsonify({"status": "error", "message": res["message"]}), res["http"]
+    if res.get("previews"):
+        threading.Thread(target=_send_approval_previews,
+                         args=(res["batch_id"], res["channel_name"], res["previews"]), daemon=True).start()
+    return jsonify({"status": "success", "message": res["message"],
+                    "batch_id": res["batch_id"], "count": res["count"],
+                    "approval": "approved" if res["auto_mode"] else "pending",
+                    "tasks": res.get("tasks", [])})
 
-    # 🔥 FASE 2: kirim preview ke Telegram di thread background (panel
-    # langsung merespons; kalau Telegram mati, task tetap pending di panel).
-    threading.Thread(target=_send_approval_previews,
-                     args=(batch_id, channel_name, previews), daemon=True).start()
 
-    return jsonify({"status": "success", "message": f"{count} Video dibuat dan menunggu approval di Telegram!{_shift_note}"})
-    
 @app.route('/uploads/<path:filename>')
 def serve_uploads(filename):
     # 🔒 #9: wajib login panel (route ini SUDAH TIDAK di allowed_routes).

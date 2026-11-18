@@ -72,9 +72,10 @@ def load_monitor_state():
             return {"daily_report_date": "", "alerts": {}}
         data.setdefault("daily_report_date", "")
         data.setdefault("alerts", {})
+        data.setdefault("make_drafts", {})
         return data
     except Exception:
-        return {"daily_report_date": "", "alerts": {}}
+        return {"daily_report_date": "", "alerts": {}, "make_drafts": {}}
 
 def save_monitor_state(state):
     """Simpan state secara atomik (temp + replace) agar tidak rusak saat restart."""
@@ -85,6 +86,87 @@ def save_monitor_state(state):
         os.replace(tmp, MONITOR_STATE_FILE)
     except Exception as e:
         print(f"Gagal simpan monitor_state: {e}", flush=True)
+
+# ==========================================
+# 🎬 BUAT VIDEO LEWAT TELEGRAM — DRAFT PERCAKAPAN
+# ==========================================
+# Draft alur /buatshort & /buatlong disimpan di monitor_state.json
+# (kunci "make_drafts", per chat_id) supaya tahan restart. Draft yang
+# tidak ada kabar > 30 menit dianggap hangus.
+_MAKE_DRAFT_TTL = 1800  # 30 menit (detik)
+_BG_EXTS = ('.mp4', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.mov')
+_AUDIO_EXTS = ('.mp3', '.wav')
+
+def _load_make_draft(chat_id):
+    """Ambil draft aktif chat ini. Kembalikan None (tidak ada), dict draft,
+    atau {"expired": True} bila draft sudah hangus (sekaligus dihapus)."""
+    state = load_monitor_state()
+    drafts = state.get("make_drafts") or {}
+    d = drafts.get(str(chat_id))
+    if not d:
+        return None
+    if time.time() - float(d.get('at', 0)) > _MAKE_DRAFT_TTL:
+        drafts.pop(str(chat_id), None)
+        state["make_drafts"] = drafts
+        save_monitor_state(state)
+        return {"expired": True}
+    return d
+
+def _save_make_draft(chat_id, draft):
+    state = load_monitor_state()
+    drafts = state.get("make_drafts") or {}
+    draft['at'] = time.time()
+    drafts[str(chat_id)] = draft
+    state["make_drafts"] = drafts
+    save_monitor_state(state)
+
+def _clear_make_draft(chat_id):
+    state = load_monitor_state()
+    drafts = state.get("make_drafts") or {}
+    if str(chat_id) in drafts:
+        drafts.pop(str(chat_id))
+        state["make_drafts"] = drafts
+        save_monitor_state(state)
+
+def _gallery_files(yt_id, sub, exts):
+    """Daftar NAMA FILE galeri channel (basename saja, urut abjad).
+    yt_id divalidasi ketat (allowlist) supaya tidak bisa keluar folder."""
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', yt_id or ''):
+        return []
+    folder = os.path.join(BASE_DIR, 'uploads', yt_id, sub)
+    try:
+        if not os.path.isdir(folder):
+            return []
+        return sorted(f for f in os.listdir(folder)
+                      if f.lower().endswith(exts))
+    except Exception:
+        return []
+
+def _next_slot_for_channel(ch):
+    """Slot jadwal berikutnya untuk channel: sehari setelah jadwal terakhir
+    (jam yang sama); bila belum ada jadwal, besok jam 19:00 WIB."""
+    last = (ch or {}).get('last_scheduled_date') or ''
+    try:
+        dt = datetime.strptime(last, '%Y-%m-%d %H:%M').replace(
+            tzinfo=ZoneInfo("Asia/Jakarta"))
+        return (dt + timedelta(days=1)).strftime('%Y-%m-%d %H:%M')
+    except Exception:
+        return (_wib_now() + timedelta(days=1)).strftime('%Y-%m-%d 19:00')
+
+def _parse_make_date(raw):
+    """Parse tanggal kiriman user: 'YYYY-MM-DD HH:MM' / 'YYYY-MM-DDTHH:MM'
+    / 'YYYY-MM-DD' (→ jam 19:00). Kembalikan string '%Y-%m-%d %H:%M'
+    atau None bila tidak bisa diparse."""
+    raw = (raw or '').strip()
+    for fmt in ('%Y-%m-%d %H:%M', '%Y-%m-%dT%H:%M', '%Y-%m-%d'):
+        try:
+            dt = datetime.strptime(raw, fmt)
+            if len(raw) == 10:
+                dt = dt.replace(hour=19, minute=0)
+            return dt.strftime('%Y-%m-%d %H:%M')
+        except Exception:
+            continue
+    return None
 
 def _wib_now():
     return datetime.now(ZoneInfo("Asia/Jakarta"))
@@ -903,7 +985,8 @@ def get_main_keyboard():
             [{"text": "🗓️ Jadwal 7 Hari"}, {"text": "📈 Statistik Video"}],
             [{"text": "💰 Monetisasi"}, {"text": "❌ Task Gagal"}],
             [{"text": "💡 10 Judul Sleep"}, {"text": "🎬 Ide Shorts"}],
-            [{"text": "📝 Template Deskripsi"}, {"text": "📐 Blueprint Resep"}]
+            [{"text": "📝 Template Deskripsi"}, {"text": "📐 Blueprint Resep"}],
+            [{"text": "🎬 Buat Short"}, {"text": "🎥 Buat Video Long"}]
         ],
         "resize_keyboard": True,
         "is_persistent": True
@@ -994,6 +1077,52 @@ def request_approval(action, task_id=None, batch_id=None):
     except Exception as e:
         return False, f"Tidak bisa menghubungi panel: {e}"
 
+def request_create_shorts(payload):
+    """Buat Shorts Muse lewat endpoint operator panel
+    (/api/operator/create_shorts). Pola sama seperti request_retry:
+    operator_key dibaca fresh dari config.json — TIDAK pernah dikirim
+    ke chat. Kembalikan (ok, pesan, data_respons)."""
+    config = load_config()
+    key = config.get('operator_key', '')
+    if not key:
+        return False, "Kunci operator belum siap (panel mungkin baru restart). Coba lagi sebentar lagi.", {}
+    body = dict(payload or {})
+    body["key"] = key
+    try:
+        res = requests.post(
+            PANEL_URL + '/api/operator/create_shorts',
+            json=body,
+            timeout=25
+        )
+        data = res.json()
+        if res.status_code == 200 and data.get('status') == 'success':
+            return True, data.get('message', 'Berhasil dibuat.'), data
+        return False, data.get('message', f"Panel menjawab HTTP {res.status_code}."), data
+    except Exception as e:
+        return False, f"Tidak bisa menghubungi panel: {e}", {}
+
+def request_create_long(payload):
+    """Buat batch video long lewat endpoint operator panel
+    (/api/operator/create_long). Pola sama seperti request_create_shorts."""
+    config = load_config()
+    key = config.get('operator_key', '')
+    if not key:
+        return False, "Kunci operator belum siap (panel mungkin baru restart). Coba lagi sebentar lagi.", {}
+    body = dict(payload or {})
+    body["key"] = key
+    try:
+        res = requests.post(
+            PANEL_URL + '/api/operator/create_long',
+            json=body,
+            timeout=25
+        )
+        data = res.json()
+        if res.status_code == 200 and data.get('status') == 'success':
+            return True, data.get('message', 'Berhasil dibuat.'), data
+        return False, data.get('message', f"Panel menjawab HTTP {res.status_code}."), data
+    except Exception as e:
+        return False, f"Tidak bisa menghubungi panel: {e}", {}
+
 def handle_callback_query(token, chat_id, callback_query):
     """Proses tombol inline (Fase 1: 🔁 Coba Lagi; Fase 2: ✅/❌ approval).
     Hanya owner yang sampai ke sini — pengecekan owner dilakukan di loop utama."""
@@ -1068,6 +1197,60 @@ def handle_callback_query(token, chat_id, callback_query):
             else:
                 send_message(token, chat_id,
                              f"⚠️ *Yah, approve batch-nya gagal Bos* 😅\nBatch `{batch_id}`: {info}")
+        finally:
+            _cb_in_flight.discard(data)
+        return
+    # --- BUAT VIDEO: konfirmasi ✅ / batal ❌ dari ringkasan /buatshort & /buatlong ---
+    if data in ('mkshort:yes', 'mkshort:no', 'mklong:yes', 'mklong:no'):
+        kind = 'short' if data.startswith('mkshort') else 'long'
+        confirm = data.endswith(':yes')
+        if data in _cb_in_flight:
+            answer_callback(token, cq_id, "Sabar Bos, masih saya proses 😅")
+            return
+        _cb_in_flight.add(data)
+        try:
+            draft = _load_make_draft(chat_id)
+            if not draft or draft.get('expired'):
+                answer_callback(token, cq_id, "Draft-nya sudah tidak ada 😅")
+                send_message(token, chat_id,
+                             "🤖 *Eh Bos, draft-nya sudah tidak ada* 😅\n"
+                             "Mungkin sudah dibuat, dibatalkan, atau hangus (>30 menit). "
+                             "Ketik /buatshort atau /buatlong untuk mulai lagi ya Bos!")
+                return
+            if not confirm:
+                _clear_make_draft(chat_id)
+                answer_callback(token, cq_id, "Dibatalkan Bos 😌")
+                send_message(token, chat_id,
+                             "😌 *Sip Bos, dibatalkan.*\nTidak ada video yang dibuat. "
+                             "Ketik /buatshort atau /buatlong kalau mau mulai lagi ya Bos!")
+                return
+            answer_callback(token, cq_id, "Siap Bos, saya buatkan... 🎬")
+            d = draft.get('data') or {}
+            if kind == 'short':
+                ok, info, resp = request_create_shorts({
+                    "yt_id": d.get('yt_id'), "title": d.get('title'),
+                    "hook": d.get('hook', ''), "script": d.get('script', ''),
+                    "cta": d.get('cta', 'Subscribe'),
+                    "duration_sec": d.get('duration_sec', 30),
+                    "publish_date": d.get('publish_date'),
+                    "text_color": "#FFFFFF",
+                    "bg_file": d.get('bg_file', ''),
+                    "bgm_file": d.get('bgm_file', 'none'),
+                })
+            else:
+                ok, info, resp = request_create_long({
+                    "yt_id": d.get('yt_id'), "count": d.get('count', 1),
+                    "titles": d.get('titles') or [],
+                    "start_date": d.get('start_date'),
+                    "interval_days": d.get('interval_days', 1),
+                })
+            _clear_make_draft(chat_id)
+            if not ok:
+                send_message(token, chat_id,
+                             f"⚠️ *Yah Bos, gagal dibuat* 😅\n{info}\n"
+                             "Coba lagi dengan /buatshort atau /buatlong ya Bos!")
+                return
+            _send_make_created_message(token, chat_id, kind, d, resp)
         finally:
             _cb_in_flight.discard(data)
         return
@@ -1411,6 +1594,539 @@ def build_description_report(niche_key, niche_label):
         f"{body}"
     )
 
+# ==========================================
+# 🎬 BUAT VIDEO LEWAT TELEGRAM — ALUR TERPANDU /buatshort & /buatlong
+# ==========================================
+# Bahasa dibuat sederhana (Bos masih awam): tiap langkah hanya minta
+# SATU jawaban. /batal membatalkan kapan saja. Draft tersimpan di
+# monitor_state.json (tahan restart), hangus setelah 30 menit diam.
+_MAIN_BUTTON_TEXTS = {
+    "status server", "kuota upload", "cek channel", "antrean render",
+    "jadwal 7 hari", "statistik video", "monetisasi", "task gagal",
+    "10 judul sleep", "ide shorts", "template deskripsi", "blueprint resep",
+    "buat short", "buat video long",
+}
+
+def _make_short_summary(d):
+    hook = (d.get('hook') or '—')
+    script = (d.get('script') or '—')
+    return (
+        "📋 *Cek dulu ya Bos, ini Shorts yang mau dibuat:* 🎬\n"
+        f"📺 Channel: *{_tg_escape(d.get('channel_name', ''))}*\n"
+        f"🎬 Judul: *{_tg_escape(d.get('title', ''))}*\n"
+        f"🪝 Hook (4 detik): {_tg_escape(hook[:150])}{'…' if len(hook) > 150 else ''}\n"
+        f"📝 Naskah: {_tg_escape(script[:200])}{'…' if len(script) > 200 else ''}\n"
+        f"📣 CTA: {_tg_escape(d.get('cta', 'Subscribe'))}\n"
+        f"⏱️ Durasi: `{d.get('duration_sec', 30)} detik`\n"
+        f"🗓️ Jadwal: `{_tg_escape(d.get('publish_date', ''))}`\n"
+        f"🖼️ Background: `{_tg_escape(d.get('bg_file', ''))}`\n"
+        f"🎵 Musik: `{_tg_escape(d.get('bgm_file', 'none'))}`\n\n"
+        "Kalau sudah oke, pencet ✅ Buat. Kalau mau ubah, pencet ❌ Batal lalu mulai lagi dari /buatshort ya Bos!"
+    )
+
+def _make_long_summary(d):
+    lines = [
+        "📋 *Cek dulu ya Bos, ini batch video long yang mau dibuat:* 🎥",
+        f"📺 Channel: *{_tg_escape(d.get('channel_name', ''))}*",
+        f"🎬 Jumlah: `{d.get('count', 1)} video` (durasi tiap video diacak 60–80 menit)",
+        f"🗓️ Mulai: `{_tg_escape(d.get('start_date', ''))}` • Jeda antar video: `{d.get('interval_days', 1)} hari`",
+        "📝 Judul:",
+    ]
+    titles = d.get('titles') or []
+    if titles:
+        for i, t in enumerate(titles[:7], 1):
+            lines.append(f"  {i}. {_tg_escape(t)}")
+    else:
+        lines.append("  _diambil dari Bank Judul channel_")
+    lines.append("\nKalau sudah oke, pencet ✅ Buat. Kalau mau ubah, pencet ❌ Batal lalu mulai lagi dari /buatlong ya Bos!")
+    return "\n".join(lines)
+
+def _send_make_created_message(token, chat_id, kind, d, resp):
+    """Pesan sukses setelah task dibuat — jelaskan apa yang terjadi
+    selanjutnya (menunggu approval vs langsung antre)."""
+    approval = (resp or {}).get('approval', 'pending')
+    if kind == 'short':
+        lines = [
+            "✅ *Sip Bos, Shorts-nya udah saya buatkan!* 🎬",
+            f"🎬 Judul: *{_tg_escape(d.get('title', ''))}*",
+            f"📺 Channel: *{_tg_escape(d.get('channel_name', ''))}*",
+            f"🗓️ Jadwal: `{_tg_escape((resp or {}).get('publish_date') or d.get('publish_date', ''))}`",
+            f"⏱️ Durasi: `{d.get('duration_sec', 30)} detik`",
+        ]
+    else:
+        tasks = (resp or {}).get('tasks') or []
+        lines = [
+            f"✅ *Sip Bos, {resp.get('count', d.get('count', 1))} video long udah saya buatkan!* 🎥",
+            f"📺 Channel: *{_tg_escape(d.get('channel_name', ''))}*",
+        ]
+        for t in tasks[:7]:
+            lines.append(f"• {_tg_escape(t.get('title', ''))} — `{_tg_escape(t.get('publish_date', ''))}`")
+    if approval == 'pending':
+        lines += ["",
+                  "⏳ *Video menunggu persetujuan Bos dulu ya* — preview-nya bakal masuk ke chat ini, "
+                  "tinggal pencet ✅ Setujui biar langsung dirender & upload."]
+    else:
+        lines += ["",
+                  "🚀 *Langsung masuk antrean render (mode Full-Auto)* — ditunggu kabar selesainya ya Bos! 💪"]
+    send_message(token, chat_id, "\n".join(lines))
+
+def _make_pick_channel(channels):
+    """Kembalikan (channel_terpilih_atau_None, pesan_pilih_atau_None).
+    1 channel → langsung pakai; >1 → minta pilih nomor."""
+    if not channels:
+        return None, None
+    if len(channels) == 1:
+        return channels[0], None
+    lines = ["📺 *Bos punya lebih dari 1 channel nih, pilih dulu ya:*\n"]
+    for i, c in enumerate(channels, 1):
+        mark = " ⏸️ Dijeda" if c.get('paused') else ""
+        lines.append(f"{i}. {_tg_escape(_channel_display_name(c))}{mark}")
+    lines.append("\nBalas dengan angkanya saja (mis. `1`).")
+    return None, "\n".join(lines)
+
+def _make_check_bg_or_cancel(token, chat_id, draft):
+    """Cek galeri background channel untuk Shorts. Bila kosong → batalkan
+    draft dengan pesan jelas. Kembalikan True bila boleh lanjut."""
+    d = draft.get('data') or {}
+    bgs = _gallery_files(d.get('yt_id', ''), 'backgrounds', _BG_EXTS)
+    if not bgs:
+        _clear_make_draft(chat_id)
+        send_message(token, chat_id,
+                     "😅 *Yah Bos, galerinya masih kosong* — Shorts butuh 1 gambar background dulu.\n\n"
+                     "Upload background dulu di panel (Asset Gallery), lalu ketik /buatshort lagi ya Bos! 🙏")
+        return False
+    d['bg_options'] = bgs
+    draft['data'] = d
+    return True
+
+def _make_ask_step(token, chat_id, draft):
+    """Kirim pertanyaan untuk langkah draft saat ini."""
+    d = draft.get('data') or {}
+    step = draft.get('step')
+    kind = draft.get('kind')
+    if step == 'channel':
+        _ch, msg = _make_pick_channel(load_channels())
+        if msg:
+            send_message(token, chat_id, msg)
+        return
+    if kind == 'short':
+        if step == 'title':
+            send_message(token, chat_id,
+                         "🎬 *Buat Short — langkah 1 dari 7: Judul*\n\nKirim judul Shorts-nya, Bos. (mis. `Musik Tidur Nyenyak 30 Detik`)")
+        elif step == 'hook':
+            send_message(token, chat_id,
+                         "🪝 *Langkah 2 dari 7: Hook (4 detik pertama)*\n\nKirim kalimat pembuka yang bikin orang berhenti scroll.\nKetik `lewati` kalau mau kosongkan (nanti pakai naskah saja).")
+        elif step == 'script':
+            send_message(token, chat_id,
+                         "📝 *Langkah 3 dari 7: Naskah*\n\nKirim naskah Shorts-nya (ditampilkan berurutan di video).\nKetik `lewati` kalau sudah cukup dengan Hook saja.")
+        elif step == 'cta':
+            send_message(token, chat_id,
+                         "📣 *Langkah 4 dari 7: CTA (kartu akhir 5 detik)*\n\nKirim teks ajakannya (mis. `Subscribe`).\nKetik `lewati` untuk pakai CTA standar (`Subscribe`).")
+        elif step == 'duration':
+            send_message(token, chat_id,
+                         "⏱️ *Langkah 5 dari 7: Durasi*\n\nBalas `15`, `30`, atau `60` (detik).\nKetik `lewati` untuk 30 detik.")
+        elif step == 'publish':
+            nxt = _next_slot_for_channel(next((c for c in load_channels()
+                                              if c.get('yt_id') == d.get('yt_id')), None))
+            send_message(token, chat_id,
+                         "🗓️ *Langkah 6 dari 7: Jadwal tayang*\n\nKirim tanggal & jam (format `YYYY-MM-DD HH:MM`, mis. `2026-11-20 19:00`).\n"
+                         f"Ketik `lewati` untuk jadwal berikutnya (`{nxt}`).")
+        elif step == 'bg':
+            opts = d.get('bg_options') or []
+            lines = ["🖼️ *Langkah 7 dari 7: Background*\n\nPilih gambar/video background dari galeri:\n"]
+            for i, f in enumerate(opts[:10], 1):
+                lines.append(f"{i}. `{_tg_escape(f)}`")
+            if len(opts) > 10:
+                lines.append(f"_…dan {len(opts) - 10} file lainnya_")
+            lines.append("\nBalas angkanya. Ketik `lewati` untuk pakai yang pertama.")
+            send_message(token, chat_id, "\n".join(lines))
+        elif step == 'bgm':
+            opts = _gallery_files(d.get('yt_id', ''), 'audios', _AUDIO_EXTS)
+            d['bgm_options'] = opts
+            _save_make_draft(chat_id, draft)
+            if not opts:
+                d['bgm_file'] = 'none'
+                draft['step'] = 'confirm'
+                _save_make_draft(chat_id, draft)
+                send_message(token, chat_id, _make_short_summary(d),
+                             reply_markup={"inline_keyboard": [
+                                 [{"text": "✅ Buat", "callback_data": "mkshort:yes"},
+                                  {"text": "❌ Batal", "callback_data": "mkshort:no"}]]})
+                return
+            lines = ["🎵 *Terakhir: Musik latar*\n\nPilih musik dari galeri (atau `0` untuk tanpa musik):\n"]
+            for i, f in enumerate(opts[:10], 1):
+                lines.append(f"{i}. `{_tg_escape(f)}`")
+            if len(opts) > 10:
+                lines.append(f"_…dan {len(opts) - 10} file lainnya_")
+            lines.append("\nBalas angkanya, `0` tanpa musik, atau `lewati` untuk tanpa musik.")
+            send_message(token, chat_id, "\n".join(lines))
+        elif step == 'confirm':
+            send_message(token, chat_id, _make_short_summary(d),
+                         reply_markup={"inline_keyboard": [
+                             [{"text": "✅ Buat", "callback_data": "mkshort:yes"},
+                              {"text": "❌ Batal", "callback_data": "mkshort:no"}]]})
+    else:  # long
+        if step == 'count':
+            send_message(token, chat_id,
+                         "🎥 *Buat Video Long — langkah 1 dari 4: Jumlah*\n\nMau buat berapa video? Balas angkanya (`1`–`7`).")
+        elif step == 'titles':
+            send_message(token, chat_id,
+                         "📝 *Langkah 2 dari 4: Judul*\n\nKirim judul videonya, pisahkan dengan `|` kalau lebih dari 1.\n"
+                         "Ketik `lewati` untuk pakai judul dari Bank Judul channel.")
+        elif step == 'start':
+            send_message(token, chat_id,
+                         "🗓️ *Langkah 3 dari 4: Tanggal mulai*\n\nKirim tanggal & jam video pertama (format `YYYY-MM-DD HH:MM`, mis. `2026-11-20 19:00`).\n"
+                         "Tanggal saja juga boleh (jam jadi 19:00). Ketik `lewati` untuk besok jam 19:00.")
+        elif step == 'interval':
+            send_message(token, chat_id,
+                         "⏳ *Langkah 4 dari 4: Jeda antar video*\n\nBerapa hari jeda tiap video? Balas angkanya (mis. `1`).\nKetik `lewati` untuk 1 hari.")
+        elif step == 'confirm':
+            send_message(token, chat_id, _make_long_summary(d),
+                         reply_markup={"inline_keyboard": [
+                             [{"text": "✅ Buat", "callback_data": "mklong:yes"},
+                              {"text": "❌ Batal", "callback_data": "mklong:no"}]]})
+
+def _short_next_step(d):
+    """Langkah pertama yang masih kosong untuk Short (dipakai lompatan
+    sekali kirim — bagian yang sudah diisi tidak ditanya lagi)."""
+    if not d.get('title'):
+        return 'title'
+    if not d.get('hook') and not d.get('script'):
+        return 'hook'
+    if not d.get('cta'):
+        return 'cta'
+    if not d.get('duration_sec'):
+        return 'duration'
+    if not d.get('publish_date'):
+        return 'publish'
+    if not d.get('bg_file'):
+        return 'bg'
+    if not d.get('bgm_file'):
+        return 'bgm'
+    return 'confirm'
+
+def _long_next_step(d):
+    """Langkah pertama yang masih kosong untuk Long. 'titles' kosong
+    (lewati = pakai bank judul) tetap dihitung terisi bila kuncinya ada."""
+    if not d.get('count'):
+        return 'count'
+    if 'titles' not in d:
+        return 'titles'
+    if not d.get('start_date'):
+        return 'start'
+    if not d.get('interval_days'):
+        return 'interval'
+    return 'confirm'
+
+def _start_make_short(token, chat_id, raw_cmd):
+    """Mulai alur /buatshort. Dukung sekali kirim:
+    /buatshort Judul | Hook | Naskah | CTA — bagian yang sudah diisi
+    tidak ditanya lagi."""
+    channels = load_channels()
+    if not channels:
+        send_message(token, chat_id,
+                     "😅 *Bos, belum ada channel yang terhubung nih*\n\n"
+                     "Tautkan channel dulu di panel (Settings → Tautkan Channel Baru), "
+                     "lalu ketik /buatshort lagi ya Bos!")
+        return
+    pre = {}
+    rest = raw_cmd[len('/buatshort'):].strip() if raw_cmd.strip().lower().startswith('/buatshort') else ''
+    if rest:
+        parts = [p.strip() for p in rest.split('|')]
+        if len(parts) > 0 and parts[0]:
+            pre['title'] = parts[0][:200]
+        if len(parts) > 1 and parts[1]:
+            pre['hook'] = parts[1][:500]
+        if len(parts) > 2 and parts[2]:
+            pre['script'] = parts[2][:2000]
+        if len(parts) > 3 and parts[3]:
+            pre['cta'] = parts[3][:100]
+    ch, ask_msg = _make_pick_channel(channels)
+    draft = {"kind": "short", "step": "title", "data": dict(pre)}
+    if ch is None:
+        draft['step'] = 'channel'
+        _save_make_draft(chat_id, draft)
+        send_message(token, chat_id,
+                     "🎬 *Siap Bos, kita buat Short bareng-bareng ya!* 😎\n"
+                     "Jawab tiap langkah satu per satu — ketik /batal kapan saja untuk berhenti.\n\n" + ask_msg)
+        return
+    draft['data']['yt_id'] = ch.get('yt_id')
+    draft['data']['channel_name'] = _channel_display_name(ch)
+    if not _make_check_bg_or_cancel(token, chat_id, draft):
+        return
+    # Lompati langkah yang sudah terisi dari sekali kirim.
+    draft['step'] = _short_next_step(draft['data'])
+    _save_make_draft(chat_id, draft)
+    send_message(token, chat_id,
+                 f"🎬 *Siap Bos, kita buat Short buat channel {_tg_escape(draft['data']['channel_name'])} ya!* 😎\n"
+                 "Jawab tiap langkah satu per satu — ketik /batal kapan saja untuk berhenti.")
+    _make_ask_step(token, chat_id, draft)
+
+def _start_make_long(token, chat_id, raw_cmd):
+    """Mulai alur /buatlong. Dukung sekali kirim:
+    /buatlong 3 | 2026-11-20 19:00 | 1 (jumlah | tanggal | jeda hari)."""
+    channels = load_channels()
+    if not channels:
+        send_message(token, chat_id,
+                     "😅 *Bos, belum ada channel yang terhubung nih*\n\n"
+                     "Tautkan channel dulu di panel (Settings → Tautkan Channel Baru), "
+                     "lalu ketik /buatlong lagi ya Bos!")
+        return
+    pre = {}
+    rest = raw_cmd[len('/buatlong'):].strip() if raw_cmd.strip().lower().startswith('/buatlong') else ''
+    if rest:
+        parts = [p.strip() for p in rest.split('|')]
+        try:
+            if len(parts) > 0 and parts[0]:
+                pre['count'] = max(1, min(7, int(parts[0])))
+        except Exception:
+            pass
+        if len(parts) > 1 and parts[1]:
+            parsed = _parse_make_date(parts[1])
+            if parsed:
+                pre['start_date'] = parsed
+        try:
+            if len(parts) > 2 and parts[2]:
+                pre['interval_days'] = max(0.5, min(30.0, float(parts[2])))
+        except Exception:
+            pass
+    ch, ask_msg = _make_pick_channel(channels)
+    draft = {"kind": "long", "step": "count", "data": dict(pre)}
+    if ch is None:
+        draft['step'] = 'channel'
+        _save_make_draft(chat_id, draft)
+        send_message(token, chat_id,
+                     "🎥 *Siap Bos, kita buat batch video long bareng-bareng ya!* 😎\n"
+                     "Jawab tiap langkah satu per satu — ketik /batal kapan saja untuk berhenti.\n\n" + ask_msg)
+        return
+    draft['data']['yt_id'] = ch.get('yt_id')
+    draft['data']['channel_name'] = _channel_display_name(ch)
+    draft['step'] = _long_next_step(draft['data'])
+    _save_make_draft(chat_id, draft)
+    send_message(token, chat_id,
+                 f"🎥 *Siap Bos, kita buat batch video long buat channel {_tg_escape(draft['data']['channel_name'])} ya!* 😎\n"
+                 "Jawab tiap langkah satu per satu — ketik /batal kapan saja untuk berhenti.")
+    _make_ask_step(token, chat_id, draft)
+
+def _handle_make_answer(token, chat_id, draft, raw_cmd):
+    """Proses SATU jawaban dalam alur terpandu. Kembalikan True bila
+    pesan ditangani sebagai jawaban (bukan perintah lain)."""
+    d = draft.get('data') or {}
+    step = draft.get('step')
+    kind = draft.get('kind')
+    ans = (raw_cmd or '').strip()
+    low = ans.lower()
+    if step == 'channel':
+        channels = load_channels()
+        try:
+            idx = int(ans) - 1
+            ch = channels[idx] if 0 <= idx < len(channels) else None
+        except Exception:
+            ch = None
+        if ch is None:
+            send_message(token, chat_id,
+                         f"😅 *Eh Bos, pilihannya nggak ada* — balas angkanya 1–{len(channels)} ya.")
+            return True
+        d['yt_id'] = ch.get('yt_id')
+        d['channel_name'] = _channel_display_name(ch)
+        draft['data'] = d
+        if kind == 'short':
+            if not _make_check_bg_or_cancel(token, chat_id, draft):
+                return True
+            draft['step'] = _short_next_step(d)
+        else:
+            draft['step'] = _long_next_step(d)
+        _save_make_draft(chat_id, draft)
+        _make_ask_step(token, chat_id, draft)
+        return True
+    if kind == 'short':
+        if step == 'title':
+            if not ans:
+                send_message(token, chat_id, "😅 *Judulnya masih kosong Bos* — kirim judul Shorts-nya ya.")
+                return True
+            d['title'] = ans[:200]
+            draft['step'] = 'hook'
+        elif step == 'hook':
+            d['hook'] = '' if low in ('lewati', '-', 'skip') else ans[:500]
+            draft['step'] = 'script'
+        elif step == 'script':
+            d['script'] = '' if low in ('lewati', '-', 'skip') else ans[:2000]
+            if not (d.get('hook') or d.get('script')):
+                send_message(token, chat_id,
+                             "😅 *Hook dan Naskah tidak boleh dua-duanya kosong Bos* — "
+                             "isi salah satunya ya. Kirim Hook-nya dulu:")
+                draft['step'] = 'hook'
+                _save_make_draft(chat_id, draft)
+                return True
+            draft['step'] = 'cta'
+        elif step == 'cta':
+            d['cta'] = 'Subscribe' if low in ('lewati', '-', 'skip') else ans[:100]
+            draft['step'] = 'duration'
+        elif step == 'duration':
+            if low in ('lewati', '-', 'skip'):
+                d['duration_sec'] = 30
+            elif ans in ('15', '30', '60'):
+                d['duration_sec'] = int(ans)
+            else:
+                send_message(token, chat_id,
+                             "😅 *Durasi harus 15, 30, atau 60 detik Bos* — balas salah satunya ya.")
+                return True
+            draft['step'] = 'publish'
+        elif step == 'publish':
+            if low in ('lewati', '-', 'skip'):
+                ch = next((c for c in load_channels() if c.get('yt_id') == d.get('yt_id')), None)
+                d['publish_date'] = _next_slot_for_channel(ch)
+            else:
+                parsed = _parse_make_date(ans)
+                if not parsed:
+                    send_message(token, chat_id,
+                                 "😅 *Format tanggalnya salah Bos* — pakai `YYYY-MM-DD HH:MM` (mis. `2026-11-20 19:00`).")
+                    return True
+                d['publish_date'] = parsed
+            draft['step'] = 'bg'
+        elif step == 'bg':
+            opts = d.get('bg_options') or []
+            if low in ('lewati', '-', 'skip'):
+                d['bg_file'] = opts[0] if opts else ''
+            else:
+                try:
+                    idx = int(ans) - 1
+                    picked = opts[idx] if 0 <= idx < len(opts) else None
+                except Exception:
+                    picked = None
+                if not picked:
+                    send_message(token, chat_id,
+                                 f"😅 *Pilihannya nggak ada Bos* — balas angkanya 1–{len(opts)} ya.")
+                    return True
+                d['bg_file'] = picked
+            draft['step'] = 'bgm'
+        elif step == 'bgm':
+            opts = d.get('bgm_options') or []
+            if low in ('lewati', '-', 'skip', '0', 'tanpa musik', 'none'):
+                d['bgm_file'] = 'none'
+            else:
+                try:
+                    idx = int(ans) - 1
+                    picked = opts[idx] if 0 <= idx < len(opts) else None
+                except Exception:
+                    picked = None
+                if not picked:
+                    send_message(token, chat_id,
+                                 f"😅 *Pilihannya nggak ada Bos* — balas angkanya 1–{len(opts)}, atau `0` tanpa musik.")
+                    return True
+                d['bgm_file'] = picked
+            draft['step'] = 'confirm'
+        elif step == 'confirm':
+            if low in ('ya', 'buat', '✅', 'ok', 'oke', 'lanjut'):
+                _confirm_make_create(token, chat_id, draft)
+                return True
+            if low in ('batal', 'tidak', '❌', 'cancel'):
+                _clear_make_draft(chat_id)
+                send_message(token, chat_id, "😌 *Sip Bos, dibatalkan.* Tidak ada video yang dibuat.")
+                return True
+            send_message(token, chat_id,
+                         "👆 *Tinggal pencet tombol di atas ya Bos* — ✅ Buat atau ❌ Batal. "
+                         "Atau balas `ya` / `batal`.")
+            return True
+        draft['data'] = d
+        _save_make_draft(chat_id, draft)
+        _make_ask_step(token, chat_id, draft)
+        return True
+    # --- long ---
+    if step == 'count':
+        try:
+            n = int(ans)
+            if n < 1 or n > 7:
+                raise ValueError
+            d['count'] = n
+        except Exception:
+            send_message(token, chat_id, "😅 *Jumlahnya harus angka 1–7 Bos* — balas angkanya ya.")
+            return True
+        draft['step'] = _long_next_step(d)
+    elif step == 'titles':
+        if low in ('lewati', '-', 'skip', 'kosong'):
+            d['titles'] = []
+        else:
+            parts = [p.strip() for p in ans.replace('\n', '|').split('|') if p.strip()]
+            d['titles'] = parts[:50]
+        draft['step'] = _long_next_step(d)
+    elif step == 'start':
+        if low in ('lewati', '-', 'skip'):
+            # 'lewati' = pakai yang sudah diisi sekali kirim; kalau belum
+            # ada, default besok jam 19:00.
+            if not d.get('start_date'):
+                d['start_date'] = (_wib_now() + timedelta(days=1)).strftime('%Y-%m-%d 19:00')
+        else:
+            parsed = _parse_make_date(ans)
+            if not parsed:
+                send_message(token, chat_id,
+                             "😅 *Format tanggalnya salah Bos* — pakai `YYYY-MM-DD HH:MM` (mis. `2026-11-20 19:00`).")
+                return True
+            d['start_date'] = parsed
+        draft['step'] = _long_next_step(d)
+    elif step == 'interval':
+        if low in ('lewati', '-', 'skip'):
+            if not d.get('interval_days'):
+                d['interval_days'] = 1
+        else:
+            try:
+                v = float(ans)
+                if v < 0.5 or v > 30:
+                    raise ValueError
+                d['interval_days'] = v
+            except Exception:
+                send_message(token, chat_id,
+                             "😅 *Jeda harus angka 0,5–30 hari Bos* — balas angkanya ya (mis. `1`).")
+                return True
+        draft['step'] = _long_next_step(d)
+    elif step == 'confirm':
+        if low in ('ya', 'buat', '✅', 'ok', 'oke', 'lanjut'):
+            _confirm_make_create(token, chat_id, draft)
+            return True
+        if low in ('batal', 'tidak', '❌', 'cancel'):
+            _clear_make_draft(chat_id)
+            send_message(token, chat_id, "😌 *Sip Bos, dibatalkan.* Tidak ada video yang dibuat.")
+            return True
+        send_message(token, chat_id,
+                     "👆 *Tinggal pencet tombol di atas ya Bos* — ✅ Buat atau ❌ Batal. "
+                     "Atau balas `ya` / `batal`.")
+        return True
+    draft['data'] = d
+    _save_make_draft(chat_id, draft)
+    _make_ask_step(token, chat_id, draft)
+    return True
+
+def _confirm_make_create(token, chat_id, draft):
+    """Eksekusi pembuatan dari jawaban teks 'ya' di langkah konfirmasi
+    (jalur yang sama dengan tombol inline ✅)."""
+    d = draft.get('data') or {}
+    kind = draft.get('kind')
+    if kind == 'short':
+        ok, info, resp = request_create_shorts({
+            "yt_id": d.get('yt_id'), "title": d.get('title'),
+            "hook": d.get('hook', ''), "script": d.get('script', ''),
+            "cta": d.get('cta', 'Subscribe'),
+            "duration_sec": d.get('duration_sec', 30),
+            "publish_date": d.get('publish_date'),
+            "text_color": "#FFFFFF",
+            "bg_file": d.get('bg_file', ''),
+            "bgm_file": d.get('bgm_file', 'none'),
+        })
+    else:
+        ok, info, resp = request_create_long({
+            "yt_id": d.get('yt_id'), "count": d.get('count', 1),
+            "titles": d.get('titles') or [],
+            "start_date": d.get('start_date'),
+            "interval_days": d.get('interval_days', 1),
+        })
+    _clear_make_draft(chat_id)
+    if not ok:
+        send_message(token, chat_id,
+                     f"⚠️ *Yah Bos, gagal dibuat* 😅\n{info}\n"
+                     "Coba lagi dengan /buatshort atau /buatlong ya Bos!")
+        return
+    _send_make_created_message(token, chat_id, kind, d, resp)
+
 def handle_user_command(token, chat_id, text):
     try:
         raw_cmd = text.strip()
@@ -1420,6 +2136,40 @@ def handle_user_command(token, chat_id, text):
         first_word = parts[0] if parts else ""
 
         print(f"Perintah diproses: '{raw_cmd}' -> clean: '{clean_cmd}'", flush=True)
+
+        # --- 🎬 ALUR BUAT VIDEO (/buatshort & /buatlong): dicek PALING DULU
+        # supaya jawaban langkah tidak ketangkap cabang lain (mis. kata
+        # "sleep" di jawaban akan ketangkap /judul). /batal membatalkan
+        # kapan saja; /start membuka menu (draft ikut dibatalkan); tombol
+        # keyboard & perintah "/" lain tetap jalan, draft tersimpan.
+        if first_word in ("/batal",) or clean_cmd in ("batal", "cancel"):
+            if _load_make_draft(chat_id):
+                _clear_make_draft(chat_id)
+                send_message(token, chat_id,
+                             "😌 *Sip Bos, dibatalkan.* Tidak ada video yang dibuat.")
+            else:
+                send_message(token, chat_id,
+                             "😅 *Tidak ada yang sedang dibuat Bos* — ketik /buatshort atau /buatlong untuk mulai.")
+            return
+        _draft = _load_make_draft(chat_id)
+        if isinstance(_draft, dict) and _draft.get("expired"):
+            send_message(token, chat_id,
+                         "⌛ *Eh Bos, draft buat videonya sudah hangus (>30 menit tidak ada kabar)* 😅\n"
+                         "Ketik /buatshort atau /buatlong untuk mulai lagi ya Bos!")
+            return
+        if _draft:
+            if first_word in ("/start", "/help"):
+                _clear_make_draft(chat_id)
+            elif first_word in ("/buatshort", "/buatlong") or clean_cmd in ("buat short", "buat video long"):
+                _clear_make_draft(chat_id)
+                # jatuh ke cabang /buatshort|/buatlong di bawah (mulai baru)
+            elif first_word.startswith("/"):
+                pass  # perintah lain tetap jalan, draft tersimpan
+            elif clean_cmd in _MAIN_BUTTON_TEXTS:
+                pass  # tombol keyboard tetap jalan, draft tersimpan
+            else:
+                _handle_make_answer(token, chat_id, _draft, raw_cmd)
+                return
 
         # 1. MENU / START
         if first_word in ["/start", "/help", "halo", "menu", "hai"]:
@@ -1447,9 +2197,24 @@ def handle_user_command(token, chat_id, text):
                 "👉 /cta — Ide teks CTA buat Shorts\n"
                 "👉 /ideashorts [niche] — Hook + naskah singkat Shorts\n"
                 "👉 /blueprint — Resep settingan video\n\n"
+                "*🎬 Buat Video:*\n"
+                "👉 /buatshort — Buat Shorts Muse terpandu (judul, hook, naskah, CTA)\n"
+                "👉 /buatshort Judul | Hook | Naskah | CTA — Sekali kirim\n"
+                "👉 /buatlong — Buat batch video long 60–80 menit terpandu\n"
+                "👉 /buatlong 3 | 2026-11-20 19:00 | 1 — Sekali kirim (jumlah | tanggal | jeda hari)\n"
+                "👉 /batal — Batalkan draft yang sedang dibuat\n\n"
                 "Niche: sleep, lofi, piano, hujan, meditasi, fokus."
             )
             send_message(token, chat_id, msg)
+            return
+
+        # --- 🎬 BUAT VIDEO (alur terpandu) — dicek sebelum cabang lama
+        # supaya "buat short" tidak ketangkap cabang /ideashorts ("shorts").
+        if first_word in ("/buatshort",) or clean_cmd in ("buat short",):
+            _start_make_short(token, chat_id, raw_cmd)
+            return
+        if first_word in ("/buatlong",) or clean_cmd in ("buat video long",):
+            _start_make_long(token, chat_id, raw_cmd)
             return
 
         # --- PERINTAH BARU (baca saja) — dicek dulu supaya tidak ketangkap
@@ -1606,7 +2371,7 @@ def handle_user_command(token, chat_id, text):
         msg = (
             f"🤖 *Eh Bos, pesan \"{_tg_escape(raw_cmd)}\" saya terima tapi saya nggak ngerti maksudnya* 😅\n\n"
             "Coba sentuh tombol di bawah atau ketik /start buat lihat semua perintah ya Bos!\n"
-            "Perintah cepat: /status /server /kuota /stok /statistik /monetisasi /judul /ideashorts"
+            "Perintah cepat: /status /server /kuota /stok /statistik /monetisasi /judul /ideashorts /buatshort /buatlong"
         )
         send_message(token, chat_id, msg)
 

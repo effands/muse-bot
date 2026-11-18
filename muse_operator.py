@@ -1559,11 +1559,17 @@ def build_schedule_report(days=7):
 
 def _tg_escape(text):
     """Escape karakter Markdown Telegram supaya nama channel / judul video
-    (yang bisa mengandung *, _, [, ] dll.) tidak merusak format pesan.
+    (yang bisa mengandung *, _, `, [ dll.) tidak merusak format pesan.
     Hanya bagian DATA yang di-escape — template pesan yang memang memakai
-    *tebal* / `kode` tetap ditulis langsung. (#23)"""
+    *tebal* / `kode` tetap ditulis langsung. (#23)
+    PENTING: pesan dikirim dengan parse_mode 'Markdown' (LEGACY), BUKAN
+    'MarkdownV2' — di mode legacy HANYA \\, *, _, `, [ yang butuh
+    backslash. Dulu memakai set MarkdownV2 (termasuk -, ., !) sehingga
+    backslash justru TAMPIL di pesan, mis. 'jelek\\-jelek' (glitch
+    2026-11-19). Karakter lain (-, ., !, dsb.) dibiarkan apa adanya."""
     text = str(text or '')
-    for ch in ['\\', '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']:
+    text = text.replace('\\', '\\\\')
+    for ch in ['*', '_', '`', '[']:
         text = text.replace(ch, '\\' + ch)
     return text
 
@@ -2028,6 +2034,21 @@ def generate_seo_titles(niche, count=10):
             "Belajar Bentuk & Warna 🎨 Lagu Anak Edukatif yang Mudah Diingat",
             "Lagu Anak Ceria: Sahabatku 🧒 Lagu Persahabatan untuk Anak-Anak",
         ]
+    elif "asmr" in niche_lower:
+        templates = [
+            "ASMR for Deep Sleep 😴 Gentle Whispers & Soft Tapping to Fall Asleep Fast",
+            "Relaxing ASMR Whispers • Soft Sounds for Sleep, Stress Relief & Calm Nights",
+            "ASMR Tapping & Brushing Sounds for Instant Relaxation (No Talking)",
+            "Fall Asleep in Minutes • Soothing ASMR Whispers for Insomnia Relief",
+            "Cozy ASMR Night • Gentle Tapping, Soft Whispers & Rain for Deep Sleep",
+            "ASMR for Anxiety Relief • Calming Whispers to Quiet Your Mind",
+            "Soft Spoken ASMR • Gentle Whispers to Help You Sleep Peacefully",
+            "ASMR Ear-to-Ear Whispers • Deep Relaxation & Sleep Sounds (Headphones On)",
+            "Tingly ASMR Sounds • Brushing, Tapping & Whispering for Deep Sleep",
+            "ASMR Sleep Aid • Whispered Affirmations & Calm Sounds for Insomnia",
+            "Relaxing ASMR for Study & Focus • Soft Tapping Without Distraction",
+            "ASMR Rain & Whispers • The Perfect Soundscape for a Good Night's Sleep",
+        ]
     elif "piano" in niche_lower:
         templates = [
             "Relaxing Piano Music for Deep Sleep 😴 Beautiful Melodies to Calm Your Mind Instantly",
@@ -2114,7 +2135,8 @@ def generate_seo_titles(niche, count=10):
 # ==========================================
 # 🔥 PERLUASAN KONTEN — NICHE, HASHTAG, CTA, IDE SHORTS
 # Bank konten statis (bukan data live): judul/deskripsi/tag/CTA/ide Shorts
-# per niche. Niche yang dikenal: sleep, lofi, piano, hujan, meditasi, fokus.
+# per niche. Niche yang dikenal: sleep, lofi, piano, hujan, meditasi, fokus,
+# anak, asmr.
 # ==========================================
 _NICHES = {
     'sleep': 'Deep Sleep Music',
@@ -2124,12 +2146,15 @@ _NICHES = {
     'meditasi': 'Meditasi',
     'fokus': 'Fokus',
     'anak': 'Anak-Anak',
+    'asmr': 'ASMR',
 }
 
 
 def _parse_niche_arg(clean_cmd, parts, default='sleep'):
     """(kunci_niche, label) dari kata kunci di pesan. Urutan penting: yang
     spesifik dulu supaya 'fokus' tidak ketangkap cabang 'lofi'."""
+    if 'asmr' in clean_cmd:
+        return 'asmr', 'ASMR'
     if 'anak' in clean_cmd or 'kids' in clean_cmd or 'balita' in clean_cmd:
         return 'anak', 'Anak-Anak'
     if 'piano' in clean_cmd:
@@ -2176,6 +2201,10 @@ _HASHTAG_BANK = {
              '#laguceria', '#anakcerdas', '#dunianak', '#laguanakcerdas',
              '#belajarhuruf', '#anakkreatif', '#lagubalita', '#anakhebat',
              '#ceritabergambar', '#laguedukasi', '#kidsongs'],
+    'asmr': ['#asmr', '#asmrsounds', '#asmrwhisper', '#asmrtingles',
+             '#asmrsleep', '#asmrrelax', '#asmrcommunity', '#asmrvideo',
+             '#asmrtapping', '#whisperasmr', '#asmrforsleep', '#relaxingasmr',
+             '#asmrindonesia', '#asmrtriggers', '#sleepasmr'],
 }
 
 
@@ -2271,6 +2300,23 @@ _SHORTS_IDEAS = {
          "naskah": ["0–4 dtk: teks hook + huruf A besar", "5–40 dtk: lagu huruf, tiap huruf muncul dengan gambar (A = Apel)", "41–55 dtk: semua huruf berjajar, teks 'kamu sudah bisa!'"],
          "cta": "Ajak temanmu subscribe!"},
     ],
+    'asmr': [
+        {"hook": "Bisikan lembut… dengarkan baik-baik.",
+         "naskah": ["0–4 dtk: teks hook + visual gelap lembut", "5–40 dtk: bisikan pelan + ketukan halus, teks bergerak perlahan", "41–55 dtk: suara meredup, teks 'selamat tidur'"],
+         "cta": "Subscribe untuk ASMR baru setiap malam."},
+        {"hook": "Suara ketukan halus ini bikin rileks.",
+         "naskah": ["0–4 dtk: teks hook + tangan mengetuk kayu pelan", "5–40 dtk: ketukan berirama + bisikan 'tenang…'", "41–55 dtk: ketukan melambat, teks 'tarik napas dalam'"],
+         "cta": "Subscribe ya!"},
+        {"hook": "Pasang headphone-mu… sekarang dengarkan.",
+         "naskah": ["0–4 dtk: teks hook + ikon headphone", "5–40 dtk: suara lembut kiri-kanan, teks 'pejamkan mata…'", "41–55 dtk: suara meredup, teks 'tidur nyenyak ya'"],
+         "cta": "Subscribe untuk ASMR baru setiap malam."},
+        {"hook": "ASMR hujan + bisikan untuk tidur nyenyak.",
+         "naskah": ["0–4 dtk: teks hook + hujan rintik", "5–40 dtk: hujan lembut + bisikan pelan, teks 'semua baik-baik saja'", "41–55 dtk: hujan meredup, teks 'sampai jumpa besok'"],
+         "cta": "Subscribe ya!"},
+        {"hook": "Satu menit tenang untuk pikiranmu.",
+         "naskah": ["0–4 dtk: teks hook + lilin menyala", "5–40 dtk: suara lembut + teks 'tarik napas… hembuskan perlahan'", "41–55 dtk: api lilin meredup, teks 'kamu sudah tenang'"],
+         "cta": "Subscribe untuk ASMR baru setiap malam."},
+    ],
 }
 
 
@@ -2351,6 +2397,14 @@ _DESC_TEMPLATES = {
              "• Cocok untuk waktu bermain, belajar, dan sebelum tidur\n\n"
              "Lagu & Produksi oleh Ziqva Muse Bot Cloud System.\n\n"
              "#laguanak #anakkecil #belajarberhitung #laguceria #anakcerdas #laguedukasi"),
+    'asmr': ("Selamat datang di dunia ASMR yang menenangkan! 🎧✨\n\n"
+             "Kompilasi ASMR ini berisi bisikan lembut, ketukan halus, dan suara menenangkan lainnya — dibuat untuk membantumu rileks, mengurangi stres, dan tidur lebih nyenyak. Gunakan headphone untuk pengalaman terbaik.\n\n"
+             "🎧 Saran Mendengarkan:\n"
+             "• Pasang headphone dan cari posisi paling nyaman\n"
+             "• Pejamkan mata dan fokus pada suara lembutnya\n"
+             "• Cocok untuk sebelum tidur, relaksasi, dan menenangkan pikiran\n\n"
+             "Produksi oleh Ziqva Muse Bot Cloud System.\n\n"
+             "#asmr #asmrwhisper #asmrsleep #asmrrelax #relaxingasmr #sleepasmr"),
 }
 
 
@@ -2929,6 +2983,7 @@ _NLU_PENDING_TTL = 600  # 10 menit — klarifikasi yang tidak dijawab hangus
 
 _NLU_NICHE_WORDS = {
     'anak': ('anak', 'kids', 'balita', 'bocah', 'paud', 'lagu anak'),
+    'asmr': ('asmr',),
     'sleep': ('tidur', 'sleep', 'insomnia', 'nyenyak', 'lullaby'),
     'lofi': ('lofi', 'chill', 'study'),
     'piano': ('piano',),
@@ -2936,7 +2991,9 @@ _NLU_NICHE_WORDS = {
     'meditasi': ('meditasi', 'meditation', 'zen'),
     'fokus': ('fokus', 'focus', 'konsentrasi'),
 }
-_NLU_NICHE_ORDER = ('anak', 'piano', 'hujan', 'meditasi', 'fokus', 'lofi', 'sleep')
+# 'asmr' di depan 'sleep': 'suara asmr buat tidur' harus jadi asmr,
+# bukan tidur (kata 'tidur' ada di kalimat itu juga).
+_NLU_NICHE_ORDER = ('asmr', 'anak', 'piano', 'hujan', 'meditasi', 'fokus', 'lofi', 'sleep')
 
 # Bank konten pembuatan Short via NLU — kalimat polos (bukan beat bernomor
 # seperti _SHORTS_IDEAS). Isi hook/naskah/CTA niche lama sama dengan
@@ -3019,6 +3076,17 @@ _NLU_SHORTS_BANK = {
                     'Ikuti gerakannya, lompat dan bernyanyi bersama!'],
         'ctas': ['Subscribe ya!', 'Ajak temanmu subscribe!'],
     },
+    'asmr': {
+        'titles': ['ASMR Bisikan Lembut untuk Tidur', 'Suara Ketukan Halus ASMR',
+                   'ASMR Menenangkan 30 Detik', 'Bisikan ASMR untuk Relaksasi'],
+        'hooks': ['Bisikan lembut untuk tidur nyenyak', 'Suara ketukan halus yang menenangkan',
+                  'ASMR lembut untuk relaksasi malam ini', 'Dengarkan suara tenang ini… rileks'],
+        'scripts': ['Bisikan lembut ini menemani tidurmu malam ini.',
+                    'Dengarkan ketukan halus ini… tarik napas perlahan.',
+                    'Suara lembut untuk menenangkan pikiran dan tubuhmu.',
+                    'Pasang headphone-mu dan biarkan suara ini membawamu tidur.'],
+        'ctas': ['Subscribe untuk ASMR baru setiap malam', 'Subscribe'],
+    },
 }
 
 
@@ -3098,6 +3166,153 @@ def _nlu_extract_time(clean):
     if hour > 23 or minute > 59:
         return None
     return f"{hour:02d}:{minute:02d}"
+
+
+# Jangkar waktu harian untuk video Short PERTAMA (aturan jeda 6 jam,
+# 2026-11-19): pagi 07:00, siang 12:00, sore/petang 17:00, malam 19:00.
+_NLU_DAYPART_HOURS = {
+    'pagi': '07:00', 'siang': '12:00', 'sore': '17:00',
+    'malam': '19:00', 'petang': '17:00',
+}
+_NLU_MONTHS_ID = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu',
+                  'Sep', 'Okt', 'Nov', 'Des']
+
+
+def _nlu_extract_dayparts(clean):
+    """(anchor_time, dayparts) dari perintah. Jam eksplisit MENANG
+    ('jam 8 pagi' → 08:00, 'jam 8 pagi dan jam 5 sore' → 08:00);
+    kalau tidak ada jam eksplisit, kata hari jadi jangkar ('pagi sore' →
+    07:00, ['pagi', 'sore']). Tanpa keduanya → (None, [])."""
+    explicit = re.findall(
+        r'jam\s+(\d{1,2})(?:[:.](\d{2}))?\s*(pagi|siang|sore|malam|petang)?',
+        clean or '')
+    times = []
+    for h, m, mer in explicit:
+        hour = int(h)
+        minute = int(m or 0)
+        if mer in ('sore', 'malam', 'petang') and hour < 12:
+            hour += 12
+        if mer == 'pagi' and hour == 12:
+            hour = 0
+        if hour <= 23 and minute <= 59:
+            times.append(f"{hour:02d}:{minute:02d}")
+    if times:
+        return times[0], []
+    # Kata hari dicari sebagai substring (teks sudah dibersihkan — 'pagi-sore'
+    # jadi 'pagisore'), urut kemunculan. 'semalam' dikecualikan (itu semalam,
+    # bukan permintaan jam malam).
+    scan = (clean or '').replace('semalam', ' ')
+    positions = []
+    for word in _NLU_DAYPART_HOURS:
+        idx = scan.find(word)
+        if idx >= 0:
+            positions.append((idx, word))
+    positions.sort()
+    found = [w for _, w in positions]
+    if found:
+        return _NLU_DAYPART_HOURS[found[0]], found
+    return None, []
+
+
+def _nlu_channel_occupied(yt_id):
+    """Tanggal+jam yang sudah terisi untuk channel ini: task AKTIF
+    (menunggu approval/antrean) + video yang sudah TAYANG di riwayat.
+    Entri Gagal/Ditolak tidak dihitung — slotnya bebas. Dipakai aturan
+    jeda 6 jam supaya Short baru tidak menimpa slot lama."""
+    occ = set()
+    try:
+        tasks = load_tasks() or {}
+    except Exception:
+        return occ
+    for t in (tasks.get('active') or []):
+        if (t.get('yt_id') or (t.get('blueprint') or {}).get('yt_id')) == yt_id:
+            d = t.get('time') or (t.get('blueprint') or {}).get('publish_date')
+            if d:
+                occ.add(str(d)[:16])
+    for h in (tasks.get('history') or []):
+        if h.get('yt_id') != yt_id:
+            continue
+        if 'Tayang' not in (h.get('status') or ''):
+            continue
+        d = h.get('time') or (h.get('blueprint') or {}).get('publish_date')
+        if d:
+            occ.add(str(d)[:16])
+    return occ
+
+
+def _nlu_compute_shorts_schedule(ch, count, anchor_time, publish_time):
+    """Hitung jadwal Shorts aturan jeda 6 jam (2026-11-19): video pertama
+    di slot kosong berikutnya (jam eksplisit/jangkar hari/jam tetap
+    channel), video berikutnya = sebelumnya + 6 jam — boleh lewat tengah
+    malam ke hari berikutnya. Bila slot hasil hitungan sudah terisi,
+    geser +6 jam sampai kosong. Kembalikan list 'YYYY-MM-DD HH:MM'."""
+    first = anchor_time or publish_time
+    dt = None
+    if first:
+        try:
+            hh, mm = str(first).split(':')
+            dt = _wib_now().replace(hour=int(hh), minute=int(mm),
+                                    second=0, microsecond=0)
+            if dt <= _wib_now():
+                dt = dt + timedelta(days=1)
+        except Exception:
+            dt = None
+    if dt is None:
+        try:
+            dt = datetime.strptime(
+                _next_slot_for_channel(ch), '%Y-%m-%d %H:%M').replace(
+                    tzinfo=ZoneInfo("Asia/Jakarta"))
+        except Exception:
+            dt = (_wib_now() + timedelta(days=1)).replace(
+                hour=19, minute=0, second=0, microsecond=0)
+    yt_id = (ch or {}).get('yt_id')
+    occ = _nlu_channel_occupied(yt_id) if yt_id else set()
+    out = []
+    prev = None
+    for _ in range(max(1, count or 1)):
+        cand = dt if prev is None else prev + timedelta(hours=6)
+        guard = 0
+        while cand.strftime('%Y-%m-%d %H:%M') in occ and guard < 200:
+            cand = cand + timedelta(hours=6)
+            guard += 1
+        out.append(cand.strftime('%Y-%m-%d %H:%M'))
+        occ.add(cand.strftime('%Y-%m-%d %H:%M'))
+        prev = cand
+    return out
+
+
+def _nlu_build_shorts_schedules(slots):
+    """{yt_id: [jadwal]} per channel dari slots (anchor/publish_time/count).
+    Dihitung sekali sebelum konfirmasi supaya pesan konfirmasi menyebut
+    semua jam hasil hitungan."""
+    count = slots.get('count') or 1
+    sched = {}
+    for ch in load_channels():
+        if ch.get('yt_id') in (slots.get('channels') or []):
+            sched[ch.get('yt_id')] = _nlu_compute_shorts_schedule(
+                ch, count, slots.get('anchor_time'), slots.get('publish_time'))
+    return sched
+
+
+def _nlu_format_schedule(dts):
+    """['2026-11-20 07:00', '2026-11-20 13:00', '2026-11-21 01:00'] →
+    '20 Nov 07:00, 13:00, 21 Nov 01:00' (tanggal ditulis ulang hanya
+    bila harinya berganti)."""
+    parts = []
+    last_date = None
+    for s in dts or []:
+        try:
+            dt = datetime.strptime(str(s), '%Y-%m-%d %H:%M')
+        except Exception:
+            continue
+        dkey = dt.strftime('%Y-%m-%d')
+        if dkey != last_date:
+            parts.append(f"{dt.day} {_NLU_MONTHS_ID[dt.month - 1]} "
+                         f"{dt.strftime('%H:%M')}")
+            last_date = dkey
+        else:
+            parts.append(dt.strftime('%H:%M'))
+    return ', '.join(parts)
 
 
 def _nlu_extract_duration(clean):
@@ -3348,6 +3563,16 @@ def parse_natural_command(text, channels):
         if tm:
             slots['publish_time'] = tm
             conf += 5
+        # Jangkar waktu harian (buat_short saja): jam eksplisit menang,
+        # kalau tidak ada → kata hari (pagi 07:00, sore 17:00, dst.).
+        # Jadwal 6 jam dihitung di _nlu_advance sebelum konfirmasi.
+        if intent == 'buat_short':
+            anchor, dayparts = _nlu_extract_dayparts(clean)
+            if anchor:
+                slots['anchor_time'] = anchor
+                conf += 5
+            if dayparts:
+                slots['dayparts'] = dayparts
         if slots.get('channels'):
             conf += 15
         if create_verb:
@@ -3427,11 +3652,26 @@ def _nlu_describe(pending):
         ch = 'semua channel'
     if intent == 'buat_short':
         niche = _NICHES.get(slots.get('niche') or 'sleep', 'Deep Sleep Music')
-        return (f"buatkan {slots.get('count') or 1} Short tema {niche}, "
+        base = (f"buatkan {slots.get('count') or 1} Short tema {niche}, "
                 f"CTA {slots.get('cta') or 'Subscribe'}, "
-                f"durasi {slots.get('duration_sec') or 30} detik"
-                + (f", jam tayang {slots['publish_time']}" if slots.get('publish_time') else '')
-                + f", untuk {ch}")
+                f"durasi {slots.get('duration_sec') or 30} detik, untuk {ch}")
+        # Jadwal hasil hitungan (aturan jeda 6 jam) WAJIB disebut supaya
+        # Bos bisa mengoreksi sebelum dieksekusi.
+        sched = slots.get('schedule') or {}
+        if sched:
+            if len(sched) == 1:
+                return base + f" — jadwal: {_nlu_format_schedule(next(iter(sched.values())))}"
+            lines = []
+            for yt in (slots.get('channels') or []):
+                if yt in sched:
+                    nm = _nlu_channel_names([yt])
+                    lines.append(f"• {nm[0] if nm else yt}: {_nlu_format_schedule(sched[yt])}")
+            if lines:
+                return base + " — jadwal:\n" + "\n".join(lines)
+            return base
+        if slots.get('publish_time'):
+            return base + f", jam tayang {slots['publish_time']}"
+        return base
     if intent == 'buat_long':
         niche = _NICHES.get(slots.get('niche') or 'sleep', 'Deep Sleep Music')
         return (f"buatkan {slots.get('count') or 1} video long tema {niche} untuk {ch}")
@@ -3589,6 +3829,17 @@ def _nlu_advance(token, chat_id, pending):
     # --- Hari (perpanjang): default 30 bila tidak disebut. ---
     if intent == 'perpanjang_jadwal' and not slots.get('days'):
         slots['days'] = 30
+    # --- Jadwal Short (aturan jeda 6 jam): hitung SEBELUM konfirmasi
+    # supaya pesan konfirmasi menyebut semua jam hasil hitungan. Hitung
+    # ulang hanya bila set channel berubah (setelah konfirmasi, jadwal
+    # yang sudah disetujui dipakai apa adanya — tidak dihitung ulang).
+    if intent == 'buat_short' and slots.get('channels'):
+        _sched_chs = sorted((slots.get('schedule') or {}).keys())
+        if _sched_chs != sorted(slots.get('channels') or []):
+            try:
+                slots['schedule'] = _nlu_build_shorts_schedules(slots)
+            except Exception:
+                pass
     # --- Konfirmasi bila aksi membuat konten / berbahaya / matikan pengaman. ---
     needs_confirm = (
         intent in ('buat_short', 'buat_long', 'hapus', 'hentikan_antrean')
@@ -3634,15 +3885,22 @@ def _execute_nlu_create_shorts(token, chat_id, pending):
         # sekali (helper _create_shorts_muse_task); pesan "galeri kosong"
         # hanya muncul bila pembuatan gradien itu sendiri gagal (dari panel).
         base_slot = _nlu_publish_slot(slots.get('publish_time'), ch)
+        # Jadwal 6 jam yang sudah dihitung sebelum konfirmasi (slots['schedule'])
+        # dipakai apa adanya; bila tidak ada (pending lama), fallback ke
+        # perilaku lama (base_slot + 1 hari per video).
+        sched = (slots.get('schedule') or {}).get(yt_id)
         made = 0
         last_resp = {}
         err = ''
         used_auto_bg = False
         used_video = 0
+        made_dates = []
         for k in range(count):
             idx = (day_idx + k) % len(bank['hooks'])
             pub = base_slot
-            if k:
+            if sched and k < len(sched):
+                pub = sched[k]
+            elif k:
                 try:
                     dt = datetime.strptime(base_slot, '%Y-%m-%d %H:%M') + timedelta(days=k)
                     pub = dt.strftime('%Y-%m-%d %H:%M')
@@ -3659,6 +3917,9 @@ def _execute_nlu_create_shorts(token, chat_id, pending):
             if ok:
                 made += 1
                 last_resp = resp
+                # Tanggal final dari panel (panel boleh menggeser slot bila
+                # bentrok — tanggal inilah yang benar-benar dipakai).
+                made_dates.append((resp or {}).get('publish_date') or pub)
                 if (resp or {}).get('bg_auto'):
                     used_auto_bg = True
                 if (resp or {}).get('bg_video'):
@@ -3679,7 +3940,9 @@ def _execute_nlu_create_shorts(token, chat_id, pending):
                         "upload gambar sendiri di panel bila mau yang lebih bagus.")
             else:
                 note = ""
-            lines.append(f"✅ *{name}* — {made} Short dibuat, {stat}.{note}")
+            sched_note = (f" Jadwal: {_nlu_format_schedule(made_dates)}."
+                          if made_dates else "")
+            lines.append(f"✅ *{name}* — {made} Short dibuat, {stat}.{sched_note}{note}")
         else:
             lines.append(f"❌ *{name}* — {err or 'gagal dibuat'}.")
     send_message(token, chat_id, "\n".join(lines))
@@ -4003,6 +4266,113 @@ def _handle_nlu_message(token, chat_id, raw_cmd, clean_cmd):
     return True
 
 
+# ==========================================
+# ⌨️ AUTO-SUGGEST PERINTAH TELEGRAM (setMyCommands)
+# SATU sumber kebenaran untuk daftar perintah: teks /start DIBANGUN dari
+# _BOT_COMMANDS (lihat _build_start_text) dan setMyCommands memakai daftar
+# yang sama — jadi tidak ada perintah yang ketinggalan dan tidak ada
+# perintah mati yang terdaftar. (2026-11-19: mengetik '/' di chat bot
+# langsung memunculkan saran perintah + deskripsi singkatnya.)
+# Batas Bot API: nama 1–32 karakter (huruf kecil/angka/_), deskripsi
+# 3–256 karakter, maks 100 perintah.
+# ==========================================
+_BOT_COMMANDS = [
+    # (perintah, deskripsi singkat, seksi di /start, contoh pemakaian)
+    # Teks /start dibangun dari daftar ini: barisnya '👉 /{cmd} {pemakaian}
+    # — {deskripsi}' — jadi daftar di pesan & di Telegram selalu sama.
+    ('start', 'Buka menu utama bot', 'menu', ''),
+    ('help', 'Buka menu bantuan', 'menu', ''),
+    ('status', 'Channel, antrean, kuota & kesehatan server', 'pantau', ''),
+    ('server', 'Detail mesin: CPU, RAM, disk, uptime, panel', 'pantau', ''),
+    ('kuota', 'Kuota upload per project Google & per channel', 'pantau', ''),
+    ('stok', 'Sisa stok jadwal & isi galeri per channel', 'pantau', ''),
+    ('channel', 'Daftar channel YouTube terhubung', 'pantau', ''),
+    ('antrean', 'Video yang sedang diproses', 'pantau', ''),
+    ('jadwal', 'Jadwal publish 7 hari ke depan', 'pantau', ''),
+    ('riwayat', '8 upload terakhir', 'pantau', ''),
+    ('gagal', 'Task gagal + tombol Retry', 'pantau', ''),
+    ('laporan', 'Laporan harian (otomatis tiap pagi 07:00 & sore 17:00 WIB), kapan saja', 'pantau', ''),
+    ('statistik', 'Views/likes/komentar + video terbaik & terburuk', 'hasil', ''),
+    ('monetisasi', 'Estimasi penghasilan dari RPM manual', 'hasil', ''),
+    ('judul', 'Judul SEO, mis. /judul lofi 15', 'konten', '[niche] [jumlah]'),
+    ('deskripsi', 'Template deskripsi SEO', 'konten', '[niche]'),
+    ('tag', 'Bank hashtag, mis. /tag piano', 'konten', '[niche]'),
+    ('cta', 'Ide teks CTA buat Shorts', 'konten', ''),
+    ('ideashorts', 'Hook + naskah singkat Shorts', 'konten', '[niche]'),
+    ('blueprint', 'Resep settingan video', 'konten', ''),
+    ('buatshort', 'Buat Shorts Muse terpandu (judul, hook, naskah, CTA)', 'buat', ''),
+    ('buatlong', 'Buat batch video long 60–80 menit terpandu', 'buat', ''),
+    ('batal', 'Batalkan draft yang sedang dibuat', 'buat', ''),
+    ('perpanjang', 'Tambah jadwal, mis. /perpanjang Aruya 0089 30 atau /perpanjang semua 30', 'atur', '[channel] [hari]'),
+    ('mode', 'Ganti mode, mis. /mode Aruya 0089 auto', 'atur', '[channel] [auto|approval]'),
+    ('jeda', 'Jeda channel (jadwal & antrean berhenti)', 'atur', '[channel]'),
+    ('lanjutkan', 'Lanjutkan channel yang dijeda', 'atur', '[channel]'),
+]
+_BOT_COMMAND_SECTIONS = [
+    ('pantau', '📊 Pantau:'),
+    ('hasil', '📈 Hasil:'),
+    ('konten', '💡 Konten:'),
+    ('buat', '🎬 Buat Video:'),
+    ('atur', '⚙️ Atur Channel:'),
+]
+# Baris contoh pemakaian sekali-kirim (bukan perintah baru — hanya cara
+# pakai /buatshort & /buatlong yang sama), disisipkan setelah baris
+# perintahnya di /start.
+_BOT_COMMAND_EXTRAS = {
+    'buatshort': '👉 /buatshort Judul | Hook | Naskah | CTA — Sekali kirim',
+    'buatlong': '👉 /buatlong 3 | 2026-11-20 19:00 | 1 — Sekali kirim (jumlah | tanggal | jeda hari)',
+}
+
+
+def _build_start_text():
+    """Teks /start — dibangun dari _BOT_COMMANDS supaya daftar perintah di
+    pesan ini SELALU sama dengan yang didaftarkan ke Telegram."""
+    lines = [
+        "🤖 *ZIQVA MUSE BOT — CLOUD OPERATOR* 😎",
+        "",
+        "Halo Bos! Saya siap kerja, tinggal perintah aja. Sentuh tombol di bawah atau klik perintah berikut:",
+        "",
+    ]
+    for key, title in _BOT_COMMAND_SECTIONS:
+        lines.append(f"*{title}*")
+        for cmd, desc, section, usage in _BOT_COMMANDS:
+            if section != key:
+                continue
+            lines.append(f"👉 /{cmd}" + (f" {usage}" if usage else "") + f" — {desc}")
+            if cmd in _BOT_COMMAND_EXTRAS:
+                lines.append(_BOT_COMMAND_EXTRAS[cmd])
+        lines.append("")
+    lines.append("Niche: " + ", ".join(_NICHES.keys()) + ".")
+    lines.append("")
+    lines.append("💬 *Bicara bebas juga bisa Bos!* Ketik perintah sehari-hari, mis. "
+                 "'buatkan short tema anak untuk semua channel' atau 'jeda channel Barang Unick' — "
+                 "saya terjemahkan maksud Bos, dan kalau ragu saya konfirmasi dulu 😌")
+    return "\n".join(lines)
+
+
+def register_bot_commands(token):
+    """Daftarkan daftar perintah ke Telegram (setMyCommands) supaya mengetik
+    '/' di chat bot langsung memunculkan auto-suggest. Idempotent —
+    dipanggil tiap start operator. Gagal (token salah / network mati)
+    TIDAK BOLEH menggagalkan startup: fail-silent, log saja."""
+    try:
+        res = requests.post(
+            f"https://api.telegram.org/bot{token}/setMyCommands",
+            json={"commands": [{"command": c, "description": d}
+                              for c, d, _s, _u in _BOT_COMMANDS]},
+            timeout=10,
+        )
+        data = res.json() if res is not None else {}
+        if res.status_code == 200 and data.get('ok'):
+            print(f"✅ Perintah Telegram terdaftar ({len(_BOT_COMMANDS)} perintah).", flush=True)
+            return True
+        print(f"⚠️ setMyCommands gagal (HTTP {res.status_code}): {data}", flush=True)
+        return False
+    except Exception as e:
+        print(f"⚠️ setMyCommands gagal (network/token): {e}", flush=True)
+        return False
+
+
 def handle_user_command(token, chat_id, text):
     try:
         raw_cmd = text.strip()
@@ -4047,49 +4417,10 @@ def handle_user_command(token, chat_id, text):
                 _handle_make_answer(token, chat_id, _draft, raw_cmd)
                 return
 
-        # 1. MENU / START
+        # 1. MENU / START — teks dibangun dari _BOT_COMMANDS (satu sumber
+        # dengan setMyCommands, supaya daftarnya tidak pernah beda).
         if first_word in ["/start", "/help", "halo", "menu", "hai"]:
-            msg = (
-                "🤖 *ZIQVA MUSE BOT — CLOUD OPERATOR* 😎\n\n"
-                "Halo Bos! Saya siap kerja, tinggal perintah aja. Sentuh tombol di bawah atau klik perintah berikut:\n\n"
-                "*📊 Pantau:*\n"
-                "👉 /status — Channel, antrean, kuota & kesehatan server\n"
-                "👉 /server — Detail mesin: CPU, RAM, disk, uptime, panel\n"
-                "👉 /kuota — Kuota upload per project Google & per channel\n"
-                "👉 /stok — Sisa stok jadwal & isi galeri per channel\n"
-                "👉 /channel — Daftar channel YouTube terhubung\n"
-                "👉 /antrean — Video yang sedang diproses\n"
-                "👉 /jadwal — Jadwal publish 7 hari ke depan\n"
-                "👉 /riwayat — 8 upload terakhir\n"
-                "👉 /gagal — Task gagal + tombol Retry\n"
-                "👉 /laporan — Laporan harian (otomatis tiap pagi 07:00 & sore 17:00 WIB), kapan saja\n\n"
-                "*📈 Hasil:*\n"
-                "👉 /statistik — Views/likes/komentar + video terbaik & terburuk\n"
-                "👉 /monetisasi — Estimasi penghasilan dari RPM manual\n\n"
-                "*💡 Konten:*\n"
-                "👉 /judul [niche] [jumlah] — Judul SEO, mis. /judul lofi 15\n"
-                "👉 /deskripsi [niche] — Template deskripsi SEO\n"
-                "👉 /tag [niche] — Bank hashtag, mis. /tag piano\n"
-                "👉 /cta — Ide teks CTA buat Shorts\n"
-                "👉 /ideashorts [niche] — Hook + naskah singkat Shorts\n"
-                "👉 /blueprint — Resep settingan video\n\n"
-                "*🎬 Buat Video:*\n"
-                "👉 /buatshort — Buat Shorts Muse terpandu (judul, hook, naskah, CTA)\n"
-                "👉 /buatshort Judul | Hook | Naskah | CTA — Sekali kirim\n"
-                "👉 /buatlong — Buat batch video long 60–80 menit terpandu\n"
-                "👉 /buatlong 3 | 2026-11-20 19:00 | 1 — Sekali kirim (jumlah | tanggal | jeda hari)\n"
-                "👉 /batal — Batalkan draft yang sedang dibuat\n\n"
-                "*⚙️ Atur Channel:*\n"
-                "👉 /perpanjang [channel] [hari] — Tambah jadwal, mis. /perpanjang Aruya 0089 30 atau /perpanjang semua 30\n"
-                "👉 /mode [channel] [auto|approval] — Ganti mode, mis. /mode Aruya 0089 auto\n"
-                "👉 /jeda [channel] — Jeda channel (jadwal & antrean berhenti)\n"
-                "👉 /lanjutkan [channel] — Lanjutkan channel yang dijeda\n\n"
-                "Niche: sleep, lofi, piano, hujan, meditasi, fokus, anak.\n\n"
-                "💬 *Bicara bebas juga bisa Bos!* Ketik perintah sehari-hari, mis. "
-                "'buatkan short tema anak untuk semua channel' atau 'jeda channel Barang Unick' — "
-                "saya terjemahkan maksud Bos, dan kalau ragu saya konfirmasi dulu 😌"
-            )
-            send_message(token, chat_id, msg)
+            send_message(token, chat_id, _build_start_text())
             return
 
         # --- 🎬 BUAT VIDEO (alur terpandu) — dicek sebelum cabang lama
@@ -4496,6 +4827,11 @@ def main():
         "Sistem udah diperbarui, semua tombol di bawah udah bisa dipencet dan langsung saya respon! 💪"
     )
     send_message(token, owner_chat_id, welcome_msg, reply_markup=get_main_keyboard())
+
+    # Auto-suggest perintah: daftarkan daftar perintah ke Telegram supaya
+    # mengetik '/' langsung memunculkan saran. Fail-silent (lihat
+    # register_bot_commands) — tidak boleh menggagalkan startup.
+    register_bot_commands(token)
 
     offset = 0
     print("Listening for commands...", flush=True)

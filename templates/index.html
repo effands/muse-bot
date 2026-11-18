@@ -1380,7 +1380,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
     <div id="panel-tasks" class="panel">
       <div class="sh" style="margin-bottom:18px">
         <div><div class="sh-title">Task Monitor</div><div class="sh-sub">Real-time render & upload queue</div></div>
-        <div style="display:flex;gap:8px"><button class="btn btn-g btn-sm" onclick="recoverFailedTasks()">♻️ Pulihkan Task Gagal</button><button class="btn btn-g btn-sm" onclick="clearHistory()">🧹 Clear History</button></div>
+        <div style="display:flex;gap:8px"><button class="btn btn-g btn-sm" onclick="recoverFailedTasks()">♻️ Pulihkan Task Gagal</button></div>
       </div>
 
       <div class="stats-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:18px">
@@ -1401,11 +1401,11 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
       </div>
 
       <div class="card">
-        <div class="card-head"><span class="card-title">🗂 HISTORY</span></div>
+        <div class="card-head"><span class="card-title">🗂 HISTORY</span><button class="btn btn-g btn-sm" onclick="clearHistory()" title="Hapus seluruh riwayat (task aktif tidak ikut terhapus)">🧹 Hapus Semua Riwayat</button></div>
         <div class="card-body" style="padding:0 16px 8px;overflow-x:auto">
           <table class="tbl" style="min-width:500px">
-            <thead><tr><th style="width:8%">ID</th><th style="width:50%">JUDUL</th><th>STATUS</th></tr></thead>
-            <tbody id="historyTbl"><tr><td colspan="3" style="text-align:center;padding:16px;color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada history.</td></tr></tbody>
+            <thead><tr><th style="width:8%">ID</th><th style="width:48%">JUDUL</th><th>STATUS</th><th style="width:6%">AKSI</th></tr></thead>
+            <tbody id="historyTbl"><tr><td colspan="4" style="text-align:center;padding:16px;color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada history.</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -2864,7 +2864,7 @@ function toggleChannelMonetized(yt_id, val) {
 //  ⏰ JADWAL OTOMATIS SHORT — pengaturan per channel (Settings).
 //  Konfigurasi ikut /api/get_channels (field auto_shorts per channel).
 // ────────────────────────────────────────────────────────
-const AUTO_SHORTS_THEMES = [['sleep', 'Musik Tidur'], ['lofi', 'Lofi'], ['piano', 'Piano'], ['hujan', 'Suara Hujan'], ['meditasi', 'Meditasi'], ['fokus', 'Musik Fokus'], ['anak', 'Anak-Anak']];
+const AUTO_SHORTS_THEMES = [['sleep', 'Musik Tidur'], ['lofi', 'Lofi'], ['piano', 'Piano'], ['hujan', 'Suara Hujan'], ['meditasi', 'Meditasi'], ['fokus', 'Musik Fokus'], ['anak', 'Anak-Anak'], ['asmr', 'ASMR']];
 function autoShortsNextText(cfg) {
   if (!cfg || !cfg.enabled) return 'Nonaktif — nyalakan toggle untuk mengaktifkan jadwal otomatis.';
   const now = new Date();
@@ -4753,7 +4753,28 @@ function renderTasks() {
     }).join('');
   }
   
-  if (!(serverData.history || []).length) { hist.innerHTML = `<tr><td colspan="3" style="text-align:center;padding:16px;color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada history.</td></tr>`; } 
+  // ── Link history: video_id HANYA diterima bila persis 11 karakter
+  // ID YouTube — dari field video_id (entri baru) atau dari link youtu.be
+  // yang terlanjur tersimpan di status (entri lama). Nilai lain diabaikan,
+  // jadi href link tidak bisa disuntik dari data task.
+  function histVideoId(t) {
+    const id = String((t && t.video_id) || '');
+    if (/^[A-Za-z0-9_-]{11}$/.test(id)) return id;
+    const m = String((t && t.status) || '').match(/(?:youtu\.be\/|youtube\.com\/watch\?v=)([A-Za-z0-9_-]{11})/);
+    return m ? m[1] : '';
+  }
+  // Status bersih: buang tag <a> mentah peninggalan lama (diganti link
+  // bersih dari histVideoId); teks lain tetap di-escape pemanggil.
+  function histCleanStatus(t) {
+    return String((t && t.status) || '').replace(/<a\b[^>]*>[\s\S]*?<\/a>/gi, '').trim();
+  }
+  // Link unduhan render: hanya path lokal /static/final_<id>.mp4.
+  function histDownloadUrl(t) {
+    const u = String((t && t.download_url) || '');
+    return /^\/static\/final_\d+\.mp4$/.test(u) ? u : '';
+  }
+
+  if (!(serverData.history || []).length) { hist.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:16px;color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada history.</td></tr>`; } 
   else {
     const hGroups = {}; const unknownHKey = '__unknownH__';
     serverData.history.forEach(t => { const yt = (t.blueprint && t.blueprint.yt_id) || t.yt_id || ''; const key = yt || unknownHKey; if (!hGroups[key]) hGroups[key] = []; hGroups[key].push(t); });
@@ -4763,7 +4784,7 @@ function renderTasks() {
       const name = isUnknown ? 'Channel Tidak Dikenal' : chName(key);
       const totalCount = items.length;
       
-      let html = `<tr><td colspan="3" style="padding:8px 4px 2px;border:none;background:transparent">${groupDivH(name, totalCount, '🗂', key)}</td></tr>`;
+      let html = `<tr><td colspan="4" style="padding:8px 4px 2px;border:none;background:transparent">${groupDivH(name, totalCount, '🗂', key)}</td></tr>`;
       
       if (!hCollapsed[key]) {
           const limit = 100;
@@ -4778,7 +4799,11 @@ function renderTasks() {
           let rows = pageItems.map(t => {
             const c = String(t.status).includes('❌') ? 'var(--accent2)' : 'var(--muted)';
             const renderInfo = t.render_info ? `<br><span style="font-size:10px;color:var(--green);font-family:var(--font-m)">${escapeHtml(t.render_info)}</span>` : '';
-            return `<tr><td><span style="font-family:var(--font-m);font-size:10px;color:var(--muted)">#${t.id}</span></td><td style="font-weight:700">${escapeHtml(t.title || '—')}${renderInfo}</td><td style="color:${c};font-weight:600">${escapeHtml(t.status)}${t.thumb_status ? `<br><span style="font-size:10px;color:var(--text2);font-weight:400">🖼️ ${escapeHtml(t.thumb_status)}</span>` : ''}</td></tr>`;
+            const vid = histVideoId(t);
+            const ytLink = vid ? ` <a href="https://youtu.be/${vid}" target="_blank" rel="noopener" style="color:var(--accent)">▶ Lihat</a>` : '';
+            const dl = histDownloadUrl(t);
+            const dlLink = dl ? ` <a href="${escapeHtml(dl)}" target="_blank" rel="noopener" style="color:var(--accent)">[Download]</a>` : '';
+            return `<tr><td><span style="font-family:var(--font-m);font-size:10px;color:var(--muted)">#${t.id}</span></td><td style="font-weight:700">${escapeHtml(t.title || '—')}${renderInfo}</td><td style="color:${c};font-weight:600">${escapeHtml(histCleanStatus(t))}${ytLink}${dlLink}${t.thumb_status ? `<br><span style="font-size:10px;color:var(--text2);font-weight:400">🖼️ ${escapeHtml(t.thumb_status)}</span>` : ''}</td><td style="text-align:center"><button class="btn btn-g btn-sm" style="padding:2px 8px" title="Hapus entri ini dari riwayat" onclick="deleteHistoryItem(${t.id})">🗑️</button></td></tr>`;
           }).join('');
           
           html += `<tbody>${rows}</tbody>`;
@@ -4790,7 +4815,7 @@ function renderTasks() {
               for (let i = pStart; i <= pEnd; i++) pageHtml += `<button class="page-btn ${i === currPage ? 'active' : ''}" onclick="setHistPage('${key}', ${i})">${i}</button>`;
               if (pEnd < totalPages) pageHtml += `${pEnd < totalPages - 1 ? '<span style="color:var(--muted)">...</span>' : ''}<button class="page-btn" onclick="setHistPage('${key}', ${totalPages})">${totalPages}</button>`;
               pageHtml += `</div>`;
-              html += `<tr><td colspan="3" style="padding:4px;border:none;background:transparent">${pageHtml}</td></tr>`;
+              html += `<tr><td colspan="4" style="padding:4px;border:none;background:transparent">${pageHtml}</td></tr>`;
           }
       }
       return html;
@@ -4831,8 +4856,18 @@ function rejectTask(id) {
 }
 
 function clearHistory() {
-  if (!confirm('Bersihkan riwayat?')) return;
+  if (!confirm('Hapus SEMUA riwayat? Entri yang dihapus tidak bisa dikembalikan. Task aktif tidak ikut terhapus.')) return;
   fetch('/api/clear_history', { method: 'POST' }).then(r => r.json()).then(d => { toast(d.message, 'success'); fetchServerTasks(); }).catch(() => toast('Gagal menghapus riwayat', 'error'));
+}
+
+// Hapus SATU entri riwayat (tombol 🗑️ per baris). Riwayat adalah jejak
+// audit — tidak ada edit, hanya hapus. Task aktif tidak bisa dihapus
+// dari sini (backend menolak bila id masih ada di antrean aktif).
+function deleteHistoryItem(id) {
+  if (!confirm('Hapus entri riwayat ini?')) return;
+  fetch('/api/delete_history_item', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task_id: id }) })
+    .then(r => r.json()).then(d => { toast(d.message, d.status === 'success' ? 'success' : 'error'); fetchServerTasks(); })
+    .catch(() => toast('Gagal menghapus entri riwayat', 'error'));
 }
 
 // 🔥 BARU: memulihkan task gagal (watchdog stuck) dari history ke antrean aktif

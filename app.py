@@ -847,10 +847,11 @@ SHORTS_MUSE_DEFAULT_CTA = 'Subscribe' # CTA bila form dikosongkan
 # berputar berdasarkan tanggal, supaya tidak sama terus. Bila bank judul
 # channel ada, judul diambil dari sana secara bergiliran; bila kosong,
 # judul dibuat dari label tema + tanggal (tanpa klaim palsu).
-AUTO_SHORTS_NICHES = ('sleep', 'lofi', 'piano', 'hujan', 'meditasi', 'fokus', 'anak')
+AUTO_SHORTS_NICHES = ('sleep', 'lofi', 'piano', 'hujan', 'meditasi', 'fokus', 'anak', 'asmr')
 AUTO_SHORTS_NICHE_LABELS = {
     'sleep': 'Musik Tidur', 'lofi': 'Lofi', 'piano': 'Piano',
     'hujan': 'Suara Hujan', 'meditasi': 'Meditasi', 'fokus': 'Musik Fokus',
+    'asmr': 'ASMR',
 }
 AUTO_SHORTS_DEFAULTS = {
     'enabled': False, 'theme': 'sleep',
@@ -861,6 +862,7 @@ AUTO_SHORTS_TITLE_LABELS = {
     'sleep': 'Musik Tidur Nyenyak', 'lofi': 'Lofi Santai untuk Fokus',
     'piano': 'Piano Menenangkan', 'hujan': 'Suara Hujan Menenangkan',
     'meditasi': 'Meditasi Tenang', 'fokus': 'Musik Fokus & Konsentrasi',
+    'asmr': 'ASMR Menenangkan untuk Tidur',
 }
 AUTO_SHORTS_BANK = {
     'sleep': {
@@ -925,6 +927,15 @@ AUTO_SHORTS_BANK = {
                     'Belajar berhitung sambil bernyanyi, menyenangkan!',
                     'Ikuti gerakannya, lompat dan bernyanyi bersama!'],
         'ctas': ['Subscribe ya!', 'Ajak temanmu subscribe!'],
+    },
+    'asmr': {
+        'hooks': ['Bisikan lembut untuk tidur nyenyak', 'Suara ketukan halus yang menenangkan',
+                  'ASMR lembut untuk relaksasi malam ini', 'Dengarkan suara tenang ini… rileks'],
+        'scripts': ['Bisikan lembut ini menemani tidurmu malam ini.',
+                    'Dengarkan ketukan halus ini… tarik napas perlahan.',
+                    'Suara lembut untuk menenangkan pikiran dan tubuhmu.',
+                    'Pasang headphone-mu dan biarkan suara ini membawamu tidur.'],
+        'ctas': ['Subscribe untuk ASMR baru setiap malam', 'Subscribe'],
     },
 }
 # Aturan umur bersih-bersih disk (lihat cleanup_old_files):
@@ -1099,6 +1110,11 @@ def move_to_history(task_id, final_status):
                 if len(history_tasks) > 2000: history_tasks.pop() # Limit di perbesar
                 break
     save_tasks_db()
+    # Auto-cleanup: buang entri riwayat >90 hari setiap ada task baru masuk.
+    try:
+        _prune_old_history()
+    except Exception:
+        pass
 
 def get_fresh_credentials(channel_data):
     creds_str = channel_data.get('creds_list', [channel_data.get('creds_json')])[0]
@@ -2323,6 +2339,7 @@ _SHORTS_AUTO_BG_COLORS = {
     'hujan': ('2B3A4A', '4A6B8A', '7A9AB5'),     # biru-abu
     'meditasi': ('0F2E1D', '1E6B3A', '4CAF6D'),  # hijau
     'fokus': ('0B2E2E', '0F5A5A', '14A0A0'),     # teal
+    'asmr': ('1A1025', '4A2A6B', '8A5FBF'),      # ungu gelap lembut
 }
 _SHORTS_AUTO_BG_DEFAULT_THEME = 'sleep'
 
@@ -3146,17 +3163,26 @@ def background_worker():
                                             if d['id'] == task_id: d['thumb_status'] = f"Gagal: {str(thumb_err)[:80]}"
                                     save_tasks_db()
                             else:
-                                # Kalau folder kosong / tidak ada gambar yang bisa dibuka, catat status
+                                # Shorts tidak memakai thumbnail 16:9 — YouTube
+                                # memakai frame video sebagai sampul (bukan
+                                # rusak). Video long: folder kosong / tidak ada
+                                # gambar yang bisa dibuka, catat seperti dulu.
                                 with db_lock:
                                     for d in active_tasks:
-                                        if d['id'] == task_id: d['thumb_status'] = "Tidak ada thumbnail valid"
+                                        if d['id'] == task_id:
+                                            d['thumb_status'] = ("Sampul dari frame video" if task.get('kind') == SHORTS_MUSE_KIND else "Tidak ada thumbnail valid")
                                 save_tasks_db()
                                 
                             try:
                                 if task.get('playlist_id'):
                                     youtube.playlistItems().insert(part='snippet', body={'snippet': {'playlistId': task['playlist_id'], 'resourceId': {'kind': 'youtube#video', 'videoId': video_id}}}).execute()
                             except: pass
-                            move_to_history(task_id, f"Tayang! ✅ <a href='https://youtu.be/{video_id}' target='_blank'>[Lihat]</a>")
+                            # Status disimpan POLOS (tanpa HTML): video_id sudah
+                            # tersimpan sebagai field task (Fase 4, di atas) dan
+                            # panel merender link [Lihat] dari sana. HTML di
+                            # dalam status dulu tampil sebagai teks mentah karena
+                            # panel meng-escape status (perlindungan XSS).
+                            move_to_history(task_id, "Tayang! ✅")
                             _shorts_pfx = "📱 Shorts " if task.get('kind') == SHORTS_MUSE_KIND else ""
                             notify_event("✅", task['title'], f"{_shorts_pfx}udah tayang di YouTube {ch_name} 😎\nJadwal tayang: {task['publish_date']}")
                             upload_berhasil = True
@@ -3250,7 +3276,17 @@ def background_worker():
                         except Exception: pass
                     raise Exception(pesan_error)
             else:
-                move_to_history(task_id, f"Render Selesai ✅ <a href='/static/final_{task_id}.mp4' target='_blank'>[Download]</a>")
+                # Status disimpan POLOS (tanpa HTML); link unduhan disimpan
+                # sebagai field download_url dan panel merendernya.
+                try:
+                    with db_lock:
+                        for d in active_tasks:
+                            if d['id'] == task_id:
+                                d['download_url'] = f"/static/final_{task_id}.mp4"
+                    save_tasks_db()
+                except Exception:
+                    pass
+                move_to_history(task_id, "Render Selesai ✅")
                 notify_event("✅", task['title'], f"Render beres, Bos! Saya upload ke YouTube {ch_name} ya 😎")
                 # 🔥 FASE 5: render sukses juga mereset hitungan gagal beruntun.
                 _record_channel_success(yt_id)
@@ -3265,9 +3301,23 @@ def background_worker():
                 retry_markup = {"inline_keyboard": [[
                     {"text": "🔁 Coba Lagi", "callback_data": f"retry:{task_id}"}
                 ]]}
-                notify_event("🛑", task['title'],
-                             f"Bos, video ini nggak lolos QC saya 😅\nAlasan: {reason[:120]}\nSaya tahan dulu biar nggak tayang yang jelek-jelek — pencet Coba Lagi kalau mau saya render ulang 💪",
-                             reply_markup=retry_markup)
+                # Pesan QC ditulis ulang (2026-11-19): jelas apa yang terjadi,
+                # kenapa, dan apa yang harus dilakukan. Untuk judul duplikat,
+                # retry TIDAK lagi render ulang judul yang sama (pasti gagal
+                # lagi) — retry otomatis ganti judul baru (lihat
+                # operator_retry_task), dan pesan ini mengatakannya.
+                if 'judul sudah tayang' in reason:
+                    qc_msg = (f"Bos, video ini saya TAHAN dulu ya 😅\n"
+                              f"Alasan: {reason[:120]}\n"
+                              f"Judulnya sudah pernah tayang di channel ini — "
+                              f"kalau di-upload lagi, YouTube bisa menganggapnya duplikat.\n"
+                              f"Pencet 🔁 Coba Lagi — saya render ulang dengan judul baru yang belum dipakai.")
+                else:
+                    qc_msg = (f"Bos, video ini nggak lolos pemeriksaan kualitas (QC) — "
+                              f"jadi saya TAHAN, tidak di-upload 😅\n"
+                              f"Alasan: {reason[:120]}\n"
+                              f"Pencet 🔁 Coba Lagi kalau mau saya render ulang.")
+                notify_event("🛑", task['title'], qc_msg, reply_markup=retry_markup)
 
         except _PausedAbort:
             # 🔥 FASE 3: dibatalkan karena channel dijeda — BUKAN gagal.
@@ -5512,6 +5562,21 @@ def operator_retry_task():
                 return jsonify({"status": "error", "message": "Task ini tidak punya blueprint, tidak bisa diulang."})
             if "Selesai" in target.get('status', '') or "Tayang" in target.get('status', '') or "Sukses" in target.get('status', ''):
                 return jsonify({"status": "error", "message": "Task sudah berhasil, tidak perlu diulang."})
+            # Judul duplikat (2026-11-19): retry dengan judul yang sama
+            # PASTI gagal QC lagi. Ganti dulu ke judul baru yang belum
+            # dipakai (bank berikutnya / varian bernomor), lalu render ulang.
+            renamed_title = None
+            if 'Gagal QC' in (target.get('status') or '') and 'judul sudah tayang' in (target.get('status') or ''):
+                _yt = target.get('yt_id') or (target.get('blueprint') or {}).get('yt_id')
+                _ch = next((c for c in database_channel if c.get('yt_id') == _yt), None)
+                _new = _shorts_dedup_title(_yt, target.get('title') or '', _ch)
+                if _new and _new != target.get('title'):
+                    target['title'] = _new
+                    try:
+                        target['blueprint']['title'] = _new
+                    except Exception:
+                        pass
+                    renamed_title = _new
             history_tasks.remove(target)
             target['status'] = "Menunggu Giliran (Queue) ⏳ (Retry Telegram)"
             target['updated_at'] = time.time()
@@ -5524,6 +5589,9 @@ def operator_retry_task():
                 print(f"Gagal queue retry task {task_id}: {e}", flush=True)
                 return jsonify({"status": "error", "message": "Gagal masuk antrean render. Cek log server."}), 500
         title = target.get('title', '?')[:60]
+        if renamed_title:
+            send_tg_message(f"🔁 *Siap Bos, retry jalan dengan judul baru!* 💪\nJudul lama sudah pernah tayang, jadi saya ganti jadi `{_tg_escape(renamed_title[:60])}` — udah masuk antrean render lagi.")
+            return jsonify({"status": "success", "message": f"Task kembali ke antrean render dengan judul baru: {renamed_title[:60]}.", "title": title})
         send_tg_message(f"🔁 *Siap Bos, retry jalan!* 💪\nTask `{_tg_escape(title)}` udah masuk antrean render lagi.")
         return jsonify({"status": "success", "message": "Task kembali ke antrean render.", "title": title})
     except Exception as e:
@@ -5536,6 +5604,72 @@ def clear_history():
     with db_lock: history_tasks.clear()
     save_tasks_db()
     return jsonify({"status": "success", "message": "Riwayat dibersihkan!"})
+
+@app.route('/api/delete_history_item', methods=['POST'])
+def delete_history_item():
+    """Hapus SATU entri riwayat (Task Monitor → tombol 🗑️ per baris).
+    Riwayat adalah jejak audit — tidak ada edit, hanya hapus. HANYA
+    menyentuh history_tasks; task AKTIF (antrean/render) TIDAK PERNAH
+    ikut terhapus. Login + CSRF dijamin check_security (before_request)."""
+    global history_tasks
+    try:
+        data = request.get_json(silent=True) or {}
+        task_id = data.get('task_id')
+        if task_id is None:
+            return jsonify({"status": "error", "message": "task_id wajib diisi."}), 400
+        try:
+            task_id = int(task_id)
+        except Exception:
+            return jsonify({"status": "error", "message": "task_id tidak valid."}), 400
+        with db_lock:
+            if any(t.get('id') == task_id for t in active_tasks):
+                return jsonify({"status": "error", "message": "Task masih aktif — hapus hanya bisa dari riwayat."}), 400
+            before = len(history_tasks)
+            history_tasks = [t for t in history_tasks if t.get('id') != task_id]
+            removed = before - len(history_tasks)
+        if not removed:
+            return jsonify({"status": "error", "message": "Entri tidak ditemukan di riwayat."}), 404
+        save_tasks_db()
+        return jsonify({"status": "success", "message": "Entri riwayat dihapus.", "deleted": removed})
+    except Exception as e:
+        print(f"Gagal hapus entri riwayat: {e}", flush=True)
+        return jsonify({"status": "error", "message": "Gagal menghapus entri riwayat."}), 500
+
+HISTORY_MAX_AGE_DAYS = 90  # retensi riwayat = retensi snapshot channel (90 hari)
+
+def _prune_old_history():
+    """Auto-cleanup riwayat (2026-11-19): hapus entri yang finished_date /
+    finished_at-nya lebih dari 90 hari. Dipanggil saat startup +
+    setiap task masuk riwayat — riwayat adalah jejak audit, jadi yang
+    dihapus hanya yang sudah kedaluwarsa, bukan yang baru."""
+    try:
+        cutoff = _wib_now().date() - timedelta(days=HISTORY_MAX_AGE_DAYS)
+        cutoff_ts = datetime.combine(cutoff, datetime.min.time(), tzinfo=ZoneInfo("Asia/Jakarta")).timestamp()
+    except Exception:
+        return 0
+    removed = 0
+    with db_lock:
+        kept = []
+        for t in list(history_tasks):
+            old = False
+            try:
+                if t.get('finished_at') and float(t.get('finished_at')) < cutoff_ts:
+                    old = True
+                elif t.get('finished_date') and str(t.get('finished_date'))[:10] < cutoff.isoformat():
+                    old = True
+            except Exception:
+                old = False
+            if old:
+                removed += 1
+            else:
+                kept.append(t)
+        if removed:
+            history_tasks.clear()
+            history_tasks.extend(kept)
+    if removed:
+        save_tasks_db()
+        print(f"🧹 [History] Auto-cleanup: {removed} entri riwayat >90 hari dihapus.", flush=True)
+    return removed
 
 @app.route('/api/get_channels')
 def get_channels():
@@ -6725,8 +6859,15 @@ def poll_device_token():
 # --- BATCH CREATOR ---
 def _tg_escape(text):
     """Escape karakter Markdown Telegram supaya judul/deskripsi video
-    (yang bisa mengandung *, _, [, ] dll.) tidak merusak format pesan."""
-    for ch in ['\\', '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']:
+    (yang bisa mengandung *, _, `, [ dll.) tidak merusak format pesan.
+    PENTING: pesan dikirim dengan parse_mode 'Markdown' (LEGACY), BUKAN
+    'MarkdownV2' — di mode legacy HANYA \\, *, _, `, [ yang butuh
+    backslash. Dulu memakai set MarkdownV2 (termasuk -, ., !) sehingga
+    backslash justru TAMPIL di pesan, mis. 'jelek\\-jelek' (glitch
+    2026-11-19). Karakter lain (-, ., !, dsb.) dibiarkan apa adanya."""
+    text = str(text or '')
+    text = text.replace('\\', '\\\\')
+    for ch in ['*', '_', '`', '[']:
         text = text.replace(ch, '\\' + ch)
     return text
 
@@ -6797,6 +6938,89 @@ def _stagger_publish_date(v_date_str, yt_id):
         v_date_str = dt.strftime('%Y-%m-%d %H:%M')
     return v_date_str
 
+def _shorts_norm_title(title):
+    """Normalisasi judul untuk perbandingan duplikat: kecil + spasi tunggal."""
+    return ' '.join((str(title or '')).lower().split())
+
+def _shorts_used_titles(yt_id):
+    """Judul yang SUDAH dipakai channel ini dan tidak boleh dipakai lagi:
+    task AKTIF (menunggu approval/antrean — belum tayang tapi sudah
+    dijadwalkan) + history yang statusnya 'Tayang'. Entri Gagal/Ditolak
+    TIDAK dihitung — slot & judulnya bebas dipakai ulang."""
+    used = set()
+    with db_lock:
+        for t in list(active_tasks):
+            if (t.get('yt_id') or (t.get('blueprint') or {}).get('yt_id')) == yt_id:
+                used.add(_shorts_norm_title(t.get('title') or ''))
+        for h in list(history_tasks):
+            if h.get('yt_id') != yt_id:
+                continue
+            if 'Tayang' not in (h.get('status') or ''):
+                continue
+            used.add(_shorts_norm_title(h.get('title') or ''))
+    used.discard('')
+    return used
+
+def _shorts_dedup_title(yt_id, title, channel_rec=None):
+    """Pastikan judul Short belum dipakai di channel ini (2026-11-19:
+    batch 4 Short memakai judul yang sama dengan yang sudah tayang, lalu
+    ditolak QC). Bila bentrok: coba bank judul channel dulu (judul
+    berikutnya yang belum dipakai); bila bank habis → varian bernomor
+    'Judul (2)', '(3)', … JANGAN PERNAH mengembalikan judul yang pasti
+    ditolak QC."""
+    base = (str(title or '')).strip()
+    if not base:
+        return base
+    used = _shorts_used_titles(yt_id)
+    if _shorts_norm_title(base) not in used:
+        return base
+    bank = []
+    try:
+        bank = [t for t in ((channel_rec or {}).get('title_bank') or [])
+                if isinstance(t, str) and t.strip()]
+    except Exception:
+        bank = []
+    for cand in bank:
+        if _shorts_norm_title(cand) not in used:
+            return cand.strip()
+    n = 2
+    while n < 100:
+        cand = f"{base} ({n})"
+        if _shorts_norm_title(cand) not in used:
+            return cand
+        n += 1
+    return f"{base} ({n})"
+
+def _shorts_avoid_same_channel_collision(v_date_str, yt_id):
+    """Jaring pengaman jadwal Short (2026-11-19, aturan jeda 6 jam): bila
+    tanggal+jam sudah dipakai task aktif channel ini atau video yang sudah
+    tayang, geser +6 jam sampai kosong (maks 40 geseran ≈ 10 hari).
+    Operator sudah menghitung slot kosong duluan; ini hanya pengaman bila
+    ada yang lewat jalur lain (panel, penjadwal otomatis) atau slot jadi
+    terisi di antara konfirmasi & eksekusi."""
+    try:
+        dt = datetime.strptime(str(v_date_str), '%Y-%m-%d %H:%M')
+    except Exception:
+        return v_date_str
+    for _ in range(40):
+        occ = set()
+        with db_lock:
+            for t in list(active_tasks):
+                if (t.get('yt_id') or (t.get('blueprint') or {}).get('yt_id')) == yt_id:
+                    d = t.get('time') or (t.get('blueprint') or {}).get('publish_date')
+                    if d:
+                        occ.add(str(d)[:16])
+            for h in list(history_tasks):
+                if h.get('yt_id') != yt_id or 'Tayang' not in (h.get('status') or ''):
+                    continue
+                d = h.get('time') or (h.get('blueprint') or {}).get('publish_date')
+                if d:
+                    occ.add(str(d)[:16])
+        if dt.strftime('%Y-%m-%d %H:%M') not in occ:
+            return dt.strftime('%Y-%m-%d %H:%M')
+        dt = dt + timedelta(hours=6)
+    return dt.strftime('%Y-%m-%d %H:%M')
+
 # ============================================================
 # 🔥 FASE 8: SHORTS MUSE — buat short dari naskah + CTA
 # ============================================================
@@ -6836,6 +7060,10 @@ def _create_shorts_muse_task(data):
     channel_rec = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
     if channel_rec is None:
         return {"ok": False, "message": "Channel tidak ditemukan.", "http": 404}
+    # Judul duplikat dilewati di sini (2026-11-19): jangan pernah membuat
+    # task dengan judul yang pasti ditolak QC — ganti ke judul bank
+    # berikutnya yang belum dipakai, atau varian bernomor.
+    title = _shorts_dedup_title(yt_id, title, channel_rec)
     hook = (data.get('hook') or '').strip()
     script = (data.get('script') or '').strip()
     if not hook and not script:
@@ -6854,6 +7082,8 @@ def _create_shorts_muse_task(data):
         except Exception:
             return {"ok": False, "message": "Format tanggal salah (pakai YYYY-MM-DD HH:MM).", "http": 400}
     v_date_str = _stagger_publish_date(pub_dt.strftime('%Y-%m-%d %H:%M'), yt_id)
+    # Jaring pengaman: jangan menimpa slot channel sendiri (aturan jeda 6 jam).
+    v_date_str = _shorts_avoid_same_channel_collision(v_date_str, yt_id)
     text_color = (data.get('text_color') or '#FFFFFF').strip()
     if not re.fullmatch(r'#[0-9A-Fa-f]{6}', text_color):
         text_color = '#FFFFFF'
@@ -8093,6 +8323,11 @@ try:
     _n, _b = cleanup_old_files()
     if _n:
         print(f"🧹 [Fase 5] Startup: {_n} file lama dibersihkan ({_b / 1024 ** 2:.0f} MB).", flush=True)
+except Exception:
+    pass
+# Riwayat >90 hari dibuang saat start (auto-cleanup, lihat _prune_old_history).
+try:
+    _prune_old_history()
 except Exception:
     pass
 send_tg_message("🚀 *Bos, saya balik lagi!* 😎\n"

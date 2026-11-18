@@ -96,6 +96,16 @@ if is_configured() and not bot_config.get('secret_key'):
             json.dump(bot_config, _f, indent=4)
     except Exception:
         pass
+# 🔥 FASE 1 MONITORING: kunci bersama untuk operator Telegram (proses terpisah)
+# agar bisa memanggil endpoint retry di bawah. Disimpan sekali di config.json,
+# tidak pernah dikirim ke chat / dicatat di log. Pola sama seperti secret_key.
+if is_configured() and not bot_config.get('operator_key'):
+    bot_config['operator_key'] = secrets.token_hex(24)
+    try:
+        with open(CONFIG_FILE, 'w') as _f:
+            json.dump(bot_config, _f, indent=4)
+    except Exception:
+        pass
 app.secret_key = bot_config.get('secret_key', secrets.token_hex(32))
 # Cookie sesi eksplisit: situs ini HTTP biasa di IP, jadi Secure harus False
 # (cookie Secure tidak akan dikirim lewat http). SameSite=Lax agar cookie
@@ -108,7 +118,7 @@ app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
 
 @app.before_request
 def check_security():
-    allowed_routes = ['login', 'setup', 'static', 'serve_uploads', 'device_login', 'poll_device_token']
+    allowed_routes = ['login', 'setup', 'static', 'serve_uploads', 'device_login', 'poll_device_token', 'operator_retry_task']
     if request.endpoint in allowed_routes: return
     if not is_configured(): return redirect(url_for('setup'))
     if 'logged_in' not in session: return redirect(url_for('login'))
@@ -201,15 +211,19 @@ def save_tasks_db():
 # ==========================================
 # 🛡️ SISTEM KETAHANAN (ANTI-STUCK & ANTI-LOST)
 # ==========================================
-def send_tg_message(msg):
-    """Kirim pesan ke Telegram kalau token & chat_id tersimpan. Aman gagal silent."""
+def send_tg_message(msg, reply_markup=None):
+    """Kirim pesan ke Telegram kalau token & chat_id tersimpan. Aman gagal silent.
+    reply_markup opsional — dipakai untuk tombol inline (mis. Retry) dari operator."""
     try:
         bot_config = load_bot_config()
         token, chat_id = bot_config.get('tg_token'), bot_config.get('tg_chat_id')
         if not token or not chat_id: return
+        payload = {"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
         requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"},
+            json=payload,
             timeout=15
         )
     except Exception:
@@ -317,10 +331,16 @@ def telegram_status_report_worker():
             try: send_tg_message(msg)
             except Exception: pass
 
-def notify_event(emoji, title, status):
+def notify_event(emoji, title, status, reply_markup=None):
     """🔥 BARU: masukkan event notifikasi (selesai/gagal) ke buffer Telegram.
-    Event digabung & dikirim maksimal tiap 1 menit agar tidak spam chat."""
+    Event digabung & dikirim maksimal tiap 1 menit agar tidak spam chat.
+    Kalau reply_markup diisi (mis. tombol Retry untuk task gagal), event TIDAK
+    masuk buffer — langsung dikirim saat itu juga, karena satu pesan gabungan
+    tidak bisa membawa tombol untuk task tertentu."""
     try:
+        if reply_markup is not None:
+            send_tg_message(f"{emoji} *{title[:70]}*\nStatus: {status}", reply_markup=reply_markup)
+            return
         tg_event_queue.append(f"{emoji} *{title[:70]}*\nStatus: {status}")
     except Exception:
         pass
@@ -505,6 +525,14 @@ def move_to_history(task_id, final_status):
                     t['render_info'] = f"⏱ {st_str} - {ed_str} ({dur_str})"
                 
                 t['status'] = final_status
+                # 🔥 FASE 1 MONITORING: cap tanggal selesai (WIB) agar operator bisa
+                # menghitung upload sukses/gagal "hari ini" dan "kemarin" untuk
+                # /status & laporan harian. Field tambahan, tidak mengubah field lama.
+                try:
+                    t['finished_date'] = _wib_now().strftime("%Y-%m-%d")
+                    t['finished_at'] = time.time()
+                except Exception:
+                    pass
                 history_tasks.insert(0, t)
                 active_tasks.remove(t)
                 if len(history_tasks) > 2000: history_tasks.pop() # Limit di perbesar
@@ -2111,6 +2139,11 @@ def background_worker():
                                 except Exception: pass
                                 notify_event("⏸️", f"Cooldown harian {ch_name}",
                                              f"Sudah {cnt} video terupload hari ini (batas {MAX_UPLOADS_PER_CHANNEL_PER_DAY}/hari). Lanjut otomatis besok.")
+                            elif cnt == MAX_UPLOADS_PER_CHANNEL_PER_DAY - 1:
+                                # 🔥 FASE 1 MONITORING: peringatan kuota menipis — hanya
+                                # sekali, tepat saat counter menjadi 5/6 (tinggal 1 video).
+                                notify_event("⚠️", f"Kuota hampir habis {ch_name}",
+                                             f"Sudah {cnt}/{MAX_UPLOADS_PER_CHANNEL_PER_DAY} video terupload hari ini. Sisa kuota tinggal 1 video, reset tengah malam WIB.")
                         except Exception:
                             pass
                         break
@@ -2178,7 +2211,15 @@ def background_worker():
                 # 🔥 FIX: kalau digagalkan watchdog (stop flag), JANGAN kirim
                 # notif gagal lagi — watchdog sudah mengirim notifikasinya sendiri.
                 if not stop_flags.get(task_id):
-                    notify_event("❌", task['title'], f"Gagal upload di channel {ch_name}\nPenyebab: {err_msg[:120]}")
+                    # 🔥 FASE 1 MONITORING: alert gagal + tombol inline Retry.
+                    # Dikirim langsung (bypass buffer) supaya tombolnya menempel
+                    # di pesan task ini, bukan di pesan gabungan.
+                    retry_markup = {"inline_keyboard": [[
+                        {"text": "🔁 Coba Lagi", "callback_data": f"retry:{task_id}"}
+                    ]]}
+                    notify_event("❌", task['title'],
+                                 f"Gagal upload di channel {ch_name}\nPenyebab: {err_msg[:120]}",
+                                 reply_markup=retry_markup)
         finally:
             # Lepas antrean agar Clipper bisa jalan
             release_resource("Factory Worker")
@@ -2288,6 +2329,66 @@ def recover_failed_tasks():
                         ("\n…dst" if len(recovered) > 10 else "") + "\nTask kembali ke antrean render.")
     return jsonify({"status": "success", "recovered": len(recovered),
                     "titles": recovered})
+
+# ==========================================
+# 🔁 FASE 1 MONITORING — RETRY TASK VIA TELEGRAM
+# ==========================================
+@app.route('/api/operator/retry_task', methods=['POST'])
+def operator_retry_task():
+    """Retry SATU task gagal dari tombol inline Telegram.
+    Dipanggil operator (proses terpisah) — operator tidak bisa menyentuh
+    antrean render in-memory app.py, jadi lewat endpoint ini.
+    Keamanan: tanpa login panel, tapi wajib membawa `key` == operator_key
+    di config.json (dibuat otomatis saat startup, tidak pernah tampil di
+    chat/log). Route ini masuk allowed_routes di check_security.
+    Satu klik = satu percobaan ulang; kalau task sudah kembali ke antrean,
+    klik berikutnya ditolak supaya tidak dobel."""
+    global active_tasks, history_tasks
+    import hmac as _hmac
+    try:
+        data = request.get_json(silent=True) or {}
+        task_id = data.get('task_id')
+        key = data.get('key', '')
+        bot_config = load_bot_config()
+        expected = bot_config.get('operator_key', '')
+        if not expected or not _hmac.compare_digest(str(key), str(expected)):
+            return jsonify({"status": "error", "message": "Kunci operator tidak valid."}), 403
+        if task_id is None:
+            return jsonify({"status": "error", "message": "task_id wajib diisi."}), 400
+        try:
+            task_id = int(task_id)
+        except Exception:
+            return jsonify({"status": "error", "message": "task_id tidak valid."}), 400
+
+        with db_lock:
+            if any(t.get('id') == task_id for t in active_tasks):
+                return jsonify({"status": "error", "message": "Task sudah ada di antrean aktif."})
+            target = None
+            for t in history_tasks:
+                if t.get('id') == task_id:
+                    target = t
+                    break
+            if target is None:
+                return jsonify({"status": "error", "message": "Task tidak ditemukan di riwayat."})
+            if not target.get('blueprint'):
+                return jsonify({"status": "error", "message": "Task ini tidak punya blueprint, tidak bisa diulang."})
+            if "Selesai" in target.get('status', '') or "Tayang" in target.get('status', '') or "Sukses" in target.get('status', ''):
+                return jsonify({"status": "error", "message": "Task sudah berhasil, tidak perlu diulang."})
+            history_tasks.remove(target)
+            target['status'] = "Menunggu Giliran (Queue) ⏳ (Retry Telegram)"
+            target['updated_at'] = time.time()
+            active_tasks.append(target)
+            active_tasks.sort(key=lambda x: x.get('blueprint', {}).get('publish_date', ''))
+            save_tasks_db()
+            try:
+                queue_put(target["blueprint"])
+            except Exception as e:
+                return jsonify({"status": "error", "message": f"Gagal masuk antrean: {e}"}), 500
+        title = target.get('title', '?')[:60]
+        send_tg_message(f"🔁 *Retry dari Telegram*\nTask `{title}` kembali ke antrean render.")
+        return jsonify({"status": "success", "message": "Task kembali ke antrean render.", "title": title})
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Gagal retry: {e}"}), 500
 
 @app.route('/api/clear_history', methods=['POST'])
 def clear_history():

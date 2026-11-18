@@ -8,11 +8,20 @@ import shutil
 import psutil
 import requests
 import threading
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, 'config.json')
 CHANNELS_FILE = os.path.join(BASE_DIR, 'channels_db.json')
 TASKS_FILE = os.path.join(BASE_DIR, 'tasks_db.json')
+# 🔥 FASE 1 MONITORING: state dedupe (laporan harian & alert) — file runtime,
+# JANGAN di-commit (sudah masuk .gitignore). Isinya hanya tanggal + kunci alert.
+MONITOR_STATE_FILE = os.path.join(BASE_DIR, 'monitor_state.json')
+# Batas upload harian per channel — cerminan MAX_UPLOADS_PER_CHANNEL_PER_DAY di app.py.
+MAX_UPLOADS_PER_DAY = 6
+DAILY_REPORT_HOUR_WIB = 7  # laporan harian otomatis tiap pagi 07:00 WIB
+PANEL_URL = "http://127.0.0.1:8000"
 
 # 🔥 SINGLE INSTANCE LOCK (Port 8089)
 lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -49,6 +58,216 @@ def load_tasks():
     except Exception:
         return {"active": [], "history": []}
 
+# ==========================================
+# 🔥 FASE 1 MONITORING — STATE DEDUPE & HELPER DATA
+# ==========================================
+def load_monitor_state():
+    """Muat state dedupe laporan/alert. Hilang/rusak = mulai dari kosong."""
+    if not os.path.exists(MONITOR_STATE_FILE):
+        return {"daily_report_date": "", "alerts": {}}
+    try:
+        with open(MONITOR_STATE_FILE, 'r') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {"daily_report_date": "", "alerts": {}}
+        data.setdefault("daily_report_date", "")
+        data.setdefault("alerts", {})
+        return data
+    except Exception:
+        return {"daily_report_date": "", "alerts": {}}
+
+def save_monitor_state(state):
+    """Simpan state secara atomik (temp + replace) agar tidak rusak saat restart."""
+    try:
+        tmp = MONITOR_STATE_FILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(state, f, indent=2)
+        os.replace(tmp, MONITOR_STATE_FILE)
+    except Exception as e:
+        print(f"Gagal simpan monitor_state: {e}", flush=True)
+
+def _wib_now():
+    return datetime.now(ZoneInfo("Asia/Jakarta"))
+
+def _wib_today_str():
+    return _wib_now().strftime("%Y-%m-%d")
+
+def _wib_yesterday_str():
+    return (_wib_now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+def _alerted_today(state, key):
+    """True kalau alert `key` sudah dikirim hari ini (WIB)."""
+    return state.get("alerts", {}).get(key) == _wib_today_str()
+
+def _mark_alerted(state, key):
+    state.setdefault("alerts", {})[key] = _wib_today_str()
+    save_monitor_state(state)
+
+def _channel_display_name(ch):
+    return ch.get('name') or ch.get('channel_name') or 'Tanpa Nama'
+
+def _channel_connected(ch):
+    return bool(ch.get('creds_list') or ch.get('creds_json')
+                or ch.get('access_token') or ch.get('refresh_token'))
+
+def get_channel_quota(ch):
+    """(terpakai_hari_ini, sisa) upload hari ini (WIB) untuk satu channel.
+    Counter daily_uploads ditulis app.py setiap upload sukses."""
+    today = _wib_today_str()
+    du = ch.get('daily_uploads') or {}
+    used = int(du.get('count', 0)) if du.get('date') == today else 0
+    return used, max(0, MAX_UPLOADS_PER_DAY - used)
+
+def get_stock_days(ch):
+    """Sisa stok jadwal channel dalam hari (bisa negatif = sudah habis).
+    None kalau channel belum punya jadwal sama sekali."""
+    last_date_str = ch.get('last_scheduled_date')
+    if not last_date_str:
+        return None
+    try:
+        last_date = datetime.strptime(last_date_str, '%Y-%m-%d %H:%M')
+        # last_scheduled_date disimpan app.py sebagai waktu lokal WIB tanpa
+        # info zona — tempelkan Asia/Jakarta supaya bisa dikurangi dengan
+        # _wib_now() yang aware (tanpa ini selalu TypeError → None).
+        last_date = last_date.replace(tzinfo=ZoneInfo("Asia/Jakarta"))
+        return (last_date - _wib_now()).total_seconds() / 86400.0
+    except Exception:
+        return None
+
+def _count_history_for_date(history, date_str):
+    """Hitung (sukses_tayang, gagal) di riwayat untuk satu tanggal WIB.
+    Mengandalkan field finished_date yang ditulis app.py saat move_to_history
+    (task yang selesai sebelum deploy Fase 1 tidak punya field ini → tidak
+    terhitung, dan itu disengaja supaya tidak salah lapor)."""
+    ok = fail = 0
+    ok_titles, fail_titles = [], []
+    for t in history:
+        if t.get('finished_date') != date_str:
+            continue
+        st = t.get('status', '')
+        if 'Tayang' in st:
+            ok += 1
+            ok_titles.append(t.get('title', '?')[:45])
+        elif 'Gagal' in st:
+            fail += 1
+            fail_titles.append(t.get('title', '?')[:45])
+    return ok, fail, ok_titles, fail_titles
+
+def check_panel_online():
+    """Cek proses panel web (port 8000) dari dalam VPS. Redirect ke /login
+    (302) tetap dihitung online — yang penting prosesnya menjawab."""
+    try:
+        res = requests.get(PANEL_URL + '/', timeout=5)
+        return res.status_code in (200, 302)
+    except Exception:
+        return False
+
+def build_status_report():
+    """Ringkasan /status: channel + kuota, antrean, upload hari ini, service."""
+    stats = get_system_telemetry()
+    tasks_data = load_tasks()
+    active = tasks_data.get('active', [])
+    history = tasks_data.get('history', [])
+    channels = load_channels()
+    today = _wib_today_str()
+    ok_today, fail_today, _, _ = _count_history_for_date(history, today)
+    in_progress = len([t for t in active if 'Selesai' not in t.get('status', '')
+                       and 'Gagal' not in t.get('status', '')
+                       and 'Dibatalkan' not in t.get('status', '')])
+    panel_ok = check_panel_online()
+
+    lines = [
+        "📊 *STATUS ZIQVA MUSE BOT*",
+        f"_{_wib_now().strftime('%d %b %Y, %H:%M')} WIB_",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"🖥️ *Panel Web (8000):* {'🟢 Online' if panel_ok else '🔴 Mati/tidak menjawab'}",
+        "🤖 *Operator Telegram:* 🟢 Online",
+        f"⚡ *CPU:* `{stats['cpu']}%`  🧠 *RAM:* `{stats['ram_used_gb']} GB / {stats['ram_total_gb']} GB ({stats['ram_pct']}%)`",
+        f"💾 *Sisa Disk:* `{stats['disk_free_gb']} GB`",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+    # --- Channel + kuota ---
+    if not channels:
+        lines.append("📺 *Channel:* Belum ada channel terhubung.")
+        lines.append("Tautkan dulu dari panel (/factory → Connect), baru kuota & antrean bisa dipantau.")
+    else:
+        total_left = 0
+        lines.append(f"📺 *Channel ({len(channels)}):*")
+        for ch in channels:
+            name = _channel_display_name(ch)
+            used, left = get_channel_quota(ch)
+            total_left += left
+            conn = "🟢 Terhubung" if _channel_connected(ch) else "🔴 Putus"
+            stock = get_stock_days(ch)
+            if stock is None:
+                stock_txt = "belum ada jadwal"
+            elif stock < 0:
+                stock_txt = "⚠️ stok habis"
+            elif stock <= 1:
+                stock_txt = f"⚠️ sisa ~{max(0, int(stock))} hari"
+            else:
+                stock_txt = f"sisa ~{int(stock)} hari"
+            cd = ch.get('cooldown_until', 0)
+            cd_txt = " ⏸️ cooldown" if cd and cd > time.time() else ""
+            lines.append(f"• *{name}* — {conn}{cd_txt}")
+            lines.append(f"  Upload hari ini: `{used}/{MAX_UPLOADS_PER_DAY}` (sisa `{left}`) • Stok: {stock_txt}")
+        lines.append(f"📈 *Total sisa kuota hari ini:* `{total_left} video`")
+    lines += [
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"🏭 *Antrean aktif:* `{len(active)} task` (`{in_progress}` sedang berjalan/menunggu)",
+        f"✅ *Upload sukses hari ini:* `{ok_today}`",
+        f"❌ *Gagal hari ini:* `{fail_today}`",
+        f"📁 *Riwayat:* `{len(history)} task`",
+    ]
+    return "\n".join(lines)
+
+def build_daily_report():
+    """Rekap pagi: hasil KEMARIN (WIB), antrean tersisa, stok tiap channel."""
+    tasks_data = load_tasks()
+    active = tasks_data.get('active', [])
+    history = tasks_data.get('history', [])
+    channels = load_channels()
+    yday = _wib_yesterday_str()
+    ok, fail, ok_titles, fail_titles = _count_history_for_date(history, yday)
+
+    lines = [
+        "🌅 *LAPORAN HARIAN ZIQVA MUSE BOT*",
+        f"Rekap {_wib_now().strftime('%d %b %Y')} (hasil kemarin, {yday})",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"✅ *Upload sukses kemarin:* `{ok}`",
+        f"❌ *Gagal kemarin:* `{fail}`",
+    ]
+    if fail_titles:
+        lines.append("Gagal: " + "; ".join("• " + t for t in fail_titles[:5]))
+    if ok_titles:
+        lines.append("Sukses: " + "; ".join("• " + t for t in ok_titles[:5]))
+    lines += [
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"🏭 *Antrean tersisa:* `{len(active)} task`",
+    ]
+    for t in active[:5]:
+        lines.append(f"• {t.get('title', '?')[:45]} — {t.get('status', '-')[:40]}")
+    if len(active) > 5:
+        lines.append(f"_...dan {len(active) - 5} task lainnya._")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    if not channels:
+        lines.append("📺 *Channel:* Belum ada channel terhubung.")
+    else:
+        lines.append("📺 *Stok jadwal channel:*")
+        for ch in channels:
+            name = _channel_display_name(ch)
+            stock = get_stock_days(ch)
+            if stock is None:
+                lines.append(f"• *{name}*: belum ada jadwal")
+            elif stock < 0:
+                lines.append(f"• *{name}*: ⚠️ stok HABIS — buat batch baru!")
+            elif stock <= 1:
+                lines.append(f"• *{name}*: ⚠️ sisa ~{max(0, int(stock))} hari — segera buat batch baru")
+            else:
+                lines.append(f"• *{name}*: sisa ~{int(stock)} hari")
+    lines.append("\nKetik /status kapan saja untuk cek kondisi terkini.")
+    return "\n".join(lines)
+
 def get_main_keyboard():
     return {
         "keyboard": [
@@ -78,6 +297,71 @@ def send_message(token, chat_id, text, parse_mode="Markdown", reply_markup=None)
     except Exception as e:
         print(f"Error kirim pesan TG: {e}", flush=True)
         return None
+
+# ==========================================
+# 🔥 FASE 1 MONITORING — TOMBOL INLINE RETRY
+# ==========================================
+_retry_in_flight = set()  # task_id yang sedang diproses retry-nya (anti dobel-klik)
+
+def answer_callback(token, callback_query_id, text):
+    """Jawab callback query supaya tombol berhenti berputar di Telegram."""
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/answerCallbackQuery",
+            json={"callback_query_id": callback_query_id, "text": text[:200]},
+            timeout=10
+        )
+    except Exception as e:
+        print(f"Error jawab callback TG: {e}", flush=True)
+
+def request_retry(task_id):
+    """Panggil endpoint retry di panel (proses app.py). Kunci operator_key
+    dibaca fresh dari config.json — TIDAK pernah dikirim ke chat."""
+    config = load_config()
+    key = config.get('operator_key', '')
+    if not key:
+        return False, "Kunci operator belum siap (panel mungkin baru restart). Coba lagi sebentar lagi."
+    try:
+        res = requests.post(
+            PANEL_URL + '/api/operator/retry_task',
+            json={"task_id": task_id, "key": key},
+            timeout=20
+        )
+        data = res.json()
+        if res.status_code == 200 and data.get('status') == 'success':
+            return True, data.get('message', 'Task kembali ke antrean render.')
+        return False, data.get('message', f"Panel menjawab HTTP {res.status_code}.")
+    except Exception as e:
+        return False, f"Tidak bisa menghubungi panel: {e}"
+
+def handle_callback_query(token, chat_id, callback_query):
+    """Proses tombol inline (saat ini: 🔁 Coba Lagi). Hanya owner yang
+    sampai ke sini — pengecekan owner dilakukan di loop utama."""
+    cq_id = callback_query.get('id', '')
+    data = (callback_query.get('data') or '').strip()
+    if data.startswith('retry:'):
+        try:
+            task_id = int(data.split(':', 1)[1])
+        except Exception:
+            answer_callback(token, cq_id, "Data tombol tidak valid.")
+            return
+        if task_id in _retry_in_flight:
+            answer_callback(token, cq_id, "⏳ Retry task ini masih diproses, tunggu sebentar.")
+            return
+        _retry_in_flight.add(task_id)
+        try:
+            answer_callback(token, cq_id, "🔁 Mengirim retry ke panel...")
+            ok, info = request_retry(task_id)
+            if ok:
+                send_message(token, chat_id,
+                             f"✅ *Retry berhasil*\nTask #{task_id} kembali ke antrean render.\n_{info}_")
+            else:
+                send_message(token, chat_id,
+                             f"⚠️ *Retry gagal*\nTask #{task_id}: {info}")
+        finally:
+            _retry_in_flight.discard(task_id)
+        return
+    answer_callback(token, cq_id, "Tombol tidak dikenal.")
 
 def get_system_telemetry():
     cpu = psutil.cpu_percent(interval=0.2)
@@ -159,7 +443,7 @@ def handle_user_command(token, chat_id, text):
             msg = (
                 "🤖 *ZIQVA MUSE BOT — CLOUD OPERATOR*\n\n"
                 "Halo Bos! Ziqva Muse Bot siap menerima instruksi kerja. Sentuh salah satu tombol di bawah atau klik perintah berikut:\n\n"
-                "👉 /status — Cek kesehatan CPU, RAM, & antrean server\n"
+                "👉 /status — Cek channel, antrean, kuota upload & kesehatan server\n"
                 "👉 /channel — Cek channel YouTube terdaftar\n"
                 "👉 /antrean — Cek daftar video yang sedang diproses\n"
                 "👉 /judul — Buatkan 10 judul video tidur viral\n"
@@ -169,25 +453,9 @@ def handle_user_command(token, chat_id, text):
             send_message(token, chat_id, msg)
             return
 
-        # 2. STATUS SERVER
+        # 2. STATUS SERVER (FASE 1 MONITORING: channel + kuota + upload hari ini)
         if "status" in clean_cmd or "server" in clean_cmd:
-            stats = get_system_telemetry()
-            tasks_data = load_tasks()
-            active = tasks_data.get('active', [])
-            in_progress = len([t for t in active if 'Selesai' not in t.get('status', '') and 'Gagal' not in t.get('status', '')])
-            
-            msg = (
-                "📊 *LAPORAN STATUS ZIQVA MUSE BOT*\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"⚡ *Beban CPU:* `{stats['cpu']}%`\n"
-                f"🧠 *RAM Terpakai:* `{stats['ram_used_gb']} GB / {stats['ram_total_gb']} GB ({stats['ram_pct']}%)`\n"
-                f"💾 *Sisa Disk:* `{stats['disk_free_gb']} GB`\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🏭 *Antrean Render:* `{in_progress} video`\n"
-                f"📁 *Riwayat Selesai:* `{len(tasks_data.get('history', []))} video`\n"
-                "🟢 *Cloud Engine:* Online 24/7 (Port 8000)"
-            )
-            send_message(token, chat_id, msg)
+            send_message(token, chat_id, build_status_report())
             return
 
         # 3. CHANNEL LIST
@@ -315,8 +583,72 @@ def watchdog_background_loop(token, chat_id):
                 )
                 send_message(token, chat_id, msg)
                 last_alert_time = now
+
+            # 🔥 FASE 1 MONITORING: alert stok jadwal menipis/habis.
+            # Peringatan H-1 (≤24 jam) sudah dikirim app.py (telegram_reminder_worker,
+            # sekali per batch) — di sini TIDAK diulang supaya tidak dobel.
+            # Operator hanya mengingatkan 2 kondisi yang TIDAK ditangani app.py:
+            #  (a) stok sudah HABIS (jadwal terakhir lewat) — channel berhenti total;
+            #  (b) stok tinggal ≤2 hari — peringatan dini sebelum masuk H-1.
+            # Maksimal 1 pesan per channel per kondisi per hari (dedupe monitor_state).
+            try:
+                state = load_monitor_state()
+                for ch in load_channels():
+                    stock = get_stock_days(ch)
+                    if stock is None:
+                        continue
+                    name = _channel_display_name(ch)
+                    yt_id = ch.get('yt_id', name)
+                    last_sched = ch.get('last_scheduled_date', '-')
+                    if stock < 0:
+                        key = f"stock_empty:{yt_id}"
+                        if not _alerted_today(state, key):
+                            send_message(
+                                token, chat_id,
+                                f"⛔ *STOK JADWAL HABIS*\n\n"
+                                f"Channel: *{name}*\n"
+                                f"Jadwal terakhir: `{last_sched}` (sudah lewat)\n\n"
+                                "Channel ini berhenti sampai batch baru dibuat. "
+                                "Buat batch baru dari panel (/factory → Batch Creator).")
+                            _mark_alerted(state, key)
+                    elif stock <= 2:
+                        key = f"stock_low:{yt_id}"
+                        if not _alerted_today(state, key):
+                            send_message(
+                                token, chat_id,
+                                f"⚠️ *STOK JADWAL MENIPIS*\n\n"
+                                f"Channel: *{name}*\n"
+                                f"Jadwal terakhir: `{last_sched}` (sisa ~{int(stock)} hari)\n\n"
+                                "Segera buat batch baru supaya channel tidak kehabisan video.")
+                            _mark_alerted(state, key)
+            except Exception as e:
+                print(f"Watchdog stock-alert exception: {e}", flush=True)
         except Exception as e:
             print(f"Watchdog exception: {e}", flush=True)
+            time.sleep(60)
+
+def daily_report_loop(token, chat_id):
+    """🔥 FASE 1 MONITORING: laporan harian otomatis 07:00 WIB.
+    Pola sama seperti watchdog (thread + sleep), tanpa cron sistem atau
+    dependensi baru. Cek tiap 60 detik; kirim sekali sehari (dedupe tanggal
+    di monitor_state.json — tahan restart, tidak dobel kirim)."""
+    print("🌅 [Ziqva Daily Report] Pengawas laporan harian aktif (07:00 WIB)...", flush=True)
+    while True:
+        try:
+            time.sleep(60)
+            now_wib = _wib_now()
+            if now_wib.hour != DAILY_REPORT_HOUR_WIB:
+                continue
+            state = load_monitor_state()
+            today = _wib_today_str()
+            if state.get("daily_report_date") == today:
+                continue
+            send_message(token, chat_id, build_daily_report())
+            state["daily_report_date"] = today
+            save_monitor_state(state)
+            print(f"🌅 Laporan harian {today} terkirim.", flush=True)
+        except Exception as e:
+            print(f"Daily report exception: {e}", flush=True)
             time.sleep(60)
 
 def main():
@@ -337,6 +669,10 @@ def main():
     w_thread = threading.Thread(target=watchdog_background_loop, args=(token, owner_chat_id), daemon=True)
     w_thread.start()
 
+    # 🔥 FASE 1 MONITORING: laporan harian otomatis 07:00 WIB
+    d_thread = threading.Thread(target=daily_report_loop, args=(token, owner_chat_id), daemon=True)
+    d_thread.start()
+
     # Kirim salam & pasang keyboard menu interaktif
     welcome_msg = (
         "🟢 *MUSE AI OPERATOR SIAP!*\n\n"
@@ -354,6 +690,19 @@ def main():
             if res.get('ok') and res.get('result'):
                 for update in res['result']:
                     offset = update['update_id'] + 1
+                    # 🔥 FASE 1 MONITORING: tombol inline (mis. 🔁 Coba Lagi).
+                    # Callback query tidak punya 'message' — tangani dulu, owner-only.
+                    cq = update.get('callback_query')
+                    if cq:
+                        cq_sender = str(cq.get('from', {}).get('id', ''))
+                        cq_chat = str(cq.get('message', {}).get('chat', {}).get('id', ''))
+                        if cq_sender == owner_chat_id or cq_chat == owner_chat_id:
+                            print(f"🔘 Callback diterima dari Bos: {cq.get('data')}", flush=True)
+                            handle_callback_query(token, owner_chat_id, cq)
+                        else:
+                            print(f"⚠️ Callback ditolak dari ID asing: {cq_sender}", flush=True)
+                            answer_callback(token, cq.get('id', ''), "⛔ Hanya owner yang boleh memakai tombol ini.")
+                        continue
                     msg = update.get('message')
                     if not msg:
                         continue

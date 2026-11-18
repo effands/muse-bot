@@ -1,3 +1,7 @@
+# File runtime (state monitoring) — jangan commit
+monitor_state.json
+monitor_state.json.tmp
+
 # Keamanan File Rahasia & Konfigurasi Lokal
 config.json
 client_secret.json

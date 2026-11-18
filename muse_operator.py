@@ -2643,7 +2643,8 @@ def _make_ask_step(token, chat_id, draft):
             nxt = _next_slot_for_channel(next((c for c in load_channels()
                                               if c.get('yt_id') == d.get('yt_id')), None))
             send_message(token, chat_id,
-                         "🗓️ *Langkah 5: Jadwal tayang*\n\nKirim tanggal & jam (format `YYYY-MM-DD HH:MM`, mis. `2026-11-20 19:00`).\n"
+                         "🗓️ *Langkah 5: Jadwal tayang*\n\nKetik `publish` untuk langsung tayang setelah render (tanpa jadwal), "
+                         "atau kirim tanggal & jam (format `YYYY-MM-DD HH:MM`, mis. `2026-11-20 19:00`).\n"
                          f"Ketik `lewati` atau `default` untuk jadwal berikutnya (`{nxt}`).")
         elif step == 'confirm':
             send_message(token, chat_id, _make_playlist_summary(d),
@@ -2933,6 +2934,30 @@ def _playlist_next_step(d):
     return 'confirm'
 
 
+# Kata jawaban "langsung tayang" di langkah jadwal Playlist (Langkah 5):
+# selesai render → upload langsung (publik, tanpa publishAt). Mekanisme:
+# publish_date diisi jam SAAT INI (WIB) — backend menganggap jadwal yang
+# sudah lewat = tayang langsung (tidak memasang publishAt, privacy tetap
+# 'public'), sedangkan publish_date kosong justru diam-diam dijadikan
+# besok 19:00 oleh backend (_playlist_do_create di app.py). Karena
+# render butuh waktu, jam ini PASTI sudah lewat saat upload tiba.
+_PLAYLIST_PUBLISH_NOW_WORDS = ('publish', 'langsung', 'tayang sekarang',
+                               'tanpa jadwal')
+
+
+def _playlist_publish_now_date():
+    """Tanggal tayang untuk mode 'langsung': jam sekarang (WIB)."""
+    return _wib_now().strftime('%Y-%m-%d %H:%M')
+
+
+def _playlist_schedule_text(d):
+    """Teks jadwal untuk ringkasan/pesan sukses: kalimat 'Langsung tayang'
+    bila publish_now, else tanggal terjadwal."""
+    if d.get('publish_now'):
+        return "Langsung tayang setelah render (tanpa jadwal)"
+    return d.get('publish_date') or ''
+
+
 def _make_playlist_summary(d):
     cand = next((c for c in (d.get('candidates') or [])
                  if c.get('video_id') == d.get('video_id')), None) or {}
@@ -2951,7 +2976,7 @@ def _make_playlist_summary(d):
     if d.get('auto_picked'):
         lines.append(f"🤖 Dipilih otomatis — views tertinggi ({views_txt} views, {dur_mnt} mnt, sesuai kriteria)")
     lines += [
-        f"🗓️ Jadwal: `{_tg_escape(d.get('publish_date', ''))}`",
+        f"📅 Jadwal: {_tg_escape(_playlist_schedule_text(d))}",
         "",
         "Kalau sudah oke, pencet ✅ Buat. Kalau mau ubah, pencet ❌ Batal lalu mulai lagi dari /playlist ya Bos!",
     ]
@@ -3036,7 +3061,9 @@ def _pl_auto_pick(token, chat_id, draft):
     d['ref_title'] = best.get('title', '')
     d['auto_picked'] = True
     draft['data'] = d
-    draft['step'] = 'publish'
+    # Jadwal sudah diputuskan duluan (mis. 'publish' dari one-shot/NLU)
+    # → langsung konfirmasi; kalau belum → tanya jadwal seperti biasa.
+    draft['step'] = _playlist_next_step(d)
     _save_make_draft(chat_id, draft)
     views_txt = f"{best.get('views') or 0:,}".replace(',', '.')
     dur_mnt = round((best.get('duration_sec') or 0) / 60)
@@ -3104,7 +3131,10 @@ def _start_make_playlist(token, chat_id, raw_cmd):
     """Mulai alur /playlist & /buatplaylist. Dukung sekali kirim:
     /buatplaylist <tema> | <channel> | <tema pixabay> | <durasi> — slot
     yang sudah diisi tidak ditanya lagi; slot yang kurang ditanyakan
-    satu per satu (alur yang sama seperti /playlist polos)."""
+    satu per satu (alur yang sama seperti /playlist polos). Segmen 'auto'
+    (di posisi mana pun) → pilih kandidat terbaik otomatis; segmen
+    'publish' (di posisi mana pun) → langsung tayang setelah render
+    (tanpa jadwal)."""
     channels = load_channels()
     if not channels:
         send_message(token, chat_id,
@@ -3121,6 +3151,12 @@ def _start_make_playlist(token, chat_id, raw_cmd):
         if any(p.lower() in ('auto', 'otomatis') for p in parts):
             pre['auto_pick'] = True
             parts = [p for p in parts if p.lower() not in ('auto', 'otomatis')]
+        # Segmen 'publish' di posisi mana pun → langsung tayang setelah
+        # render (tanpa jadwal); publish_date = jam sekarang (WIB).
+        if any(p.lower() in ('publish',) for p in parts):
+            pre['publish_now'] = True
+            pre['publish_date'] = _playlist_publish_now_date()
+            parts = [p for p in parts if p.lower() not in ('publish',)]
         if len(parts) > 0 and parts[0]:
             pre['theme'] = parts[0][:100]
         if len(parts) > 1 and parts[1]:
@@ -3174,7 +3210,7 @@ def _send_playlist_created_message(token, chat_id, d, resp):
         "✅ *Sip Bos, playlist-nya udah saya buatkan!* 🎵",
         f"🎬 Referensi: *{_tg_escape((cand.get('title') or d.get('theme', ''))[:80])}*",
         f"📺 Channel: *{_tg_escape(d.get('channel_name', ''))}*",
-        f"🗓️ Jadwal: `{_tg_escape(d.get('publish_date', ''))}`",
+        f"📅 Jadwal: {_tg_escape(_playlist_schedule_text(d))}",
         f"🖼️ Footage: `{_tg_escape(d.get('pixabay_theme') or 'auto (dari tema musik)')}`",
         f"⏱️ Durasi: `{_tg_escape(d.get('duration_note') or 'semua durasi')}`",
     ]
@@ -3412,16 +3448,28 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
             d['ref_title'] = cand.get('title', '')
             draft['step'] = _playlist_next_step(d)
         elif step == 'publish':
-            if low in ('lewati', '-', 'skip', 'default'):
+            lown = ' '.join(low.split())
+            if lown in _PLAYLIST_PUBLISH_NOW_WORDS:
+                # Langsung tayang: publish_date = jam sekarang (WIB).
+                # Saat upload tiba jam ini sudah lewat → backend tidak
+                # memasang publishAt, video langsung publik. (Bila
+                # publish_date dikosongkan, backend justru menjadwalkan
+                # besok 19:00 — jadi JANGAN dikosongkan.)
+                d['publish_date'] = _playlist_publish_now_date()
+                d['publish_now'] = True
+            elif low in ('lewati', '-', 'skip', 'default'):
                 ch = next((c for c in load_channels() if c.get('yt_id') == d.get('yt_id')), None)
                 d['publish_date'] = _next_slot_for_channel(ch)
+                d.pop('publish_now', None)
             else:
                 parsed = _parse_make_date(ans)
                 if not parsed:
                     send_message(token, chat_id,
-                                 "😅 *Format tanggalnya salah Bos* — pakai `YYYY-MM-DD HH:MM` (mis. `2026-11-20 19:00`) atau ketik `default`.")
+                                 "😅 *Format tanggalnya salah Bos* — pakai `YYYY-MM-DD HH:MM` (mis. `2026-11-20 19:00`), "
+                                 "ketik `publish` untuk langsung tayang, atau `default`.")
                     return True
                 d['publish_date'] = parsed
+                d.pop('publish_now', None)
             draft['step'] = _playlist_next_step(d)
         elif step == 'confirm':
             if low in ('ya', 'buat', '✅', 'ok', 'oke', 'lanjut'):
@@ -4236,6 +4284,12 @@ def parse_natural_command(text, channels):
             slots['auto_pick'] = True
             conf += 5
             clean = re.sub(r'\b(auto|otomatis)\b', ' ', clean)
+        # Kata 'publish' → langsung tayang setelah render (tanpa jadwal);
+        # hapus dari teks dulu supaya tidak bocor ke tema.
+        if re.search(r'\bpublish\b', clean):
+            slots['publish_now'] = True
+            conf += 5
+            clean = re.sub(r'\bpublish\b', ' ', clean)
         dur = _nlu_extract_playlist_duration(text)
         if dur and dur[0] is not None:
             slots['duration_min_sec'], slots['duration_max_sec'], slots['duration_note'] = dur
@@ -4358,6 +4412,8 @@ def _nlu_describe(pending):
             base += f", durasi {slots['duration_note']}"
         if slots.get('auto_pick'):
             base += ", pilih otomatis (views tertinggi)"
+        if slots.get('publish_now'):
+            base += ", langsung tayang (publish, tanpa jadwal)"
         return base
     if intent == 'perpanjang_jadwal':
         return f"perpanjang jadwal {slots.get('days') or 30} hari untuk {ch}"
@@ -4775,6 +4831,9 @@ def _execute_nlu_create_playlist(token, chat_id, pending):
         data['duration_note'] = slots.get('duration_note') or ''
     if slots.get('auto_pick'):
         data['auto_pick'] = True
+    if slots.get('publish_now'):
+        data['publish_now'] = True
+        data['publish_date'] = _playlist_publish_now_date()
     if not data.get('theme'):
         data.pop('theme', None)
     draft = {"kind": "playlist", "step": _playlist_next_step(data), "data": data}

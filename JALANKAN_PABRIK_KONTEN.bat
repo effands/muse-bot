@@ -8,7 +8,7 @@ echo ================================================================
 echo         PABRIK KONTEN & MUSE AI - PUSAT KONTROL LOKAL
 echo ================================================================
 echo.
-echo [1/3] Memeriksa Python & FFmpeg...
+echo [1/4] Memeriksa Python & FFmpeg...
 where python >nul 2>&1
 if %errorlevel% neq 0 (
     echo [ERROR] Python belum terdeteksi di sistem PATH!
@@ -25,13 +25,19 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo [2/3] Membuka Dashboard GUI di Browser...
+echo [2/4] Menjalankan Muse AI Operator (Telegram Controller)...
+start "Muse AI Operator" /min python "%~dp0muse_operator.py"
+
+echo.
+echo [3/4] Membuka Dashboard GUI di Browser...
 start "" "http://localhost:8000"
 
 echo.
-echo [3/3] Menjalankan Server Pabrik Konten (Port 8000)...
+echo [4/4] Menjalankan Server Pabrik Konten (Port 8000)...
 echo ----------------------------------------------------------------
-echo Server aktif di: http://localhost:8000
+echo Server Web aktif di : http://localhost:8000
+echo Operator Telegram  : @ziqmusebot (Aktif 2 arah)
+echo.
 echo JANGAN TUTUP jendela ini selama Anda memakai Pabrik Konten.
 echo Untuk mematikan server, Anda bisa menutup jendela ini.
 echo ----------------------------------------------------------------

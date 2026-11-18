@@ -3,11 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ziqva Muse Bot — Cloud Production</title>
+<title>Zimuse Bot — Cloud Production</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
 /* ═══════════════════════════════════════════
-   ZIQVA MUSE BOT — DUAL THEME ENGINE (NEON DARK & CRISP LIGHT)
+   ZIMUSE BOT — DUAL THEME ENGINE (NEON DARK & CRISP LIGHT)
 ═══════════════════════════════════════════ */
 :root {
   --bg:          #050914;
@@ -756,7 +756,7 @@ input[type=color] { padding:0; height:36px; width:100%; border:1px solid var(--b
   .sm-lbl { font-size: 7px; }
   .sm-val { font-size: 10px; }
   .stats-grid { grid-template-columns: repeat(2, 1fr) !important; gap: 10px; }
-  .g2, .g3, .g4, .g21 { grid-template-columns: 1fr !important; gap: 12px; }
+  .g2, .g3, .g4, .g21, .sm-steps { grid-template-columns: 1fr !important; gap: 12px; }
   .sh { flex-direction: column; align-items: flex-start; gap: 10px; }
   .sh select { width: 100% !important; }
   .card-head { flex-direction: column; align-items: flex-start; gap: 10px; }
@@ -877,11 +877,34 @@ body::before { display: none; }
 .monet-bar .pb-num { font-family:var(--font-m); font-size:11px; white-space:nowrap; }
 
 /* ── Baris kompak Jadwal Otomatis Short (Settings) ── */
-.as-row { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; padding:8px 10px; border:1px solid var(--border); border-radius:var(--r); margin-bottom:6px; background:var(--card2); }
-.as-row .as-name { font-size:13px; font-weight:700; min-width:120px; flex:1 1 auto; }
-.as-row select, .as-row input[type="time"] { padding:4px 6px; font-size:12px; }
-.as-row input[type="time"] { width:88px; }
+/* PENTING: aturan global `.content select { width:100% }` (baris ~541) membuat kedua
+   dropdown memenuhi lebar baris sehingga tiap kontrol jatuh ke barisnya sendiri.
+   Selector di bawah memakai `.content .as-row` (spesifisitas lebih tinggi) supaya
+   lebar sempit ini MENANG atas aturan global, tanpa peduli urutan di stylesheet. */
+.as-row { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; padding:8px 10px; border:1px solid var(--border); border-radius:var(--r); margin-bottom:6px; background:var(--card2); }
+.as-row .as-name { font-size:13px; font-weight:700; min-width:100px; flex:1 1 100px; }
+.content .as-row select { width:auto; min-width:0; flex:0 0 auto; padding:4px 6px; font-size:12px; }
+.content .as-row select[id^="as-theme-"] { width:160px; flex:0 1 160px; }
+.content .as-row select[id^="as-dur-"] { width:105px; flex:0 1 105px; }
+.as-row input[type="time"] { width:88px; padding:4px 6px; font-size:12px; }
 .as-row .as-next { flex-basis:100%; font-size:10px; color:var(--muted); }
+
+/* ── Shorts Muse: form ringkas + kartu langkah (ikon SVG, tanpa emoji) ── */
+/* Hanya dipakai di #panel-shorts; aturan .as-row di atas tidak disentuh. */
+.sm-form .fg { margin-bottom:10px; }
+.sm-form .fg:last-child { margin-bottom:0; }
+.sm-form .fl svg { vertical-align:-2px; margin-right:4px; }
+.sm-sec { display:flex; align-items:center; gap:6px; font-size:11px; font-weight:700; color:var(--accent); letter-spacing:.08em; text-transform:uppercase; margin:4px 0 10px; }
+.sm-steps { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:10px; }
+.sm-step { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:10px 12px; display:flex; flex-direction:column; }
+.sm-step-head { display:flex; align-items:center; gap:6px; font-size:11px; font-weight:700; margin-bottom:8px; }
+.sm-step-head small { font-family:var(--font-m); font-size:9px; color:var(--muted); font-weight:400; margin-left:auto; white-space:nowrap; }
+.sm-step .fg { margin-bottom:0; flex:1; display:flex; flex-direction:column; }
+.sm-step .fg textarea, .sm-step .fg input { flex:1; }
+.sm-note { font-family:var(--font-m); font-size:11px; color:var(--muted); margin-bottom:12px; }
+.sm-list .task-row { padding:10px 12px; }
+.sm-list .task-icon { display:flex; align-items:center; justify-content:center; color:var(--accent); }
+.sm-list .task-icon svg { width:20px; height:20px; }
 .nav-section { font-size: 11px; }
 .nav-item { font-size: 13px; }
 .nav-badge { font-size: 11px; }
@@ -991,7 +1014,16 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
 <symbol id="ic-title" viewBox="0 0 24 24"><polyline points="12 20 12 10"/><polyline points="18 20 18 4"/><polyline points="6 20 6 4"/></symbol>
 <symbol id="ic-batch" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="17" x2="22" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/></symbol>
 <symbol id="ic-shorts" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></symbol>
-<symbol id="ic-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+<symbol id="ic-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+<symbol id="ic-zap" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></symbol>
+<symbol id="ic-script" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></symbol>
+<symbol id="ic-cta" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></symbol>
+<symbol id="ic-music" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></symbol>
+<symbol id="ic-droplet" viewBox="0 0 24 24"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/></symbol>
+<symbol id="ic-tag" viewBox="0 0 24 24"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></symbol>
+<symbol id="ic-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
+<symbol id="ic-channel" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="4"/><polygon points="10 9 15 12 10 15 10 9"/></symbol>
+<symbol id="ic-list" viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></symbol>
 </defs></svg>
 <!-- 🔒 #12: token CSRF per-sesi (diisi server saat render; kosong bila halaman dirender tanpa login — JS lalu mengambilnya dari /api/csrf_token). -->
 <script>window.CSRF_TOKEN = "{{ csrf_token }}";</script>
@@ -1002,10 +1034,10 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
   <a href="/hub" class="logo-link" title="Kembali ke Home">
   <div class="logo">
     <div class="logo-mark">
-      <img class="logo-img logo-img-dark" src="/static/ziqva-logo.png" onerror="this.onerror=null;this.src='/static/logo.png'" alt="Ziqva Muse Bot">
-      <img class="logo-img logo-img-light" src="/static/ziqva-logo-dark.png" onerror="this.onerror=null;this.src='/static/logo.png'" alt="Ziqva Muse Bot">
+      <img class="logo-img logo-img-dark" src="/static/ziqva-logo.png" onerror="this.onerror=null;this.src='/static/logo.png'" alt="Zimuse Bot">
+      <img class="logo-img logo-img-light" src="/static/ziqva-logo-dark.png" onerror="this.onerror=null;this.src='/static/logo.png'" alt="Zimuse Bot">
       <div>
-        <div class="logo-name">ZIQVA MUSE BOT</div>
+        <div class="logo-name">ZIMUSE BOT</div>
         <div class="logo-ver">CLOUD VPS</div>
       </div>
     </div>
@@ -1291,11 +1323,11 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
       </div>
       </div><!-- /dash-grid: Node + Kontrol Cepat -->
 
-      <!-- ════════ ALUR KERJA SISTEM (SOP ZIQVA MUSE BOT) ════════ -->
+      <!-- ════════ ALUR KERJA SISTEM (SOP ZIMUSE BOT) ════════ -->
       <div class="card" style="margin-bottom:18px;">
         <div class="card-head">
           <div>
-            <span class="card-title">ALUR PRODUKSI OTOMATIS (SOP ZIQVA MUSE BOT)</span>
+            <span class="card-title">ALUR PRODUKSI OTOMATIS (SOP ZIMUSE BOT)</span>
             <div class="card-sub">Langkah standar untuk menghasilkan video kompilasi terjadwal</div>
           </div>
           <span class="pill p-blue" style="font-family:var(--font-m); font-size:10px;">4 TAHAP</span>
@@ -1903,30 +1935,48 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
     </div>
     <div id="panel-shorts" class="panel">
       <div class="sh" style="margin-bottom:20px">
-        <div><div class="sh-title">Shorts Muse 📱</div><div class="sh-sub">Short vertikal 1080x1920 dari naskah + CTA — dibuat Muse, di-render &amp; di-upload VPS</div></div>
+        <div><div class="sh-title"><svg class="nav-ic" style="width:18px;height:18px;vertical-align:-3px"><use href="#ic-shorts"/></svg> Shorts Muse</div><div class="sh-sub">Short vertikal 1080x1920 dari naskah + CTA — dibuat Muse, di-render &amp; di-upload VPS</div></div>
       </div>
 
       <div class="g2">
-        <div class="form-section">
-          <div class="fs-title">📱 Buat Short Baru</div>
-          <div class="fg"><label class="fl">Channel YouTube</label><select id="sm-channel" onchange="onSmChannelChange()"><option value="">-- Pilih Channel --</option></select></div>
+        <div class="form-section sm-form">
+          <div class="fs-title"><svg class="nav-ic"><use href="#ic-shorts"/></svg> Buat Short Baru</div>
+          <div class="g21">
+            <div class="fg"><label class="fl"><svg class="nav-ic" style="width:13px;height:13px"><use href="#ic-channel"/></svg>Channel YouTube</label><select id="sm-channel" onchange="onSmChannelChange()"><option value="">-- Pilih Channel --</option></select></div>
+            <div class="fg"><label class="fl"><svg class="nav-ic" style="width:13px;height:13px"><use href="#ic-clock"/></svg>Durasi Target</label><select id="sm-duration"><option value="15">15 detik</option><option value="30" selected>30 detik</option><option value="60">60 detik</option></select></div>
+          </div>
           <div class="fg"><label class="fl">Judul Short</label><input type="text" id="sm-title" placeholder="cth: 3 Menit Tenang Sebelum Tidur" maxlength="100"></div>
-          <div class="fg"><label class="fl">Jadwal Tayang</label><input type="datetime-local" id="sm-publish-date"></div>
-          <div class="fg"><label class="fl">Durasi Target</label><select id="sm-duration"><option value="15">15 detik</option><option value="30" selected>30 detik</option><option value="60">60 detik</option></select></div>
-          <div class="fg"><label class="fl">Hook — kalimat pembuka (tampil 4 detik pertama)</label><textarea id="sm-hook" rows="2" placeholder="cth: Berhenti scroll dulu, ini penting!"></textarea></div>
-          <div class="fg"><label class="fl">Naskah — isi singkat (ditampilkan berurutan)</label><textarea id="sm-script" rows="3" placeholder="cth: Musik tenang bisa menurunkan detak jantung dan membantu tidur lebih nyenyak."></textarea></div>
-          <div class="fg"><label class="fl">Teks CTA — kartu akhir (5 detik terakhir)</label><input type="text" id="sm-cta" value="Subscribe" maxlength="60"></div>
-          <div class="fg"><label class="fl">Warna Teks</label><select id="sm-color"><option value="#FFFFFF">Putih</option><option value="#FFFF00">Kuning</option><option value="#00E5FF">Cyan</option><option value="#00FF7F">Hijau</option></select></div>
-          <div class="fg"><label class="fl">Background (galeri channel — kosong = acak)</label><select id="sm-bg"><option value="">-- Acak dari galeri --</option></select></div>
-          <div class="fg"><label class="fl">Musik Latar (galeri channel)</label><select id="sm-bgm"><option value="none">Tanpa musik</option></select></div>
+          <div class="g2">
+            <div class="fg"><label class="fl"><svg class="nav-ic" style="width:13px;height:13px"><use href="#ic-cal"/></svg>Jadwal Tayang</label><input type="datetime-local" id="sm-publish-date"></div>
+            <div class="fg"><label class="fl"><svg class="nav-ic" style="width:13px;height:13px"><use href="#ic-droplet"/></svg>Warna Teks</label><select id="sm-color"><option value="#FFFFFF">Putih</option><option value="#FFFF00">Kuning</option><option value="#00E5FF">Cyan</option><option value="#00FF7F">Hijau</option></select></div>
+          </div>
+          <div class="sm-sec"><svg class="nav-ic"><use href="#ic-script"/></svg> Naskah &amp; CTA</div>
+          <div class="sm-steps">
+            <div class="sm-step">
+              <div class="sm-step-head"><svg class="nav-ic"><use href="#ic-zap"/></svg>Hook<small>4 detik pertama</small></div>
+              <div class="fg"><textarea id="sm-hook" rows="2" placeholder="cth: Berhenti scroll dulu, ini penting!"></textarea></div>
+            </div>
+            <div class="sm-step">
+              <div class="sm-step-head"><svg class="nav-ic"><use href="#ic-script"/></svg>Naskah<small>ditampilkan berurutan</small></div>
+              <div class="fg"><textarea id="sm-script" rows="3" placeholder="cth: Musik tenang bisa menurunkan detak jantung dan membantu tidur lebih nyenyak."></textarea></div>
+            </div>
+            <div class="sm-step">
+              <div class="sm-step-head"><svg class="nav-ic"><use href="#ic-cta"/></svg>CTA<small>kartu akhir · 5 detik</small></div>
+              <div class="fg"><input type="text" id="sm-cta" value="Subscribe" maxlength="60"></div>
+            </div>
+          </div>
+          <div class="g2">
+            <div class="fg"><label class="fl"><svg class="nav-ic" style="width:13px;height:13px"><use href="#ic-gallery"/></svg>Background <small>(galeri channel — kosong = acak)</small></label><select id="sm-bg"><option value="">-- Acak dari galeri --</option></select></div>
+            <div class="fg"><label class="fl"><svg class="nav-ic" style="width:13px;height:13px"><use href="#ic-music"/></svg>Musik Latar <small>(galeri channel)</small></label><select id="sm-bgm"><option value="none">Tanpa musik</option></select></div>
+          </div>
           <div class="fg"><label class="fl">Deskripsi <small>(opsional — kosong = dibuat otomatis dari naskah)</small></label><textarea id="sm-description" rows="2" placeholder="Kosongkan untuk deskripsi otomatis"></textarea></div>
-          <div class="fg"><label class="fl">Tag</label><input type="text" id="sm-tags" value="#shorts" maxlength="200"></div>
-          <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:12px">Upload selalu <b>private</b> dulu (seperti Clipper) — ubah ke publik di YouTube setelah dicek. Short mengikuti approval channel, kalender, pause, QC &amp; kuota seperti video biasa.</div>
-          <button type="button" class="btn btn-p" id="btn-shorts-create" onclick="createShortsMuse()">Buat Shorts Muse 📱</button>
+          <div class="fg"><label class="fl"><svg class="nav-ic" style="width:13px;height:13px"><use href="#ic-tag"/></svg>Tag</label><input type="text" id="sm-tags" value="#shorts" maxlength="200"></div>
+          <div class="sm-note">Upload selalu <b>private</b> dulu (seperti Clipper) — ubah ke publik di YouTube setelah dicek. Short mengikuti approval channel, kalender, pause, QC &amp; kuota seperti video biasa.</div>
+          <button type="button" class="btn btn-p" id="btn-shorts-create" onclick="createShortsMuse()">Buat Shorts Muse</button>
         </div>
 
-        <div class="form-section">
-          <div class="fs-title">📋 Daftar Shorts Muse</div>
+        <div class="form-section sm-list">
+          <div class="fs-title"><svg class="nav-ic"><use href="#ic-list"/></svg> Daftar Shorts Muse</div>
           <div id="sm-list"><div style="text-align:center;padding:24px;color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada Shorts Muse.</div></div>
           <button type="button" class="btn btn-g btn-sm" onclick="fetchShortsMuse()">↻ Refresh Daftar</button>
         </div>
@@ -3883,10 +3933,10 @@ function createShortsMuse() {
   btn.disabled = true; btn.textContent = 'Membuat...';
   fetch('/api/shorts_muse_create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
     .then(r => r.json()).then(d => {
-      btn.disabled = false; btn.textContent = 'Buat Shorts Muse 📱';
+      btn.disabled = false; btn.textContent = 'Buat Shorts Muse';
       if (d.status === 'success') { toast(d.message, 'success'); fetchShortsMuse(); fetchServerTasks(); }
       else toast(d.message || 'Gagal membuat Shorts', 'error');
-    }).catch(() => { btn.disabled = false; btn.textContent = 'Buat Shorts Muse 📱'; toast('Gagal menghubungi server', 'error'); });
+    }).catch(() => { btn.disabled = false; btn.textContent = 'Buat Shorts Muse'; toast('Gagal menghubungi server', 'error'); });
 }
 
 function fetchShortsMuse() {
@@ -3900,8 +3950,8 @@ function renderShortsMuse(items) {
   list.innerHTML = items.map(s => {
     const pend = s.approval === 'pending';
     const link = s.video_url ? ` <a href="${escapeHtml(s.video_url)}" target="_blank" style="color:var(--accent)">[Lihat]</a>` : '';
-    const btns = pend ? `<button class="stop-btn" style="background:var(--green);color:#fff" title="Setujui & masuk antrean" onclick="approveTask(${Number(s.id)})">✅</button><button class="stop-btn" style="background:var(--accent2);color:#fff" title="Tolak (tidak dieksekusi)" onclick="rejectTask(${Number(s.id)})">❌</button>` : '';
-    return `<div class="task-row"><div class="task-icon">📱</div><div class="task-info"><div class="task-name">${escapeHtml(s.title)}</div><div class="task-meta">${escapeHtml(s.channel || '')} · ${escapeHtml(s.publish_date || '')} · ${s.duration_sec || '?'} dtk · CTA: ${escapeHtml(s.cta || '')}${link}</div></div><span class="pill ${pend ? 'p-yellow' : 'p-cyan'}" style="flex-shrink:0;max-width:220px;white-space:normal;line-height:1.3">${escapeHtml(s.status || '—')}</span>${btns}</div>`;
+    const btns = pend ? `<button class="stop-btn" style="background:var(--green);color:#fff" title="Setujui & masuk antrean" onclick="approveTask(${Number(s.id)})">Setujui</button><button class="stop-btn" style="background:var(--accent2);color:#fff" title="Tolak (tidak dieksekusi)" onclick="rejectTask(${Number(s.id)})">Tolak</button>` : '';
+    return `<div class="task-row"><div class="task-icon"><svg class="nav-ic" style="width:20px;height:20px"><use href="#ic-shorts"/></svg></div><div class="task-info"><div class="task-name">${escapeHtml(s.title)}</div><div class="task-meta">${escapeHtml(s.channel || '')} · ${escapeHtml(s.publish_date || '')} · ${s.duration_sec || '?'} dtk · CTA: ${escapeHtml(s.cta || '')}${link}</div></div><span class="pill ${pend ? 'p-yellow' : 'p-cyan'}" style="flex-shrink:0;max-width:220px;white-space:normal;line-height:1.3">${escapeHtml(s.status || '—')}</span>${btns}</div>`;
   }).join('');
 }
 

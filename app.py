@@ -2312,17 +2312,103 @@ def _shorts_muse_build_ass(ass_path, hook, script, cta_text, text_color, duratio
         f.write(ass)
     return len(events)
 
-def _shorts_muse_pick_bg(yt_id, filename):
+# Warna gradien otomatis per tema (hex RRGGBB, atas→tengah→bawah).
+# Dipakai bila galeri background channel masih kosong — Shorts tidak boleh
+# mentok hanya karena belum ada gambar. Dibuat sekali per tema, dipakai ulang.
+_SHORTS_AUTO_BG_COLORS = {
+    'anak': ('FFD93D', 'FF6B9D', '4D96FF'),      # kuning cerah → pink → biru
+    'sleep': ('0B1E3A', '123A6B', '1E5A8A'),     # biru gelap
+    'lofi': ('2D1B4E', '6B3FA0', '9D6BC4'),      # ungu
+    'piano': ('3A2410', '8A5A1E', 'D9A441'),     # amber hangat
+    'hujan': ('2B3A4A', '4A6B8A', '7A9AB5'),     # biru-abu
+    'meditasi': ('0F2E1D', '1E6B3A', '4CAF6D'),  # hijau
+    'fokus': ('0B2E2E', '0F5A5A', '14A0A0'),     # teal
+}
+_SHORTS_AUTO_BG_DEFAULT_THEME = 'sleep'
+
+def _shorts_muse_norm_theme(theme):
+    """Normalisasi tema/niche ke kunci peta gradien ('tidur' → 'sleep';
+    tidak dikenal → default 'sleep'/biru gelap)."""
+    t = (str(theme or '')).strip().lower()
+    if t in ('tidur', 'sleep'):
+        return 'sleep'
+    if t in _SHORTS_AUTO_BG_COLORS:
+        return t
+    return _SHORTS_AUTO_BG_DEFAULT_THEME
+
+def _shorts_muse_ensure_auto_bg(yt_id, theme):
+    """Background gradien otomatis 1080x1920 (FFmpeg lavfi `gradients`,
+    tanpa unduh dari internet) untuk Shorts Muse bila galeri channel
+    kosong. Disimpan sebagai auto-gradient-<tema>.png di folder
+    backgrounds channel — aset biasa, dipakai ulang Short berikutnya,
+    tidak dibuat ulang bila sudah ada. Mengembalikan (path, baru_dibuat)
+    atau (None, False) bila gagal."""
+    theme = _shorts_muse_norm_theme(theme)
+    try:
+        folder = get_channel_folder(yt_id, "backgrounds")
+    except Exception:
+        return None, False
+    fname = f"auto-gradient-{theme}.png"
+    path = os.path.join(folder, fname)
+    try:
+        if os.path.isfile(path) and os.path.getsize(path) > 1024:
+            return path, False
+    except Exception:
+        pass
+    c0, c1, c2 = _SHORTS_AUTO_BG_COLORS[theme]
+    lavfi = ("gradients=s=1080x1920:nb_colors=3:c0=0x%s:c1=0x%s:c2=0x%s:"
+             "x0=540:y0=0:x1=540:y1=1920" % (c0, c1, c2))
+    # Coba 2x: panggilan pertama bisa ikut terbunuh (SIGKILL/OOM) bila
+    # berjalan persis saat service baru start & memori sedang tinggi —
+    # percobaan kedua sesaat kemudian biasanya berhasil.
+    for _attempt in (1, 2):
+        try:
+            r = subprocess.run(['ffmpeg', '-y', '-v', 'error', '-f', 'lavfi',
+                                '-i', lavfi, '-frames:v', '1', path],
+                               capture_output=True, text=True, timeout=60)
+        except Exception as e:
+            print(f"[auto-bg] ffmpeg gagal start tema {theme} (percobaan {_attempt}): {e}", flush=True)
+            if _attempt == 1:
+                time.sleep(2)
+            continue
+        if r.returncode == 0:
+            break
+        print(f"[auto-bg] ffmpeg gagal tema {theme} (percobaan {_attempt}, exit {r.returncode}): {(r.stderr or '').strip()[:200]}", flush=True)
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+        except Exception:
+            pass
+        if _attempt == 1:
+            time.sleep(2)
+    else:
+        return None, False
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) <= 1024:
+            return None, False
+        with open(path, 'rb') as f:
+            if f.read(8) != b'\x89PNG\r\n\x1a\n':
+                return None, False
+        return path, True
+    except Exception as e:
+        print(f"[auto-bg] gagal buat gradien tema {theme}: {e}", flush=True)
+        return None, False
+
+def _shorts_muse_pick_bg(yt_id, filename, theme=None):
     """Background Shorts: file pilihan form (uploads/<yt_id>/backgrounds)
     kalau ada & valid; kalau tidak, 1 background acak dari galeri.
-    Mengembalikan path absolut atau None."""
+    Bila galeri kosong → gradien otomatis per tema (dibuat sekali,
+    dipakai ulang). Mengembalikan path absolut atau None."""
     folder = get_channel_folder(yt_id, "backgrounds")
     if filename:
         cand = os.path.join(folder, os.path.basename(str(filename)))
         if os.path.isfile(cand) and cand.lower().endswith(('.jpg', '.jpeg', '.png', '.webp', '.mp4', '.mov', '.webm')):
             return cand
     picked = get_multi_backgrounds(yt_id, count=1)
-    return picked[0] if picked else None
+    if picked:
+        return picked[0]
+    auto_path, _created = _shorts_muse_ensure_auto_bg(yt_id, theme)
+    return auto_path
 
 def _shorts_muse_pick_bgm(yt_id, filename):
     """Musik latar Shorts: file pilihan form (uploads/<yt_id>/audios).
@@ -2356,7 +2442,7 @@ def render_shorts_muse_core(task_id, task, yt_id):
     if not hook and not script:
         raise Exception("Shorts Muse butuh Hook atau Naskah — keduanya kosong!")
 
-    bg_path = _shorts_muse_pick_bg(yt_id, task.get('shorts_bg'))
+    bg_path = _shorts_muse_pick_bg(yt_id, task.get('shorts_bg'), task.get('shorts_theme'))
     if not bg_path:
         raise Exception("Gallery Background Kosong! Upload gambar background ke tab Asset Gallery dulu.")
     bgm_path = _shorts_muse_pick_bgm(yt_id, task.get('shorts_bgm'))
@@ -6659,6 +6745,24 @@ def _create_shorts_muse_task(data):
         bg_path = os.path.join(get_channel_folder(yt_id, "backgrounds"), os.path.basename(bg_file))
         if not os.path.isfile(bg_path):
             return {"ok": False, "message": f"Background '{bg_file}' tidak ditemukan di galeri channel.", "http": 400}
+    # Tema untuk fallback gradien otomatis (panel: tidak ada field tema →
+    # default 'sleep'; operator/penjadwal mengirim tema yang dipilih).
+    theme = _shorts_muse_norm_theme(data.get('theme') or data.get('niche'))
+    bg_auto = False
+    if not bg_file:
+        try:
+            has_bg = bool(get_multi_backgrounds(yt_id, 1))
+        except Exception:
+            has_bg = False
+        if not has_bg:
+            # Galeri kosong → buat gradien otomatis sekali (dipakai ulang).
+            # HANYA bila pembuatan gradien ini gagal, Short ditolak karena
+            # background kosong.
+            auto_path, _auto_created = _shorts_muse_ensure_auto_bg(yt_id, theme)
+            if not auto_path:
+                return {"ok": False, "message": "Galeri background kosong dan background otomatis gagal dibuat — upload background dulu di panel.", "http": 500}
+            bg_file = os.path.basename(auto_path)
+            bg_auto = True
     bgm_file = (data.get('bgm_file') or '').strip()
     if bgm_file and bgm_file.lower() != 'none':
         bgm_path = os.path.join(get_channel_folder(yt_id, "audios"), os.path.basename(bgm_file))
@@ -6692,6 +6796,7 @@ def _create_shorts_muse_task(data):
         "shorts_hook": hook, "shorts_script": script, "shorts_cta": cta_text,
         "shorts_bg": bg_file, "shorts_bgm": bgm_file,
         "shorts_text_color": text_color,
+        "shorts_theme": theme,
         # target_duration_hours dipakai estimasi disk & QC lama — isi dari
         # durasi detik supaya keduanya tetap konsisten.
         "target_duration_hours": duration_sec / 3600.0,
@@ -6751,13 +6856,15 @@ def _create_shorts_muse_task(data):
                                    "Task ada di Riwayat dan bisa dipulihkan lewat 'Pulihkan Task Gagal'.", "http": 500}
         return {"ok": True, "message": "Shorts Muse dibuat dan langsung masuk antrean (mode Full-Auto)!",
                 "http": 200, "task_id": t_id, "auto_mode": True, "batch_id": batch_id,
-                "preview": None, "channel_name": channel_name, "publish_date": v_date_str}
+                "preview": None, "channel_name": channel_name, "publish_date": v_date_str,
+                "bg_auto": bg_auto}
     preview = {"id": t_id, "title": title, "publish_date": v_date_str,
                "duration_label": f"{duration_sec} detik (Shorts Muse)",
                "description": description, "privacy": "private"}
     return {"ok": True, "message": "Shorts Muse dibuat dan menunggu approval di Telegram!",
             "http": 200, "task_id": t_id, "auto_mode": False, "batch_id": batch_id,
-            "preview": preview, "channel_name": channel_name, "publish_date": v_date_str}
+            "preview": preview, "channel_name": channel_name, "publish_date": v_date_str,
+            "bg_auto": bg_auto}
 
 
 @app.route('/api/operator/create_shorts', methods=['POST'])
@@ -6784,7 +6891,8 @@ def operator_create_shorts():
     return jsonify({"status": "success", "message": res["message"],
                     "task_id": res["task_id"],
                     "approval": "approved" if res["auto_mode"] else "pending",
-                    "publish_date": res.get("publish_date")})
+                    "publish_date": res.get("publish_date"),
+                    "bg_auto": res.get("bg_auto", False)})
 
 
 @app.route('/api/get_shorts_muse')
@@ -7619,22 +7727,13 @@ def _auto_shorts_tick(now_wib=None):
                 print(f"[auto-shorts] lewati {ch_name}: sudah lewat jam tayang {cfg['publish_time']}", flush=True)
                 continue
             # --- dalam jendela [create_time, publish_time]: coba buat ---
+            # (Galeri kosong TIDAK lagi dilewati: _create_shorts_muse_task
+            # membuat gradien otomatis sekali; alert hanya bila itu gagal.)
             if _channel_paused(yt_id):
                 state[key] = {'for_date': for_date.isoformat(), 'status': 'skipped',
                               'reason': 'Channel dijeda', 'at': now_wib.isoformat()}
                 changed = True
                 print(f"[auto-shorts] lewati {ch_name}: channel dijeda", flush=True)
-                continue
-            try:
-                bgs = get_multi_backgrounds(yt_id, 1)
-            except Exception:
-                bgs = []
-            if not bgs:
-                state[key] = {'for_date': for_date.isoformat(), 'status': 'skipped',
-                              'reason': 'Galeri background kosong', 'at': now_wib.isoformat()}
-                changed = True
-                print(f"[auto-shorts] lewati {ch_name}: galeri background kosong", flush=True)
-                send_tg_message(f"⏰ *Jadwal Otomatis Short — dilewati hari ini* 😌\n📺 Channel: *{_tg_escape(ch_name)}*\nGaleri background channel ini kosong — upload background dulu di panel (Asset Gallery), besok saya buatkan lagi 🙏")
                 continue
             title, hook, script, cta = _auto_shorts_pick_content(channel, cfg['theme'], for_date)
             res = _create_shorts_muse_task({
@@ -7642,7 +7741,7 @@ def _auto_shorts_tick(now_wib=None):
                 'cta': cta, 'duration_sec': cfg['duration_sec'],
                 'publish_date': publish_dt.strftime('%Y-%m-%d %H:%M'),
                 'text_color': '#FFFFFF', 'bg_file': '', 'bgm_file': 'none',
-                'description': '', 'tags': '#shorts',
+                'description': '', 'tags': '#shorts', 'theme': cfg['theme'],
             })
             if not res.get('ok'):
                 reason = res.get('message', 'Gagal membuat task')
@@ -7650,6 +7749,8 @@ def _auto_shorts_tick(now_wib=None):
                               'reason': reason, 'at': now_wib.isoformat()}
                 changed = True
                 print(f"[auto-shorts] gagal {ch_name}: {reason}", flush=True)
+                if 'background' in reason.lower():
+                    send_tg_message(f"⏰ *Jadwal Otomatis Short — gagal dibuat* 😅\n📺 Channel: *{_tg_escape(ch_name)}*\nGaleri background kosong dan background otomatis gagal dibuat — upload background dulu di panel (Asset Gallery), besok saya coba lagi 🙏")
                 continue
             state[key] = {'for_date': for_date.isoformat(), 'status': 'created',
                           'task_id': res.get('task_id'),
@@ -7660,12 +7761,14 @@ def _auto_shorts_tick(now_wib=None):
                 threading.Thread(target=_send_approval_previews,
                                  args=(res['batch_id'], res['channel_name'], [res['preview']]), daemon=True).start()
             status_txt = 'menunggu approval Bos di Telegram 👀' if not res.get('auto_mode') else 'sudah masuk antrean render ✅'
+            bg_note = ("\n🖼️ Background: gradien otomatis (galeri masih kosong — "
+                       "upload gambar sendiri di panel bila mau yang lebih bagus)") if res.get('bg_auto') else ""
             send_tg_message(
                 f"⏰ *Jadwal Otomatis Short — sudah saya buatkan* 🤖\n"
                 f"📺 Channel: *{_tg_escape(ch_name)}*\n"
                 f"🎬 Judul: *{_tg_escape(title)}*\n"
                 f"🗓️ Tayang: `{_tg_escape(res.get('publish_date') or publish_dt.strftime('%Y-%m-%d %H:%M'))}`\n"
-                f"Status: {status_txt}")
+                f"Status: {status_txt}{bg_note}")
         except Exception as e:
             print(f"[auto-shorts] error channel {yt_id}: {e}", flush=True)
             continue

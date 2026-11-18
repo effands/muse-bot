@@ -2389,7 +2389,7 @@ def _make_short_summary(d):
         f"📣 CTA: {_tg_escape(d.get('cta', 'Subscribe'))}\n"
         f"⏱️ Durasi: `{d.get('duration_sec', 30)} detik`\n"
         f"🗓️ Jadwal: `{_tg_escape(d.get('publish_date', ''))}`\n"
-        f"🖼️ Background: `{_tg_escape(d.get('bg_file', ''))}`\n"
+        f"🖼️ Background: `{_tg_escape(d.get('bg_file') or 'gradien otomatis')}`\n"
         f"🎵 Musik: `{_tg_escape(d.get('bgm_file', 'none'))}`\n\n"
         "Kalau sudah oke, pencet ✅ Buat. Kalau mau ubah, pencet ❌ Batal lalu mulai lagi dari /buatshort ya Bos!"
     )
@@ -2455,16 +2455,12 @@ def _make_pick_channel(channels):
     return None, "\n".join(lines)
 
 def _make_check_bg_or_cancel(token, chat_id, draft):
-    """Cek galeri background channel untuk Shorts. Bila kosong → batalkan
-    draft dengan pesan jelas. Kembalikan True bila boleh lanjut."""
+    """Cek galeri background channel untuk Shorts. Galeri kosong TIDAK
+    lagi membatalkan — panel membuat gradien otomatis sekali saat Short
+    dibuat (helper _create_shorts_muse_task). Kembalikan True bila boleh
+    lanjut (selalu True selama channel ada)."""
     d = draft.get('data') or {}
     bgs = _gallery_files(d.get('yt_id', ''), 'backgrounds', _BG_EXTS)
-    if not bgs:
-        _clear_make_draft(chat_id)
-        send_message(token, chat_id,
-                     "😅 *Yah Bos, galerinya masih kosong* — Shorts butuh 1 gambar background dulu.\n\n"
-                     "Upload background dulu di panel (Asset Gallery), lalu ketik /buatshort lagi ya Bos! 🙏")
-        return False
     d['bg_options'] = bgs
     draft['data'] = d
     return True
@@ -2503,6 +2499,10 @@ def _make_ask_step(token, chat_id, draft):
                          f"Ketik `lewati` untuk jadwal berikutnya (`{nxt}`).")
         elif step == 'bg':
             opts = d.get('bg_options') or []
+            if not opts:
+                lines = ["🖼️ *Langkah 7 dari 7: Background*\n\nGaleri channel ini masih kosong — nanti saya buatkan background gradien otomatis, Bos. 🎨\n\nBalas `lewati` untuk lanjut (atau upload gambar sendiri di panel bila mau yang lebih bagus)."]
+                send_message(token, chat_id, "\n".join(lines))
+                return
             lines = ["🖼️ *Langkah 7 dari 7: Background*\n\nPilih gambar/video background dari galeri:\n"]
             for i, f in enumerate(opts[:10], 1):
                 lines.append(f"{i}. `{_tg_escape(f)}`")
@@ -3609,14 +3609,14 @@ def _execute_nlu_create_shorts(token, chat_id, pending):
     for ch in chans:
         yt_id = ch.get('yt_id')
         name = _channel_display_name(ch)
-        bgs = _gallery_files(yt_id, 'backgrounds', _BG_EXTS)
-        if not bgs:
-            lines.append(f"❌ *{name}* — galeri background kosong, upload background dulu di panel.")
-            continue
+        # Galeri kosong TIDAK lagi menolak: panel membuat gradien otomatis
+        # sekali (helper _create_shorts_muse_task); pesan "galeri kosong"
+        # hanya muncul bila pembuatan gradien itu sendiri gagal (dari panel).
         base_slot = _nlu_publish_slot(slots.get('publish_time'), ch)
         made = 0
         last_resp = {}
         err = ''
+        used_auto_bg = False
         for k in range(count):
             idx = (day_idx + k) % len(bank['hooks'])
             pub = base_slot
@@ -3632,17 +3632,22 @@ def _execute_nlu_create_shorts(token, chat_id, pending):
                 "cta": slots.get('cta') or bank['ctas'][(day_idx + k) % len(bank['ctas'])],
                 "duration_sec": duration, "publish_date": pub,
                 "text_color": "#FFFFFF", "bg_file": "", "bgm_file": "none",
+                "theme": niche,
             })
             if ok:
                 made += 1
                 last_resp = resp
+                if (resp or {}).get('bg_auto'):
+                    used_auto_bg = True
             else:
                 err = info
                 break
         if made:
             appr = (last_resp or {}).get('approval')
             stat = 'menunggu approval Bos' if appr == 'pending' else 'masuk antrean'
-            lines.append(f"✅ *{name}* — {made} Short dibuat, {stat}.")
+            note = (" 🖼️ Background otomatis (gradien) karena galeri masih kosong — "
+                    "upload gambar sendiri di panel bila mau yang lebih bagus.") if used_auto_bg else ""
+            lines.append(f"✅ *{name}* — {made} Short dibuat, {stat}.{note}")
         else:
             lines.append(f"❌ *{name}* — {err or 'gagal dibuat'}.")
     send_message(token, chat_id, "\n".join(lines))

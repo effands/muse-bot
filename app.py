@@ -276,7 +276,7 @@ def queue_watchdog_worker():
                 # (task bisa macet di antrean kalau worker error sebelum masuk render).
                 # Pengecualian: status cooldown/dijadwalkan yang memang HARUS menunggu.
                 # 🔥 FIX 2: Tambahkan "Menunggu" ke daftar pengecualian
-                waiting_kind = "Ditunda" in st or "Dijadwalkan" in st or "Menunggu" in st
+                waiting_kind = "Ditunda" in st or "Dijadwalkan" in st or "Menunggu" in st or "Dijeda" in st
                 
                 stuck_kind = not waiting_kind and ("Queue" in st or "Rendering" in st or "Meracik" in st
                               or "Mengunggah" in st or "Upload" in st or "YouTube" in st
@@ -1654,7 +1654,23 @@ def background_worker():
         while not render_queue.empty():
             ptask = queue_get()
             pyt_id = ptask['yt_id']
-            
+
+            # 🔥 FASE 3: channel dijeda → keluarkan dari antrean (TIDAK di-render),
+            # tandai Dijeda supaya bisa masuk antrean lagi saat dilanjutkan.
+            # (Berbeda dengan cooldown yang dikembalikan ke antrean — task jeda
+            # sengaja dikeluarkan supaya resume bisa mengantre ulang dengan bersih.)
+            if _channel_paused(pyt_id):
+                with db_lock:
+                    for d in active_tasks:
+                        if d['id'] == ptask.get('id'):
+                            d['status'] = CHANNEL_PAUSED_STATUS
+                            d['updated_at'] = time.time()
+                try: save_tasks_db()
+                except Exception: pass
+                try: render_queue.task_done()
+                except Exception: pass
+                continue
+
             if pyt_id in channel_cooldowns and time.time() < channel_cooldowns[pyt_id]:
                 # Jika channel ini masih cooldown, simpan task ke wadah sementara
                 sisa_menit = max(1, int((channel_cooldowns[pyt_id] - time.time()) / 60))
@@ -2013,6 +2029,13 @@ def background_worker():
                                      key_color=task.get('vis_overlay_key', 'none'),
                                      render_preset=task.get('render_preset', 'veryfast'))
 
+            # 🔥 FASE 3: channel dijeda saat render berjalan → jangan upload.
+            # Task tetap aktif berstatus Dijeda; saat dilanjutkan ia akan
+            # di-render ulang dari awal (biaya render ulang, tapi tidak ada
+            # video yang tayang selagi channel dijeda).
+            if _channel_paused(yt_id):
+                raise _PausedAbort()
+
             if channel_data:
                 creds_list = channel_data.get('creds_list', [channel_data.get('creds_json')])
                 upload_berhasil = False
@@ -2197,6 +2220,16 @@ def background_worker():
                 move_to_history(task_id, f"Render Selesai ✅ <a href='/static/final_{task_id}.mp4' target='_blank'>[Download]</a>")
                 notify_event("✅", task['title'], f"Render selesai, di-upload ke YouTube {ch_name}")
         
+        except _PausedAbort:
+            # 🔥 FASE 3: dibatalkan karena channel dijeda — BUKAN gagal.
+            # Task tetap di antrean aktif berstatus Dijeda (tidak masuk riwayat,
+            # tidak kirim notif gagal) supaya bisa lanjut saat resume.
+            with db_lock:
+                for d in active_tasks:
+                    if d['id'] == task_id:
+                        d['status'] = CHANNEL_PAUSED_STATUS
+                        d['updated_at'] = time.time()
+            save_tasks_db()
         except Exception as e:
             err_msg = str(e)
             if "Limit" in err_msg or "Cooldown" in err_msg or "Habis" in err_msg:
@@ -2344,6 +2377,66 @@ def recover_failed_tasks():
 # stuck dan scheduled_task_activator menganggapnya menunggu, bukan macet.
 APPROVAL_PENDING_STATUS = "⏳ Menunggu Approval"
 
+# 🔥 FASE 3: status task yang ditahan karena channel dijeda. Sengaja tidak
+# mengandung kata "Queue"/"Rendering"/"Mengunggah" supaya watchdog stuck
+# tidak menganggapnya macet (lihat juga pengecualian "Dijeda" di watchdog).
+CHANNEL_PAUSED_STATUS = "⏸️ Dijeda (Channel Pause)"
+
+class _PausedAbort(Exception):
+    """Dilempar saat channel dijeda di tengah render — batalkan sebelum upload."""
+    pass
+
+def _channel_paused(yt_id):
+    """True kalau channel ini sedang dijeda (field 'paused' di channels_db.json).
+    Channel lama tanpa field dianggap TIDAK dijeda."""
+    if not yt_id:
+        return False
+    for c in database_channel:
+        if c.get('yt_id') == yt_id:
+            return bool(c.get('paused', False))
+    return False
+
+def _blueprint_in_queue(task_id):
+    """True kalau blueprint task ini masih ada di render_queue.
+    Dipakai resume supaya task tidak masuk antrean dua kali (video ganda)."""
+    try:
+        with render_queue.mutex:
+            items = list(render_queue.queue)
+    except Exception:
+        return False
+    for item in items:
+        bp = item[2] if isinstance(item, tuple) and len(item) == 3 else item
+        if isinstance(bp, dict) and bp.get('id') == task_id:
+            return True
+    return False
+
+def _resume_channel_tasks(yt_id):
+    """Masukkan lagi task channel yang tertahan jeda ke antrean render.
+    Hanya task approved, non-final, punya blueprint, dan berstatus Dijeda.
+    Mengembalikan jumlah task yang masuk antrean. Harus dipanggil dengan
+    db_lock TIDAK sedang dipegang (fungsi ini mengambil lock sendiri)."""
+    resumed = 0
+    with db_lock:
+        targets = [t for t in active_tasks
+                   if _active_task_yt_id(t) == yt_id
+                   and _approval_of(t) != 'pending'
+                   and 'blueprint' in t
+                   and CHANNEL_PAUSED_STATUS in t.get('status', '')]
+        for t in targets:
+            t['status'] = "Menunggu Giliran (Queue) ⏳"
+            t['updated_at'] = time.time()
+        if targets:
+            active_tasks.sort(key=lambda x: x.get('blueprint', {}).get('publish_date', ''))
+            save_tasks_db()
+    for t in targets:
+        try:
+            if not _blueprint_in_queue(t['id']):
+                queue_put(t["blueprint"])
+                resumed += 1
+        except Exception as e:
+            print(f"Gagal queue resume task {t.get('id')}: {e}", flush=True)
+    return resumed
+
 def _approval_of(t):
     """Status approval sebuah task. Legacy (tanpa field) = approved."""
     return t.get('approval') or 'approved'
@@ -2384,6 +2477,14 @@ def _apply_approval(task_id, decision):
         title = target.get('title', '?')[:60]
         if decision == 'approved':
             target['approval'] = 'approved'
+            # 🔥 FASE 3: channel dijeda → disetujui tapi DITAHAN (tidak masuk
+            # antrean render). Task berstatus Dijeda sampai channel dilanjutkan.
+            if _channel_paused(_active_task_yt_id(target)):
+                target['status'] = CHANNEL_PAUSED_STATUS
+                target['updated_at'] = time.time()
+                active_tasks.sort(key=lambda x: x.get('blueprint', {}).get('publish_date', ''))
+                save_tasks_db()
+                return True, "Task disetujui, tapi channel sedang dijeda — akan masuk antrean saat channel dilanjutkan.", title
             target['status'] = "Menunggu Giliran (Queue) ⏳"
             target['updated_at'] = time.time()
             active_tasks.sort(key=lambda x: x.get('blueprint', {}).get('publish_date', ''))
@@ -2412,13 +2513,18 @@ def _apply_approve_batch(batch_id):
                    and t.get('blueprint')]
         for t in pending:
             t['approval'] = 'approved'
-            t['status'] = "Menunggu Giliran (Queue) ⏳"
+            # 🔥 FASE 3: task dari channel yang dijeda disetujui tapi ditahan.
+            if _channel_paused(_active_task_yt_id(t)):
+                t['status'] = CHANNEL_PAUSED_STATUS
+            else:
+                t['status'] = "Menunggu Giliran (Queue) ⏳"
             t['updated_at'] = time.time()
             approved_titles.append(t.get('title', '?')[:60])
         if approved_titles:
             active_tasks.sort(key=lambda x: x.get('blueprint', {}).get('publish_date', ''))
             save_tasks_db()
-        blueprints = [t["blueprint"] for t in pending]
+        blueprints = [t["blueprint"] for t in pending
+                      if CHANNEL_PAUSED_STATUS not in t.get('status', '')]
     for bp in blueprints:
         try:
             queue_put(bp)
@@ -2572,7 +2678,7 @@ def clear_history():
 
 @app.route('/api/get_channels')
 def get_channels():
-    safe_c = [{"id": c["id"], "name": c["name"], "yt_id": c["yt_id"], "thumbnail": c["thumbnail"], "status": c["status"], "title_bank": c.get("title_bank", [])} for c in database_channel]
+    safe_c = [{"id": c["id"], "name": c["name"], "yt_id": c["yt_id"], "thumbnail": c["thumbnail"], "status": c["status"], "title_bank": c.get("title_bank", []), "paused": c.get("paused", False)} for c in database_channel]
     return jsonify(safe_c)
 
 from flask import send_file # Pastikan send_file di-import di baris paling atas jika belum ada
@@ -2953,6 +3059,39 @@ def stop_channel(yt_id):
     save_tasks_db()
     return jsonify({"status": "success", "message": f"{len(tasks_to_remove)} antrean channel dihentikan!"})
 
+@app.route('/api/set_channel_paused', methods=['POST'])
+def set_channel_paused():
+    """🔥 FASE 3: Jeda / lanjutkan satu channel (butuh login panel — route ini
+    TIDAK masuk allowed_routes, jadi check_security mewajibkan login).
+    Dijeda → task terjadwal channel ini tidak dieksekusi/di-upload sampai
+    dilanjutkan (worker mengeluarkan tasknya dari antrean; approval yang
+    masuk selagi dijeda ditahan). Dilanjutkan → task yang tertahan masuk
+    antrean render lagi. State 'paused' disimpan di channels_db.json
+    (field baru, channel lama tanpa field = tidak dijeda) → tahan restart."""
+    data = request.get_json(silent=True) or {}
+    yt_id = data.get('yt_id')
+    paused = bool(data.get('paused', False))
+    if not yt_id:
+        return jsonify({"status": "error", "message": "yt_id wajib diisi."}), 400
+    with db_lock:
+        target = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+        if target is None:
+            return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
+        target['paused'] = paused
+        name = target.get('name', yt_id)
+        try:
+            save_channels(database_channel)
+        except Exception as e:
+            return jsonify({"status": "error", "message": f"Gagal menyimpan: {e}"}), 500
+    if paused:
+        send_tg_message(f"⏸️ *Channel dijeda:* {name}\nTask terjadwal channel ini ditahan — tidak dieksekusi/di-upload sampai dilanjutkan.")
+        return jsonify({"status": "success", "paused": True, "resumed_count": 0,
+                        "message": f"Channel {name} dijeda. Task terjadwal ditahan."})
+    resumed = _resume_channel_tasks(yt_id)
+    send_tg_message(f"▶️ *Channel dilanjutkan:* {name}\n{resumed} task terjadwal masuk antrean render.")
+    return jsonify({"status": "success", "paused": False, "resumed_count": resumed,
+                    "message": f"Channel {name} dilanjutkan. {resumed} task masuk antrean."})
+
 @app.route('/api/check_secret')
 def check_secret():
     # Mengembalikan info file yang terupload agar Settings bisa menampilkannya
@@ -3314,6 +3453,9 @@ def scheduled_task_activator():
                     sch = datetime.strptime(t['blueprint']['publish_date'], "%Y-%m-%d %H:%M")
                 except Exception:
                     continue
+                # 🔥 FASE 3: channel dijeda → jangan aktifkan walau waktunya tiba.
+                if _channel_paused(_active_task_yt_id(t)):
+                    continue
                 diff = sch - now
                 if diff <= timedelta(hours=1):
                     t['status'] = "In Factory Queue ⚙️ (Dilanjutkan)"
@@ -3406,6 +3548,10 @@ def _reschedule_task(t):
     # render saat startup — gate approval harus bertahan melewati restart.
     if _approval_of(t) == 'pending':
         t['status'] = APPROVAL_PENDING_STATUS
+        return
+    # 🔥 FASE 3: channel dijeda → jangan masuk antrean saat startup.
+    if _channel_paused(_active_task_yt_id(t)):
+        t['status'] = CHANNEL_PAUSED_STATUS
         return
     t['status'] = "Menunggu Giliran (Queue) ⏳ (Dilanjutkan)"
     t['updated_at'] = time.time()

@@ -211,7 +211,9 @@ def build_status_report():
                 stock_txt = f"sisa ~{int(stock)} hari"
             cd = ch.get('cooldown_until', 0)
             cd_txt = " ⏸️ cooldown" if cd and cd > time.time() else ""
-            lines.append(f"• *{name}* — {conn}{cd_txt}")
+            # 🔥 FASE 3: tandai channel yang sedang dijeda.
+            pause_txt = " ⏸️ Dijeda" if ch.get('paused') else ""
+            lines.append(f"• *{name}* — {conn}{cd_txt}{pause_txt}")
             lines.append(f"  Upload hari ini: `{used}/{MAX_UPLOADS_PER_DAY}` (sisa `{left}`) • Stok: {stock_txt}")
         lines.append(f"📈 *Total sisa kuota hari ini:* `{total_left} video`")
     lines += [
@@ -269,6 +271,116 @@ def build_daily_report():
             else:
                 lines.append(f"• *{name}*: sisa ~{int(stock)} hari")
     lines.append("\nKetik /status kapan saja untuk cek kondisi terkini.")
+    return "\n".join(lines)
+
+# ==========================================
+# 🔥 FASE 3 — JADWAL PUBLISH (/jadwal)
+# ==========================================
+_DAYS_ID = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu']
+_MONTHS_ID = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des']
+
+def _parse_schedule_dt(s):
+    """Parse 'YYYY-MM-DD HH:MM' (waktu WIB naive) jadi datetime aware WIB.
+    None kalau kosong/rusak."""
+    if not s:
+        return None
+    try:
+        return datetime.strptime(str(s)[:16], "%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo("Asia/Jakarta"))
+    except Exception:
+        return None
+
+def _task_schedule_label(t, ch_paused=False):
+    """Label status satu baris jadwal: approval dulu, lalu Dijeda, lalu status."""
+    if t.get('approval') == 'pending':
+        return "⏳ Menunggu Approval"
+    st = str(t.get('status', ''))
+    if 'Dijeda' in st or ch_paused:
+        return "⏸️ Dijeda"
+    if 'Ditolak' in st:
+        return "❌ Ditolak"
+    if 'Gagal' in st:
+        return "❌ Gagal"
+    if 'Selesai' in st or 'Sukses' in st or 'Tayang' in st:
+        return "✅ Selesai"
+    return "🗓️ Terjadwal"
+
+def build_schedule_report(days=7):
+    """Jadwal publish N hari ke depan per channel (untuk /jadwal).
+    Sumber: tasks_db.json yang sudah ada — tidak ada jadwal yang dikarang.
+    Task aktif yang tanggal tayangnya sudah lewat ikut tampil sebagai Terlambat."""
+    tasks_data = load_tasks()
+    active = tasks_data.get('active', [])
+    channels = load_channels()
+    now = _wib_now()
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=days)
+
+    def _task_yt(t):
+        return t.get('yt_id') or (t.get('blueprint') or {}).get('yt_id') or ''
+
+    def _task_dt(t):
+        return _parse_schedule_dt(t.get('time') or (t.get('blueprint') or {}).get('publish_date') or '')
+
+    lines = [
+        "🗓️ *JADWAL PUBLISH 7 HARI KE DEPAN*",
+        f"_{now.strftime('%d %b %Y, %H:%M')} WIB_",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+    if not channels:
+        lines.append("📺 Belum ada channel terhubung.")
+        lines.append("Tautkan dulu dari panel, baru jadwal bisa ditampilkan.")
+        return "\n".join(lines)
+
+    upcoming, overdue = [], []
+    for t in active:
+        dt = _task_dt(t)
+        if dt is None:
+            continue
+        if dt < now:
+            overdue.append((dt, t))
+        elif dt <= end:
+            upcoming.append((dt, t))
+    upcoming.sort(key=lambda x: x[0])
+    overdue.sort(key=lambda x: x[0])
+
+    known_ids = {c.get('yt_id') for c in channels}
+    total = 0
+    for ch in channels:
+        name = _channel_display_name(ch)
+        yt = ch.get('yt_id', '')
+        paused = bool(ch.get('paused'))
+        items = [(dt, t) for dt, t in upcoming if _task_yt(t) == yt]
+        over = [(dt, t) for dt, t in overdue if _task_yt(t) == yt]
+        total += len(items) + len(over)
+        lines.append(f"📺 *{name}*" + (" — ⏸️ *DIJEDA*" if paused else ""))
+        if over:
+            lines.append(f"  ⚠️ Terlambat: `{len(over)} task` belum tayang")
+            for dt, t in over[:3]:
+                lines.append(f"  • {dt.strftime('%d %b %H:%M')} — {(t.get('title') or '?')[:40]}")
+        if not items and not over:
+            lines.append("  _Tidak ada jadwal 7 hari ke depan._")
+        by_day = {}
+        for dt, t in items:
+            by_day.setdefault(dt.strftime('%Y-%m-%d'), []).append((dt, t))
+        for day in sorted(by_day):
+            day_dt = datetime.strptime(day, '%Y-%m-%d')
+            day_lbl = f"{_DAYS_ID[day_dt.weekday()]}, {day_dt.day} {_MONTHS_ID[day_dt.month - 1]} {day_dt.year}"
+            lines.append(f"  📅 *{day_lbl}*")
+            for dt, t in sorted(by_day[day], key=lambda x: x[0]):
+                label = _task_schedule_label(t, paused)
+                lines.append(f"  • `{dt.strftime('%H:%M')}` {(t.get('title') or '?')[:40]} — {label}")
+        lines.append("")
+    # Task yang channel-nya tidak dikenal (mis. channel baru dihapus).
+    unknown = [(dt, t) for dt, t in upcoming + overdue if _task_yt(t) not in known_ids]
+    if unknown:
+        total += len(unknown)
+        lines.append("📺 *Channel Tidak Dikenal*")
+        for dt, t in sorted(unknown, key=lambda x: x[0])[:5]:
+            label = _task_schedule_label(t)
+            lines.append(f"  • `{dt.strftime('%d %b %H:%M')}` {(t.get('title') or '?')[:40]} — {label}")
+        lines.append("")
+    lines.append(f"Total: `{total} task` dalam 7 hari ke depan (termasuk yang terlambat).")
+    lines.append("Ketik /status untuk cek kuota & antrean terkini.")
     return "\n".join(lines)
 
 def get_main_keyboard():
@@ -527,6 +639,7 @@ def handle_user_command(token, chat_id, text):
                 "👉 /status — Cek channel, antrean, kuota upload & kesehatan server\n"
                 "👉 /channel — Cek channel YouTube terdaftar\n"
                 "👉 /antrean — Cek daftar video yang sedang diproses\n"
+                "👉 /jadwal — Lihat jadwal publish 7 hari ke depan & channel yang dijeda\n"
                 "👉 /judul — Buatkan 10 judul video tidur viral\n"
                 "👉 /deskripsi — Buatkan template deskripsi SEO\n"
                 "👉 /blueprint — Cek resep settingan video"
@@ -574,6 +687,11 @@ def handle_user_command(token, chat_id, text):
                 if len(active) > 8:
                     msg += f"_...dan {len(active)-8} video lainnya dalam antrean._"
             send_message(token, chat_id, msg)
+            return
+
+        # 4b. JADWAL PUBLISH (FASE 3)
+        if "jadwal" in clean_cmd or "schedule" in clean_cmd:
+            send_message(token, chat_id, build_schedule_report())
             return
 
         # 5. GENERATOR JUDUL
@@ -637,7 +755,7 @@ def handle_user_command(token, chat_id, text):
             f"🤖 *Ziqva Muse Bot Operator*\n\n"
             f"Saya menerima pesan: \"{raw_cmd}\"\n\n"
             "Silakan sentuh tombol di bawah atau ketik:\n"
-            "👉 /status | /channel | /antrean | /judul"
+            "👉 /status | /channel | /antrean | /jadwal | /judul"
         )
         send_message(token, chat_id, msg)
 

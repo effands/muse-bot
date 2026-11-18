@@ -947,6 +947,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
     <div class="nav-section">OVERVIEW</div>
     <button class="nav-item active" onclick="go('dashboard',this)" id="nb-dashboard"><span class="nav-icon">⬡</span> Dashboard</button>
     <button class="nav-item" onclick="go('tasks',this)" id="nb-tasks"><span class="nav-icon">◈</span> Task Monitor<span class="nav-badge" id="task-badge" style="display:none">0</span></button>
+    <button class="nav-item" onclick="go('calendar',this)" id="nb-calendar"><span class="nav-icon">🗓</span> Kalender Jadwal</button>
     <div class="nav-section">STUDIO</div>
     <button class="nav-item" onclick="go('gallery',this)" id="nb-gallery"><span class="nav-icon">▦</span> Asset Gallery</button>
     <button class="nav-item" onclick="go('titles',this)" id="nb-titles"><span class="nav-icon">✦</span> Title Generator</button>
@@ -1168,6 +1169,22 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
           </table>
         </div>
       </div>
+    </div>
+
+    <div id="panel-calendar" class="panel">
+      <div class="sh" style="margin-bottom:18px">
+        <div><div class="sh-title">Kalender Jadwal</div><div class="sh-sub">Jadwal publish 30 hari ke depan per channel</div></div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <select id="cal-filter" onchange="renderCalendar()" style="width:200px"><option value="">Semua Channel</option></select>
+          <button class="btn btn-g btn-sm" onclick="loadCalendar()">🔄 Refresh</button>
+        </div>
+      </div>
+
+      <div id="cal-channels" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin-bottom:18px"></div>
+
+      <div id="cal-summary" style="margin-bottom:14px;font-family:var(--font-m);font-size:11px;color:var(--muted)"></div>
+
+      <div id="cal-days"></div>
     </div>
 
     <div id="panel-gallery" class="panel">
@@ -1971,6 +1988,7 @@ function onDescModeChange() {
 const PAGE_META = {
   dashboard: { t: 'Dashboard',       s: 'Overview sistem & analytics' },
   tasks:     { t: 'Task Monitor',    s: 'Real-time render & upload queue' },
+  calendar:  { t: 'Kalender Jadwal', s: 'Jadwal publish 30 hari & jeda channel' },
   gallery:   { t: 'Gallery',          s: 'Kelola audio, background & thumbnail' },
   titles:    { t: 'Title Generator', s: 'Upload bank & generate judul baru' },
   batch:     { t: 'Batch Creator',   s: 'Buat banyak video sekaligus' },
@@ -1991,6 +2009,7 @@ function go(id, el) {
   document.getElementById('tb-sub').textContent = PAGE_META[id].s;
   if (id === 'settings') { loadTgConfig(); checkApiStatus(); }
   if (id === 'dashboard') fetchAnalytics();
+  if (id === 'calendar') loadCalendar();
   if (id === 'batch') {
     refreshBatchDropdowns();
     setTimeout(initCanvas, 50);
@@ -2128,8 +2147,12 @@ function renderChannelsGrid() {
       <div style="flex:1;min-width:0">
         <div style="font-size:13px;font-weight:700;margin-bottom:3px">${c.name}</div>
         <span class="pill p-green">${c.status}</span>
+        ${c.paused ? `<span class="pill p-yellow">⏸️ Dijeda</span>` : ''}
       </div>
       <div style="display:flex; gap:6px;">
+        ${c.paused
+          ? `<button class="btn btn-g btn-sm" onclick="toggleChannelPause('${c.yt_id}', false)" style="border-color:var(--green); color:var(--green);">▶️ Lanjutkan</button>`
+          : `<button class="btn btn-g btn-sm" onclick="toggleChannelPause('${c.yt_id}', true)" style="border-color:var(--yellow); color:var(--yellow);">⏸️ Jeda</button>`}
         <button class="btn btn-g btn-sm" onclick="stopChannelTasks('${c.yt_id}')" style="border-color:var(--accent); color:var(--accent);">🛑 Stop Antrean</button>
         <button class="btn btn-danger btn-sm" onclick="deleteChannel('${c.yt_id}')">🗑 Hapus Total</button>
       </div>
@@ -2160,6 +2183,152 @@ function deleteChannel(yt_id) {
         fetchServerTasks(); 
     })
     .catch(() => toast('Gagal menghapus channel', 'error'));
+}
+
+// ────────────────────────────────────────────────────────
+//  KALENDER JADWAL (FASE 3)
+// ────────────────────────────────────────────────────────
+let calData = { active: [], history: [], channels: [] };
+
+function calParseDt(s) {
+  if (!s) return null;
+  const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  if (!m) return null;
+  return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+}
+
+function calTaskStatus(t, chPaused) {
+  if (t.approval === 'pending') return { txt: '⏳ Menunggu Approval', cls: 'p-yellow' };
+  const st = String(t.status || '');
+  if (st.includes('Dijeda') || chPaused) return { txt: '⏸️ Dijeda', cls: 'p-muted' };
+  if (st.includes('Ditolak')) return { txt: '❌ Ditolak', cls: 'p-red' };
+  if (st.includes('Gagal')) return { txt: '❌ Gagal', cls: 'p-red' };
+  if (st.includes('Selesai') || st.includes('Sukses') || st.includes('Tayang')) return { txt: '✅ Selesai', cls: 'p-green' };
+  return { txt: '🗓️ Terjadwal', cls: 'p-cyan' };
+}
+
+function loadCalendar() {
+  Promise.all([
+    fetch('/api/get_schedule').then(r => r.json()).catch(() => ({ active: [], history: [] })),
+    fetch('/api/get_channels').then(r => r.json()).catch(() => [])
+  ]).then(([sched, chs]) => {
+    calData.active = sched.active || [];
+    calData.history = sched.history || [];
+    calData.channels = chs || [];
+    const sel = document.getElementById('cal-filter');
+    if (sel) {
+      const val = sel.value;
+      sel.innerHTML = '<option value="">Semua Channel</option>';
+      calData.channels.forEach(c => { sel.innerHTML += `<option value="${c.yt_id}">${c.name}</option>`; });
+      if (val) sel.value = val;
+    }
+    renderCalendar();
+  });
+}
+
+function renderCalendar() {
+  const strip = document.getElementById('cal-channels');
+  const sumEl = document.getElementById('cal-summary');
+  const daysEl = document.getElementById('cal-days');
+  if (!strip || !daysEl) return;
+  const chs = calData.channels || [];
+  const active = calData.active || [];
+  const filter = (document.getElementById('cal-filter') || {}).value || '';
+
+  // — Strip channel: status jeda + tombol Jeda/Lanjutkan —
+  if (!chs.length) {
+    strip.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--muted);font-family:var(--font-m);font-size:12px;border:1px dashed var(--border);border-radius:var(--r)">Belum ada channel. Klik "Tautkan Channel Baru" di Settings.</div>`;
+  } else {
+    strip.innerHTML = chs.map(c => {
+      const paused = !!c.paused;
+      const upcoming = active.filter(t => ((t.blueprint && t.blueprint.yt_id) || t.yt_id || '') === c.yt_id).length;
+      return `<div class="card" style="padding:14px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+          <div class="ch-con-av">${c.thumbnail ? `<img src="${c.thumbnail}">` : c.name[0]}</div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.name}</div>
+            <div style="font-family:var(--font-m);font-size:10px;color:var(--muted)">${upcoming} video terjadwal</div>
+          </div>
+          <span class="pill ${paused ? 'p-yellow' : 'p-green'}">${paused ? '⏸️ Dijeda' : '▶️ Aktif'}</span>
+        </div>
+        ${paused
+          ? `<button class="btn btn-g btn-sm" style="width:100%;border-color:var(--green);color:var(--green)" onclick="toggleChannelPause('${c.yt_id}', false)">▶️ Lanjutkan Channel</button>`
+          : `<button class="btn btn-g btn-sm" style="width:100%;border-color:var(--yellow);color:var(--yellow)" onclick="toggleChannelPause('${c.yt_id}', true)">⏸️ Jeda Channel</button>`}
+      </div>`;
+    }).join('');
+  }
+
+  // — Jadwal 30 hari ke depan, dikelompokkan per tanggal —
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const endDate = new Date(todayStart.getTime() + 30 * 86400000);
+  const chName = (yt_id) => { const c = chs.find(x => x.yt_id === yt_id); return c ? c.name : (yt_id ? 'Channel Tidak Dikenal' : 'Tanpa Channel'); };
+  const isPaused = (yt_id) => { const c = chs.find(x => x.yt_id === yt_id); return !!(c && c.paused); };
+
+  const overdue = [];
+  const groups = {};
+  let totalUpcoming = 0, totalPending = 0, totalPaused = 0;
+  active.forEach(t => {
+    const yt = (t.blueprint && t.blueprint.yt_id) || t.yt_id || '';
+    if (filter && yt !== filter) return;
+    const dt = calParseDt(t.time || (t.blueprint && t.blueprint.publish_date) || '');
+    if (!dt) return;
+    if (t.approval === 'pending') totalPending++;
+    if (isPaused(yt)) totalPaused++;
+    if (dt < now) { overdue.push({ dt, t }); return; }
+    if (dt > endDate) return;
+    totalUpcoming++;
+    const key = dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0');
+    if (!groups[key]) groups[key] = [];
+    groups[key].push({ dt, t });
+  });
+  overdue.sort((a, b) => a.dt - b.dt);
+
+  const pausedCount = chs.filter(c => c.paused).length;
+  if (sumEl) sumEl.textContent = `${totalUpcoming} video terjadwal 30 hari ke depan · ${totalPending} menunggu approval · ${totalPaused} ditahan (channel dijeda) · ${pausedCount} channel dijeda` + (overdue.length ? ` · ⚠️ ${overdue.length} terlambat` : '');
+
+  let html = '';
+  if (overdue.length) {
+    html += `<div class="card" style="margin-bottom:14px;border-color:rgba(255,77,109,.4)"><div class="card-head"><span class="card-title" style="color:var(--accent2)">⚠️ TERLAMBAT — JADWAL SUDAH LEWAT (${overdue.length})</span></div><div style="padding:6px 16px 10px">` +
+      overdue.map(({ dt, t }) => calDayRow(dt, t, chName, isPaused)).join('') + `</div></div>`;
+  }
+  const keys = Object.keys(groups).sort();
+  if (!keys.length && !overdue.length) {
+    html += `<div style="text-align:center;padding:30px;color:var(--muted);font-family:var(--font-m);font-size:12px;border:1px dashed var(--border);border-radius:var(--r)">Tidak ada jadwal 30 hari ke depan.${chs.length ? '' : ' Tautkan channel & buat batch dulu.'}</div>`;
+  }
+  keys.forEach(key => {
+    const items = groups[key].sort((a, b) => a.dt - b.dt);
+    const d0 = items[0].dt;
+    const dayLbl = d0.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    html += `<div class="card" style="margin-bottom:14px"><div class="card-head"><span class="card-title">📅 ${dayLbl}</span><span class="pill p-cyan">${items.length} video</span></div><div style="padding:6px 16px 10px">` +
+      items.map(({ dt, t }) => calDayRow(dt, t, chName, isPaused)).join('') + `</div></div>`;
+  });
+  daysEl.innerHTML = html;
+}
+
+function calDayRow(dt, t, chName, isPaused) {
+  const yt = (t.blueprint && t.blueprint.yt_id) || t.yt_id || '';
+  const s = calTaskStatus(t, isPaused(yt));
+  const hhmm = String(dt.getHours()).padStart(2, '0') + ':' + String(dt.getMinutes()).padStart(2, '0');
+  return `<div class="task-row"><div class="task-icon">🗓</div><div class="task-info"><div class="task-name">${t.title || 'Task'}</div><div class="task-meta">${hhmm} · ${chName(yt)}</div></div><span class="pill ${s.cls}" style="flex-shrink:0">${s.txt}</span></div>`;
+}
+
+function toggleChannelPause(yt_id, paused) {
+  const c = (calData.channels || []).concat(channels || []).find(x => x.yt_id === yt_id);
+  const name = c ? c.name : yt_id;
+  const msg = paused
+    ? `Jeda channel "${name}"?\nTask terjadwal channel ini tidak dieksekusi/di-upload sampai dilanjutkan lagi.`
+    : `Lanjutkan lagi channel "${name}"?\nTask yang tertahan akan masuk antrean render.`;
+  if (!confirm(msg)) return;
+  fetch('/api/set_channel_paused', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ yt_id, paused }) })
+    .then(r => r.json())
+    .then(d => {
+      toast(d.message, d.status === 'success' ? 'success' : 'error');
+      loadChannels();
+      fetchServerTasks();
+      setTimeout(loadCalendar, 500);
+    })
+    .catch(() => toast('Gagal mengubah status jeda', 'error'));
 }
 
 // ────────────────────────────────────────────────────────
@@ -3748,6 +3917,11 @@ function fetchServerTasks() {
   }).then(data => {
     fetchTaskFailStreak = 0;
     serverData = data; renderTasks();
+    // 🔥 FASE 3: kalau panel Kalender sedang dibuka, segarkan datanya juga.
+    if (document.getElementById('panel-calendar') && document.getElementById('panel-calendar').classList.contains('active')) {
+      calData.active = data.active || []; calData.history = data.history || [];
+      renderCalendar();
+    }
   }).catch(() => {
     fetchTaskFailStreak++;
     if (fetchTaskFailStreak === 3) toast('Koneksi server gagal. Task tetap berjalan.', 'error');

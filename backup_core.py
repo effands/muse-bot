@@ -409,6 +409,13 @@ def create_backup(trigger='manual', media_max_bytes=MEDIA_MAX_BYTES):
         return meta
 
 
+# v1.2.26: retensi MAKSIMAL 3 backup terbaru (minta user 16:48 WIB —
+# hemat disk). Harian + pra-update + manual dihitung BERSAMA, hanya
+# 3 terbaru yang disimpan; sisanya dihapus otomatis saat backup baru
+# dibuat (dan sekali saat startup panel — lihat app.py).
+MAX_BACKUPS = 3
+
+
 def _read_version():
     try:
         with open(os.path.join(BASE_DIR, 'VERSION'), encoding='utf-8') as f:
@@ -428,25 +435,12 @@ def list_backups():
 
 
 def prune_backups():
-    """Retensi: 7 backup harian terakhir + 4 mingguan (1 terbaru per minggu
-    ISO, untuk 4 minggu sebelum 7 hari terakhir). Mengembalikan daftar
-    nama file yang dihapus."""
+    """Retensi v1.2.26: MAKSIMAL 3 backup terbaru secara total — harian,
+    pra-update, dan manual dihitung bersama (3 terbaru disimpan,
+    sisanya dihapus). Mengembalikan daftar nama file yang dihapus."""
     metas = _load_meta()
     metas.sort(key=lambda m: m.get('created_ts', 0), reverse=True)
-    keep = []
-    rest = []
-    for m in metas:
-        if len(keep) < 7:
-            keep.append(m)
-        else:
-            rest.append(m)
-    weeks_kept = set()
-    for m in rest:
-        dt = datetime.datetime.fromtimestamp(m.get('created_ts', 0))
-        wk = (dt.isocalendar().year, dt.isocalendar().week)
-        if wk not in weeks_kept and len(weeks_kept) < 4:
-            weeks_kept.add(wk)
-            keep.append(m)
+    keep = metas[:MAX_BACKUPS]
     keep_names = {m.get('filename') for m in keep}
     deleted = []
     for m in metas:

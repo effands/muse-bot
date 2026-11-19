@@ -1749,6 +1749,15 @@ def _cooldown_project_channels(project_id):
 # project hari ini masih longgar (batas baru 100/hari).
 _heal_stale_quota_cooldowns()
 
+# 🔥 v1.2.26: terapkan retensi baru (maks 3 backup) sekali saat startup —
+# daftar backup langsung terpangkas ke 3 tanpa menunggu backup
+# berikutnya. Gagal prune tidak boleh menggagalkan startup.
+try:
+    import backup_core as _backup_core_startup
+    _backup_core_startup.prune_backups()
+except Exception:
+    pass
+
 
 def _autopilot_of(channel_data):
     """Mode autopilot channel: 'auto' (full-auto, lewati approval) atau
@@ -8137,7 +8146,8 @@ def operator_restart_services():
 # ============================================================
 #  💾 BACKUP OTOMATIS (v1.2.8)
 #  Mesin di backup_core.py (stdlib murni): arsip tar.gz terenkripsi
-#  AES-256-CBC + PBKDF2 via openssl, retensi 7 harian + 4 mingguan,
+#  AES-256-CBC + PBKDF2 via openssl, retensi maks 3 backup terbaru
+#  (v1.2.26; harian + pra-update dihitung bersama),
 #  manifest + hash SHA256 per file, snapshot pengaman saat restore.
 #  Backup TIDAK PERNAH dikirim ke Telegram (berisi refresh token
 #  Google + token Telegram + PIN hash) — Telegram hanya status /

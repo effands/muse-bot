@@ -705,6 +705,30 @@ def send_tg_message(msg, reply_markup=None):
     except Exception:
         pass
 
+
+def send_tg_photo(photo_path, caption='', reply_markup=None):
+    """Kirim foto ke Telegram (dipakai preview approval thumbnail
+    playlist v1.2.24). Aman gagal silent — preview teks tetap dikirim
+    pemanggil. Caption dibatasi 1024 karakter (batas Telegram)."""
+    try:
+        if not photo_path or not os.path.isfile(photo_path):
+            return False
+        bot_config = load_bot_config()
+        token, chat_id = bot_config.get('tg_token'), bot_config.get('tg_chat_id')
+        if not token or not chat_id:
+            return False
+        with open(photo_path, 'rb') as f:
+            files = {'photo': (os.path.basename(photo_path), f, 'image/jpeg')}
+            data = {'chat_id': chat_id,
+                    'caption': _strip_emoji_tg(caption or '')[:1024]}
+            if reply_markup is not None:
+                data['reply_markup'] = json.dumps(_sanitize_tg_markup(reply_markup))
+            requests.post(f"https://api.telegram.org/bot{token}/sendPhoto",
+                          files=files, data=data, timeout=30)
+        return True
+    except Exception:
+        return False
+
 def startup_sanitizer():
     """🔥 BARU: Bersihkan 'sisa-sisa' setelah VPS mati mendadak.
     Dipanggil sekali saat aplikasi mulai, sebelum worker jalan."""
@@ -8047,12 +8071,23 @@ def _send_approval_previews(batch_id, channel_name, previews):
     Setiap pesan membawa tombol ✅ Setujui / ❌ Tolak + tombol Setujui
     Semua di pesan pertama. Kalau token Telegram belum diset / operator
     mati, pengiriman gagal silent — task tetap aman berstatus pending
-    dan terlihat di panel. Thumbnail TIDAK dikirim: blueprint tidak
-    menyimpan file thumbnail, jadi tidak ada gambar yang dikarang."""
+    dan terlihat di panel. 🔥 v1.2.24: paket lengkap sebelum publish —
+    thumbnail baru dikirim sebagai foto dulu (bila ada di preview),
+    lalu teks preview berisi judul SEO + 2 baris pertama deskripsi
+    (yang sudah dibersihkan) + tag kata kunci."""
     total = len(previews)
     for idx, pv in enumerate(previews):
-        desc = (pv.get('description') or '').strip()
-        desc_txt = _tg_escape(desc[:200]) + ("…" if len(desc) > 200 else "") if desc else "_tidak ada deskripsi_"
+        # Thumbnail baru dulu (playlist) — gagal kirim foto tidak
+        # menggagalkan preview teks di bawah.
+        thumb = (pv.get('thumb_path') or '').strip()
+        if thumb and os.path.isfile(thumb):
+            send_tg_photo(thumb, caption=f"Thumbnail baru — {pv.get('title', '?')}")
+        # 2 baris pertama deskripsi (bukan 200 karakter pertama) — baris
+        # 1 deskripsi = judul SEO, baris 2 = awal isi yang dibersihkan.
+        desc_lines = [l.strip() for l in (pv.get('description') or '').splitlines() if l.strip()][:2]
+        desc_joined = ' '.join(desc_lines)
+        desc_txt = _tg_escape(desc_joined[:300]) + ("…" if len(desc_joined) > 300 else "") if desc_joined else "_tidak ada deskripsi_"
+        tags_txt = _tg_escape((pv.get('tags') or '').strip() or '-')
         text = (
             f"📋 *Bos, batch baru nih, dicek dulu ya* 👀 ({idx + 1}/{total})\n"
             f"📺 Channel: *{_tg_escape(channel_name)}*\n"
@@ -8061,7 +8096,8 @@ def _send_approval_previews(batch_id, channel_name, previews):
             # 🔥 FASE 8: preview Shorts membawa duration_label ("30 detik
             # (Shorts)") supaya tidak tampil "0.008333333333333333 jam".
             f"⏱️ Durasi target: `{pv.get('duration_label') or str(pv.get('duration', '-')) + ' jam'}` • 🔒 `{_tg_escape(pv.get('privacy', 'public'))}`\n"
-            f"📝 Deskripsi: {desc_txt}"
+            f"📝 Deskripsi: {desc_txt}\n"
+            f"Tag: {tags_txt}"
         )
         # 🧹 v1.2.13: bila judul/deskripsi dibersihkan dari emoji/simbol,
         # sebutkan sekali di preview (jujur ke Bos) — dan tandai task
@@ -8297,15 +8333,17 @@ def _clean_upload_tags(raw, max_total=400, max_each=30):
         items = list(raw)
     else:
         items = []
-    out, total = [], 0
+    out = []
     for t in items:
         c = _clean_upload_text(t, max_len=max_each).replace('#', '').strip()
         if not c or c in out:
             continue
-        if total + len(c) > max_total:
+        # v1.2.24: total dihitung pada string gabungan AKHIR (', '.join)
+        # supaya hasil gabungan tidak pernah melewati max_total (hitungan
+        # lama +1 per tag bisa lolos ~2 karakter per tag).
+        if len(', '.join(out + [c])) > max_total:
             continue
         out.append(c)
-        total += len(c) + 1
     return out
 
 
@@ -8632,7 +8670,7 @@ def _create_shorts_muse_task(data):
     preview = {"id": t_id, "title": title, "publish_date": v_date_str,
                "duration_label": f"{duration_sec} detik (Shorts Muse)",
                "description": description, "privacy": "private",
-               "title_cleaned": title_cleaned}
+               "title_cleaned": title_cleaned, "tags": tags}
     return {"ok": True, "message": "Shorts Muse dibuat dan menunggu approval di Telegram!",
             "http": 200, "task_id": t_id, "auto_mode": False, "batch_id": batch_id,
             "preview": preview, "channel_name": channel_name, "publish_date": v_date_str,
@@ -9000,31 +9038,401 @@ def _playlist_download_audio(video_id, out_dir):
     return audio_path
 
 
-def _playlist_rewrite_title(ref_title):
-    """Judul baru: inti referensi TANPA nama channel (v1.2.23 — nama
-    channel memakan kuota 100 karakter judul YouTube). Inti diambil
-    dari bagian sebelum pemisah (' | ', ' - ', ' • ', ' — ') bila
-    cukup panjang, lalu dipotong 90 karakter. Bila hasilnya sama
-    persis dengan judul referensi, tambah ' (Playlist)' supaya tetap
-    berbeda dari referensi."""
-    core = (ref_title or '').strip()
+# ============================================================
+# 🔥 v1.2.24: FORMULA SEO judul playlist — kata kunci di DEPAN,
+# lalu tahun, jenis, suasana; target 60-70 karakter, maks 100.
+# Bahasa mengikuti judul referensi (ID default; EN bila kata
+# Inggris dominan — mis. Cozy Sax). Bila kata kunci tidak bisa
+# diekstrak → perilaku lama (inti referensi). Tanpa nama channel
+# (v1.2.23), tanpa emoji (v1.2.13).
+# ============================================================
+_SEO_ID_WORDS = frozenset(
+    'lagu terbaru viral menyentuh hati santai tidur anak keroncong dangdut melayu lawas enak didengar paling merdu koleksi kompilasi penuh album cinta rindu galau kopi hujan pagi malam senam belajar ceria indonesia jawa sunda minang pop koplo untuk dan yang di ke dari dengan tahun bulan minggu'.split())
+_SEO_EN_WORDS = frozenset(
+    'the for songs song music love romantic relax relaxing sleep dinner evening morning night calm peaceful beautiful best top hits collection piano saxophone jazz cafe coffee rain smooth soft gentle deep study work focus meditation chill lofi acoustic guitar violin flute'.split())
+_SEO_SITUATIONS_EN = ('dinner', 'cafe', 'sleep', 'relax', 'working', 'work', 'reading', 'evening', 'morning', 'night', 'study', 'meditation', 'wedding', 'christmas', 'rain')
+_SEO_MOODS_EN = ('relaxing', 'calming', 'soothing', 'peaceful', 'beautiful', 'gentle', 'soft', 'smooth', 'cozy')
+_SEO_STOPWORDS = frozenset('& dan the for di ke dari yang dengan atau and or of in on at to a an'.split())
+_SEO_KIND_WORDS = frozenset(('full', 'album', 'koleksi', 'kompilasi', 'playlist', 'live'))
+
+
+def _seo_words(text):
+    """Kata-kata bersih dari judul (emoji/simbol dibuang) untuk ekstraksi."""
+    s = _clean_upload_text(text or '')
+    s = re.sub(r'[^\w ]', ' ', s, flags=re.UNICODE)
+    return ' '.join(s.split())
+
+
+def _seo_strip_name(text, name):
+    """Hapus nama channel (jejak pemilik asli) dari teks — cocok persis,
+    case-insensitive, spasi fleksibel; juga bentuk tanpa spasi
+    ('AnnasyaAdreena') yang biasa dipakai sebagai handle."""
+    n = (name or '').strip()
+    if not n or not text:
+        return text
+    variants = [n, n.replace(' ', '')]
+    parts = n.split()
+    if len(parts) >= 2:
+        variants.append(''.join(parts[:2]))
+    out = text
+    for v in variants:
+        if not v:
+            continue
+        pat = r'\s*'.join(re.escape(w) for w in v.split()) if ' ' in v else re.escape(v)
+        out = re.sub(pat, ' ', out, flags=re.I)
+    # Rapikan spasi per baris — baris baru DIPERTAHANKAN (pembersih
+    # deskripsi bekerja per baris; meratakannya akan membuat satu baris
+    # promo ikut menghapus seluruh teks).
+    return '\n'.join(' '.join(ln.split()) for ln in out.splitlines())
+
+
+def _seo_detect_lang(clean):
+    """'en' bila kata Inggris dominan, selain itu 'id'."""
+    words = [w.lower() for w in clean.split()]
+    en = sum(1 for w in words if w in _SEO_EN_WORDS)
+    idn = sum(1 for w in words if w in _SEO_ID_WORDS)
+    return 'en' if en > idn else 'id'
+
+
+def _seo_extract_year(clean):
+    m = re.search(r'\b(?:19|20)\d{2}\b', clean)
+    return m.group(0) if m else ''
+
+
+def _seo_extract_kind(clean):
+    low = clean.lower()
+    if 'full album' in low:
+        return '(Full Album)'
+    if 'koleksi' in low:
+        return '(Koleksi)'
+    if 'kompilasi' in low:
+        return '(Kompilasi)'
+    if 'playlist' in low:
+        return '(Playlist)'
+    if re.search(r'\blive\b', low):
+        return '(Live)'
+    return ''
+
+
+def _seo_main_keyword(ref_title, ref_channel=''):
+    """Frasa kata kunci utama: kata-kata sampai tahun (bila ada), bila
+    tidak ada tahun → 4 kata pertama. Dipakai judul, deskripsi, tag."""
+    clean = _seo_words(ref_title)
+    if ref_channel:
+        clean = _seo_strip_name(clean, ref_channel)
+    if not clean:
+        return ''
+    words = clean.split()
+    year = _seo_extract_year(clean)
+    if year:
+        try:
+            idx = words.index(year)
+            if idx <= 8:
+                return ' '.join(words[:idx + 1])
+        except ValueError:
+            pass
+    return ' '.join(words[:4])
+
+
+def _seo_duration_label(sec, lang):
+    """Label durasi singkat dari detik: '1 Jam'/'69 Menit' (id),
+    '1 Hour'/'60 Minutes' (en)."""
+    try:
+        sec = float(sec or 0)
+    except Exception:
+        return ''
+    if sec <= 0:
+        return ''
+    if sec >= 3600:
+        h = sec / 3600.0
+        if abs(h - round(h)) < 0.05:
+            n = int(round(h))
+            if lang == 'id':
+                return f"{n} Jam"
+            return f"{n} Hour" if n == 1 else f"{n} Hours"
+        m = int(round(sec / 60))
+    else:
+        m = int(round(sec / 60))
+    if m <= 0:
+        return ''
+    return f"{m} Menit" if lang == 'id' else f"{m} Minutes"
+
+
+def _seo_title_id(clean, year, kind, duration_sec):
+    """Rumus Indonesia: KATA KUNCI + TAHUN (+ jenis) - ekor suasana."""
+    words = clean.split()
+    if year:
+        try:
+            idx = words.index(year)
+            kw = ' '.join(words[:idx + 1]) if idx <= 8 else ' '.join(words[:4])
+        except ValueError:
+            kw = ' '.join(words[:4])
+    else:
+        kw = ' '.join(words[:4])
+    if len(kw) < 5:
+        return ''
+    base = kw
+    if kind and kind.strip('()').lower() not in base.lower():
+        base = base + ' ' + kind
+    kw_set = set(w.lower() for w in kw.split())
+    tail = []
+    for w in words:
+        lw = w.lower()
+        if lw in kw_set or lw in _SEO_KIND_WORDS or lw in _SEO_STOPWORDS:
+            continue
+        if lw == (year or '').lower():
+            continue
+        if lw in [t.lower() for t in tail]:
+            continue
+        if len(base + ' - ' + ' '.join(tail + [w])) > 72:
+            break
+        tail.append(w)
+    if tail:
+        base = base + ' - ' + ' '.join(tail)
+    if len(base) < 60 and duration_sec:
+        dur = _seo_duration_label(duration_sec, 'id')
+        if dur and len(base + ' - ' + dur) <= 100:
+            base = base + ' - ' + dur
+    return base[:100]
+
+
+def _seo_title_en(clean, year, kind, duration_sec):
+    """Rumus Inggris: ANGKA + Romantic/Love Songs + situasi + durasi."""
+    low = clean.lower()
+    num = ''
+    m = re.match(r'^(\d{1,3})\b', clean)
+    if m:
+        num = m.group(1)
+    instr = ''
+    for cand, label in (('saxophone', 'Saxophone'), ('sax', 'Saxophone'),
+                        ('piano', 'Piano'), ('guitar', 'Guitar'),
+                        ('violin', 'Violin'), ('flute', 'Flute'),
+                        ('cello', 'Cello'), ('trumpet', 'Trumpet')):
+        if re.search(r'\b' + cand + r'\b', low):
+            instr = label
+            break
+    romantic = 'romantic' in low
+    mood = ''
+    if not romantic:
+        for cand in _SEO_MOODS_EN:
+            if re.search(r'\b' + cand + r'\b', low):
+                mood = cand.capitalize()
+                break
+    situation = ''
+    m = re.search(r'\bfor\s+([A-Za-z]+)(?:\s+([A-Za-z]+))?', clean)
+    if m:
+        w1, w2 = m.group(1), m.group(2) or ''
+        two = (w1 + ' ' + w2).lower() if w2 else ''
+        if two in ('deep sleep', 'cozy evening', 'christmas eve'):
+            situation = w1 + ' ' + w2
+        elif w1.lower() in _SEO_SITUATIONS_EN:
+            situation = w1
+    if not situation:
+        for s in _SEO_SITUATIONS_EN:
+            if re.search(r'\b' + s + r'\b', low):
+                situation = s.capitalize()
+                break
+    parts = []
+    if num:
+        parts.append(num)
+    if romantic:
+        parts.append('Romantic')
+    elif mood:
+        parts.append(mood)
+    if instr:
+        parts.append(instr)
+    if 'love' in low or romantic:
+        parts.append('Love Songs')
+    elif instr:
+        parts.append('Songs')
+    if situation:
+        parts.append('for ' + situation)
+    base = ' '.join(parts)
+    if len(base) < 15:
+        return ''
+    if kind and kind.strip('()').lower() not in base.lower():
+        base = base + ' ' + kind
+    if duration_sec:
+        dur = _seo_duration_label(duration_sec, 'en')
+        if dur and len(base + ' - ' + dur) <= 100:
+            base = base + ' - ' + dur
+    return base[:100]
+
+
+def _seo_title_fallback(clean):
+    """Perilaku lama (pra-SEO): inti referensi sebelum pemisah, maks
+    90 karakter."""
+    core = clean
     for sep in (' | ', ' - ', ' • ', ' — '):
         if sep in core:
             head = core.split(sep)[0].strip()
             if len(head) >= 15:
                 core = head
                 break
-    core = core[:90] or 'Musik Pilihan'
-    if ' '.join(core.lower().split()) == ' '.join((ref_title or '').lower().split()):
-        core = (core[:88] or 'Musik Pilihan') + ' (Playlist)'
-    return core
+    return (core[:90] or 'Musik Pilihan')
 
 
-def _playlist_rewrite_description(ref_desc, channel_name, new_title):
+def _seo_ensure_different(new, clean):
+    """Bila judul baru sama persis dengan judul referensi (bersih),
+    tambah ' (Playlist)' supaya tetap berbeda dari referensi."""
+    new = (new or '').strip() or 'Musik Pilihan'
+    if ' '.join(new.lower().split()) == ' '.join(clean.lower().split()):
+        return (new[:88] or 'Musik Pilihan') + ' (Playlist)'
+    return new
+
+
+def _playlist_rewrite_title(ref_title, duration_sec=None, ref_channel=''):
+    """Judul baru — FORMULA SEO v1.2.24: kata kunci di DEPAN, lalu
+    tahun, jenis, suasana; target 60-70 karakter, maks 100; tanpa
+    nama channel (v1.2.23), tanpa emoji (v1.2.13). Bahasa mengikuti
+    judul referensi (ID default; EN bila kata Inggris dominan —
+    mis. Cozy Sax). Bila kata kunci tidak bisa diekstrak → perilaku
+    lama (inti referensi). Selalu berbeda dari judul referensi."""
+    try:
+        clean = _seo_words(ref_title)
+        if ref_channel:
+            clean = _seo_strip_name(clean, ref_channel)
+        if not clean:
+            return 'Musik Pilihan'
+        lang = _seo_detect_lang(clean)
+        year = _seo_extract_year(clean)
+        kind = _seo_extract_kind(clean)
+        if lang == 'en':
+            new = _seo_title_en(clean, year, kind, duration_sec)
+        else:
+            new = _seo_title_id(clean, year, kind, duration_sec)
+        if not new:
+            new = _seo_title_fallback(clean)
+        return _seo_ensure_different(new, clean)[:100]
+    except Exception:
+        try:
+            c2 = _seo_words(ref_title)
+            return _seo_ensure_different(_seo_title_fallback(c2), c2)[:100]
+        except Exception:
+            return 'Musik Pilihan'
+
+
+# Jejak pemilik asli yang harus dibuang dari deskripsi referensi (v1.2.24).
+_URL_RE = re.compile(r'https?://\S+|www\.\S+|youtu\.be/\S+|bit\.ly/\S+|t\.co/\S+', re.I)
+_DOMAIN_RE = re.compile(r'\b(?:[a-z0-9-]+\.)+(?:com|net|org|io|co|id|me|ly|tv|gg|link|site|online|xyz|app|store|page)\b[^\s]*', re.I)
+_EMAIL_RE = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b')
+_HANDLE_RE = re.compile(r'@[A-Za-z0-9_.\-]+')
+_SOCIAL_PROMO_RE = re.compile(
+    r'(?i)\b(instagram|ig|facebook|fb|tiktok|twitter|whatsapp|telegram|youtube|yt)\b.{0,60}\b(follow|kontak|hubungi|subscribe|dm|link|bio|channel|official)\b'
+    r'|\b(follow\s+(me|us)|ikuti\s+kami|subscribe\s+channel)\b')
+_SOCIAL_PLATFORMS_RE = re.compile(r'(?i)\b(instagram|ig|facebook|fb|tiktok|twitter|whatsapp|telegram|youtube|yt)\b')
+_CONTACT_LINE_RE = re.compile(r'(?i)\b(kontak|bisnis|hubungi|telp|telepon|phone|call|email|wa|whatsapp)\b')
+_PHONE_RE = re.compile(r'\+?\d[\d\s().-]{6,}\d')
+_PRESENTER_VERB_RE = re.compile(r'^(menghadirkan|mempersembahkan|menyajikan|presents|presenting)\s+', re.I)
+_DANGLING_RE = re.compile(r'(?i)\b(di|ke|dari|dan|atau|dengan|untuk|pada|on|at|and|or|to|for|in|of)\s*$')
+# v1.2.24-fix: '@' telanjang yang tertinggal setelah handle dibuang
+# (mis. _seo_strip_name menghapus "AnnasyaAdreena" dari "@annasyaadreena"
+# sehingga hanya "@" yang tersisa).
+_BARE_AT_RE = re.compile(r'@(?![A-Za-z0-9_.\-])')
+# Ajakan follow/subscribe + sebutan platform, urutan bebas
+# ("follow IG", "IG kami follow ya", "subscribe channel YouTube",
+# "Kunjungi channel YouTube kami").
+_FOLLOW_PLATFORM_RE = re.compile(
+    r'(?i)\b(follow|ikuti|subscribe|langganan|subrek|kunjungi|cek|klik|tonton|lihat|buka)\b.{0,40}\b(instagram|ig|facebook|fb|tiktok|twitter|whatsapp|telegram|youtube|yt)\b'
+    r'|\b(instagram|ig|facebook|fb|tiktok|twitter|whatsapp|telegram|youtube|yt)\b.{0,40}\b(follow|ikuti|subscribe|langganan|subrek|kunjungi|cek|klik|tonton|lihat|buka)\b')
+# Kata yang tidak dihitung sebagai kata bermakna saat menilai sisa baris:
+# kata gantung + kata promo ("link", "bio").
+_FRAGMENT_STOPWORDS = frozenset({
+    'di', 'ke', 'dari', 'dan', 'atau', 'dengan', 'untuk', 'pada',
+    'juga', 'ini', 'itu', 'kami', 'kita', 'yang', 'adalah',
+    'link', 'bio',
+    'on', 'at', 'and', 'or', 'to', 'for', 'in', 'of', 'the', 'a', 'an'})
+# Kata gantung di akhir baris = kalimat tidak selesai (fragmen).
+_DANGLING_END_WORDS = frozenset({
+    'di', 'ke', 'dari', 'dan', 'atau', 'dengan', 'untuk', 'pada',
+    'on', 'at', 'and', 'or', 'to', 'for', 'in', 'of'})
+# Kata di akhir baris yang menandai fragmen promo/gantung ("cek link di
+# bio", "kunjungi juga"). Sengaja TIDAK termasuk "ini"/"itu"/"kami" —
+# baris utuh seperti "Dengarkan lagu ini" harus tetap dipertahankan.
+_FRAGMENT_END_WORDS = _DANGLING_END_WORDS | {'link', 'bio', 'juga'}
+
+
+def _playlist_clean_owner_traces(text, ref_channel=''):
+    """Bersihkan deskripsi referensi dari JEJAK PEMILIK ASLI (v1.2.24):
+    (a) nama channel referensi, (b) semua URL, (c) handle @username &
+    sebutan channel lain, (d) baris kontak/medsos. Teks normal
+    dipertahankan."""
+    s = text or ''
+    if ref_channel:
+        s = _seo_strip_name(s, ref_channel)
+    s = _URL_RE.sub(' ', s)
+    s = _DOMAIN_RE.sub(' ', s)
+    s = _EMAIL_RE.sub(' ', s)
+    s = _HANDLE_RE.sub(' ', s)
+    kept = []
+    for ln in s.splitlines():
+        t = ' '.join(ln.split())
+        if not t:
+            continue
+        # Bila nama pemilik di awal baris ("X Menghadirkan ..."), kata
+        # kerja penyaji yang tertinggal dibuang juga supaya barisnya
+        # tetap enak dibaca ("Koleksi Lagu ...").
+        t = _PRESENTER_VERB_RE.sub('', t)
+        if not t:
+            continue
+        # Baris promosi medsos/kontak pemilik asli — buang utuh.
+        if _SOCIAL_PROMO_RE.search(t):
+            continue
+        # v1.2.24-fix: nilai ulang baris SETELAH URL/handle/email/nomor
+        # dibuang — sisa fragmen ("... dan follow IG @") membuang SELURUH
+        # baris, bukan menyisakan potongan kalimat.
+        # (a) '@' telanjang (handle sudah dibuang, '@' tertinggal).
+        if _BARE_AT_RE.search(t):
+            continue
+        # (b) Ajakan follow/ikuti/subscribe + sebutan platform.
+        if _FOLLOW_PLATFORM_RE.search(t):
+            continue
+        # Baris kontak (kata kontak + nomor telepon).
+        if _CONTACT_LINE_RE.search(t) and _PHONE_RE.search(t):
+            continue
+        # Sisa baris yang hanya nama platform (handle/URL-nya sudah dibuang).
+        if _SOCIAL_PLATFORMS_RE.search(t) and len(t.split()) <= 3:
+            continue
+        # Baris pendek yang jadi gantung setelah URL dibuang
+        # ("Dengarkan juga di dan").
+        if len(t.split()) <= 5 and _DANGLING_RE.search(t):
+            continue
+        # (c) Sisa baris hanya fragmen: tidak ada kata bermakna, atau
+        # diakhiri kata gantung (kalimat tidak selesai), atau < 3 kata
+        # bermakna dan diakhiri kata gantung/promo. Baris pendek yang
+        # utuh ("Selamat mendengarkan!", "Lagu Melayu",
+        # "Musik untuk relaksasi") tetap dipertahankan — batas "< 3 kata
+        # bermakna" saja tanpa syarat akhiran akan menghapus judul lagu
+        # dan sapaan yang sah.
+        _frag_words = [w.strip('.,!?:;()[]"\'') for w in t.split()]
+        _meaningful = [w for w in _frag_words
+                       if w and w.lower() not in _FRAGMENT_STOPWORDS]
+        if not _meaningful:
+            continue
+        _last = _frag_words[-1].lower() if _frag_words else ''
+        if _last in _DANGLING_END_WORDS:
+            continue
+        if len(_meaningful) < 3 and _last in _FRAGMENT_END_WORDS:
+            continue
+        kept.append(t)
+    return '\n'.join(kept)
+
+
+def _playlist_rewrite_description(ref_desc, channel_name, new_title, ref_channel=''):
     """Deskripsi baru: 2 baris awal referensi (topik) + intro channel +
-    ajakan subscribe. Selalu berbeda dari referensi, < 5000 karakter."""
-    lines = [l.strip() for l in (ref_desc or '').splitlines() if l.strip()]
+    ajakan subscribe. Selalu berbeda dari referensi, < 5000 karakter.
+    v1.2.24: kepala referensi dibersihkan dari jejak pemilik asli
+    (nama channel referensi, URL, handle, kontak/medsos) + 2 baris
+    pertama mengandung kata kunci utama (SEO)."""
+    clean_head = _playlist_clean_owner_traces(ref_desc, ref_channel=ref_channel)
+    lines = [l.strip() for l in clean_head.splitlines() if l.strip()]
     head = ' '.join(lines[:2])[:600]
+    # Kata kunci utama harus ada di 2 baris pertama (baris 1 = judul baru
+    # yang sudah SEO; bila tidak ada — mis. judul fallback — selipkan).
+    kw = _seo_main_keyword(new_title)
+    if kw and kw.lower() not in (new_title + ' ' + head).lower():
+        head = (kw + '. ' + head) if head else kw
+        head = head[:600]
     ch = (channel_name or '').strip() or 'channel ini'
     body = (f"{new_title}\n\n{head}\n\n"
             f"Selamat datang di {ch} — musik pilihan untuk menemani harimu. "
@@ -9034,10 +9442,13 @@ def _playlist_rewrite_description(ref_desc, channel_name, new_title):
     return body[:4500]
 
 
-def _playlist_build_tags(ref_tags, theme):
-    """Tag baru: tag referensi + tema/channel, total maks 400 karakter
-    (sama seperti worker upload)."""
+def _playlist_build_tags(ref_tags, theme, keyword=''):
+    """Tag baru: kata kunci utama dulu (v1.2.24, SEO) + tag referensi +
+    tema/channel, total maks 400 karakter (sama seperti worker upload)."""
     tags = []
+    kw = ' '.join(str(keyword or '').split())
+    if kw and kw.lower() not in [str(t).lower() for t in (ref_tags or [])]:
+        tags.append(kw)
     for t in (ref_tags or []):
         t = str(t).strip().replace('#', '')
         if t and t not in tags:
@@ -9626,7 +10037,8 @@ def _playlist_create_task(data):
     preview = {"id": t_id, "title": title, "publish_date": v_date_str,
                "duration_label": f"{int(audio_dur // 60)} menit (Musik Playlist)",
                "description": blueprint["description"], "privacy": blueprint["privacy"],
-               "title_cleaned": title_cleaned}
+               "title_cleaned": title_cleaned, "tags": _tags,
+               "thumb_path": (data.get('thumb_path') or '').strip()}
     return {"ok": True, "message": "Musik Playlist dibuat dan menunggu approval di Telegram!",
             "http": 200, "task_id": t_id, "auto_mode": False, "batch_id": batch_id,
             "preview": preview, "channel_name": channel_name, "publish_date": v_date_str,
@@ -9688,14 +10100,15 @@ def _playlist_build_thread(job_id):
         # 🧹 v1.2.13: bersihkan judul/deskripsi/tag hasil rewrite —
         # judul referensi YouTube sering mengandung emoji/simbol yang
         # ditolak saat upload. Thumbnail memakai judul yang sudah bersih.
-        _raw_title = _playlist_rewrite_title(job.get('ref_title', ''))
+        _kw = _seo_main_keyword(job.get('ref_title', ''), ref_channel=job.get('ref_channel', ''))
+        _raw_title = _playlist_rewrite_title(job.get('ref_title', ''), duration_sec=audio_dur, ref_channel=job.get('ref_channel', ''))
         _date_s = _wib_now().strftime('%Y-%m-%d')
         new_title = _clean_upload_text(_raw_title, max_len=100,
                                        fallback=f"Playlist {_date_s}",
                                        strip_channel=ch_name)
-        _raw_desc = _playlist_rewrite_description(job.get('ref_description', ''), ch_name, new_title)
+        _raw_desc = _playlist_rewrite_description(job.get('ref_description', ''), ch_name, new_title, ref_channel=job.get('ref_channel', ''))
         new_desc = _clean_upload_text(_raw_desc, max_len=5000, fallback=new_title)
-        _raw_tags = _playlist_build_tags(job.get('ref_tags') or [], job.get('theme', ''))
+        _raw_tags = _playlist_build_tags(job.get('ref_tags') or [], job.get('theme', ''), keyword=_kw)
         new_tags = ', '.join(_clean_upload_tags(_raw_tags)) or 'musik, playlist'
         _title_cleaned = (new_title != _raw_title or new_desc != _raw_desc
                           or new_tags != _raw_tags)
@@ -9865,6 +10278,7 @@ def _playlist_do_create(job_id, video_id, publish_date='', privacy='public',
                          ref_description=cand.get('description', ''),
                          ref_tags=cand.get('tags') or [],
                          ref_thumbnail_url=cand.get('thumbnail_url', ''),
+                         ref_channel=cand.get('channel', ''),
                          publish_date=pub, privacy=privacy,
                          playlist_id=(playlist_id or '').strip(),
                          pixabay_theme=(pixabay_theme or '').strip()[:100],
@@ -10247,6 +10661,7 @@ def _create_long_batch(data, max_count=BATCH_MAX_COUNT):
             "description": blueprint.get('description', ''),
             "privacy": blueprint.get('privacy', 'public'),
             "title_cleaned": _title_cleaned,
+            "tags": blueprint.get('tags', ''),
         })
 
     save_tasks_db()

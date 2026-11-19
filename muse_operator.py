@@ -3163,138 +3163,141 @@ def get_system_telemetry():
     }
 
 def generate_seo_titles(niche, count=10):
+    """Judul SEO /judul — v1.2.24: kata kunci niche PALING DEPAN,
+    tanpa emoji, maks ~100 karakter (rumus yang sama dengan judul
+    playlist otomatis)."""
     niche_lower = niche.lower()
     templates = []
-    
+
     if "tidur" in niche_lower or "sleep" in niche_lower or "insomnia" in niche_lower or "night" in niche_lower:
         templates = [
-            "Fall Asleep in 3 Minutes 😴 Deep Sleep Music, Relaxing Piano & Soft Rain for Insomnia",
-            "Delta Waves Sleep Music: Stop Overthinking, Calming Sounds for Deep Relaxation",
-            "Bedtime Piano Melodies to Relieve Anxiety, Stress & Mental Exhaustion (Deep Sleep)",
-            "Deep Sleep Music 24/7 • Cozy Bedroom Ambience with Gentle Rain Sounds",
-            "Instant Relief from Insomnia: 60 Minutes Relaxing Piano for Peaceful Night",
-            "Deepest Sleep Ever • 432Hz Miracle Tone & Healing Night Ambience",
-            "Calm Your Mind and Fall Asleep Fast • Peaceful Piano & Cozy Rain Sounds",
-            "No More Sleepless Nights: Calming Piano Music for Instant Sleep & Recovery",
-            "Deep Relaxation & Stress Relief: Soothing Night Lullaby for Restless Minds",
-            "Fall Asleep Fast with Soothing Piano & Distant Thunder Ambience",
-            "Peaceful Sleep in Minutes • Deep Delta Wave Healing Frequencies 528Hz",
-            "Cozy Night Rain in Cabin • Relaxing Instrumental Melodies for Sweet Dreams",
-            "Release Stress & Anxiety Instantly • Gentle Piano Melodies for Overthinkers",
-            "Sleep Like a Baby • Soothing Piano & Soft White Noise for Deep Rest",
-            "Midnight Rest: 80 Minutes of Pure Calming Soundscapes for Insomnia Relief"
+            "Deep Sleep Music: Fall Asleep in 3 Minutes with Relaxing Piano & Soft Rain",
+            "Deep Sleep Music for Insomnia: Delta Waves to Stop Overthinking & Calm Your Mind",
+            "Sleep Music for Deep Sleep: Bedtime Piano Melodies to Relieve Anxiety & Stress",
+            "Deep Sleep Music 24/7: Cozy Bedroom Ambience with Gentle Rain Sounds",
+            "Sleep Music for Insomnia: 60 Minutes Relaxing Piano for a Peaceful Night",
+            "Deep Sleep Music 432Hz: Miracle Tone & Healing Night Ambience",
+            "Sleep Music to Fall Asleep Fast: Peaceful Piano & Cozy Rain Sounds",
+            "Deep Sleep Music for Anxiety: Calming Piano for Instant Sleep & Recovery",
+            "Sleep Music for Stress Relief: Soothing Night Lullaby for Restless Minds",
+            "Deep Sleep Music with Rain: Fall Asleep Fast with Soothing Piano & Thunder",
+            "Sleep Music 528Hz: Peaceful Deep Delta Wave Healing Frequencies",
+            "Sleep Music: Cozy Night Rain in a Cabin with Relaxing Instrumental Melodies",
+            "Deep Sleep Music for Overthinkers: Gentle Piano Melodies to Release Stress",
+            "Sleep Music for Babies: Soothing Piano & Soft White Noise for Deep Rest",
+            "Sleep Music: Midnight Rest with 80 Minutes of Pure Calming Soundscapes"
         ]
     elif "anak" in niche_lower or "kids" in niche_lower or "balita" in niche_lower:
         templates = [
-            "Lagu Anak Ceria 🎵 Belajar Berhitung 1-10 Sambil Bernyanyi (Edukatif & Menyenangkan)",
-            "Ayo Bernyanyi Bersama! Lagu Anak-Anak Ceria untuk Balita & PAUD",
-            "Belajar Huruf A-Z Sambil Bernyanyi 🎵 Lagu Anak Edukatif untuk Usia Dini",
-            "Lagu Anak: Warna-Warni Pelangi 🌈 Belajar Warna Sambil Bernyanyi",
-            "Gerak dan Lagu Anak Ceria 🕺 Senam Pagi Seru untuk Anak-Anak",
-            "Lagu Tidur Anak 🌙 Lullaby Lembut untuk Anak Tidur Nyenyak",
-            "Belajar Nama Hewan Sambil Bernyanyi 🐶 Lagu Anak Edukatif yang Seru",
-            "Lagu Anak Indonesia 🎵 Kompilasi Lagu Ceria untuk Anak Usia Dini",
-            "Ayo Belajar Berhitung! Lagu Angka 1-20 untuk Anak PAUD & TK",
-            "Lagu Anak: Hari-Hari Ceria ☀️ Lagu Semangat Pagi untuk Anak-Anak",
-            "Belajar Bentuk & Warna 🎨 Lagu Anak Edukatif yang Mudah Diingat",
-            "Lagu Anak Ceria: Sahabatku 🧒 Lagu Persahabatan untuk Anak-Anak",
+            "Lagu Anak Ceria: Belajar Berhitung 1-10 Sambil Bernyanyi (Edukatif & Menyenangkan)",
+            "Lagu Anak-Anak Ceria: Ayo Bernyanyi Bersama untuk Balita & PAUD",
+            "Lagu Anak Edukatif: Belajar Huruf A-Z Sambil Bernyanyi untuk Usia Dini",
+            "Lagu Anak: Warna-Warni Pelangi, Belajar Warna Sambil Bernyanyi",
+            "Lagu Anak Ceria: Gerak dan Lagu Senam Pagi Seru untuk Anak-Anak",
+            "Lagu Anak Tidur: Lullaby Lembut untuk Anak Tidur Nyenyak",
+            "Lagu Anak Edukatif: Belajar Nama Hewan Sambil Bernyanyi yang Seru",
+            "Lagu Anak Indonesia: Kompilasi Lagu Ceria untuk Anak Usia Dini",
+            "Lagu Anak: Ayo Belajar Berhitung Angka 1-20 untuk Anak PAUD & TK",
+            "Lagu Anak Ceria: Hari-Hari Ceria, Lagu Semangat Pagi untuk Anak-Anak",
+            "Lagu Anak Edukatif: Belajar Bentuk & Warna yang Mudah Diingat",
+            "Lagu Anak Ceria: Sahabatku, Lagu Persahabatan untuk Anak-Anak",
         ]
     elif "asmr" in niche_lower:
         templates = [
-            "ASMR for Deep Sleep 😴 Gentle Whispers & Soft Tapping to Fall Asleep Fast",
-            "Relaxing ASMR Whispers • Soft Sounds for Sleep, Stress Relief & Calm Nights",
+            "ASMR for Deep Sleep: Gentle Whispers & Soft Tapping to Fall Asleep Fast",
+            "ASMR Whispers for Sleep: Relaxing Soft Sounds for Stress Relief & Calm Nights",
             "ASMR Tapping & Brushing Sounds for Instant Relaxation (No Talking)",
-            "Fall Asleep in Minutes • Soothing ASMR Whispers for Insomnia Relief",
-            "Cozy ASMR Night • Gentle Tapping, Soft Whispers & Rain for Deep Sleep",
-            "ASMR for Anxiety Relief • Calming Whispers to Quiet Your Mind",
-            "Soft Spoken ASMR • Gentle Whispers to Help You Sleep Peacefully",
-            "ASMR Ear-to-Ear Whispers • Deep Relaxation & Sleep Sounds (Headphones On)",
-            "Tingly ASMR Sounds • Brushing, Tapping & Whispering for Deep Sleep",
-            "ASMR Sleep Aid • Whispered Affirmations & Calm Sounds for Insomnia",
-            "Relaxing ASMR for Study & Focus • Soft Tapping Without Distraction",
-            "ASMR Rain & Whispers • The Perfect Soundscape for a Good Night's Sleep",
+            "ASMR for Insomnia: Fall Asleep in Minutes with Soothing Whispers",
+            "ASMR for Deep Sleep: Cozy Night with Gentle Tapping, Whispers & Rain",
+            "ASMR for Anxiety Relief: Calming Whispers to Quiet Your Mind",
+            "ASMR Soft Spoken: Gentle Whispers to Help You Sleep Peacefully",
+            "ASMR Ear-to-Ear Whispers: Deep Relaxation & Sleep Sounds (Headphones On)",
+            "ASMR Tingly Sounds: Brushing, Tapping & Whispering for Deep Sleep",
+            "ASMR Sleep Aid: Whispered Affirmations & Calm Sounds for Insomnia",
+            "ASMR for Study & Focus: Soft Tapping Without Distraction",
+            "ASMR Rain & Whispers: The Perfect Soundscape for a Good Night's Sleep",
         ]
     elif "piano" in niche_lower:
         templates = [
-            "Relaxing Piano Music for Deep Sleep 😴 Beautiful Melodies to Calm Your Mind Instantly",
-            "Peaceful Piano & Soft Rain: Fall Asleep Fast with Gentle Night Melodies",
-            "Calming Piano for Anxiety Relief • Soothing Instrumental for Stress-Free Nights",
-            "Beautiful Piano Melodies for Sleep, Meditation & Deep Relaxation (60 Mins)",
-            "Midnight Piano: Gentle Keys to Release Stress and Drift into Sweet Dreams",
-            "Piano Lullaby for Insomnia • Soft, Slow Melodies for Peaceful Rest",
-            "Healing Piano Tones 432Hz • Deep Relaxation Music for Mind and Body",
-            "Cozy Evening Piano • Warm Melodies for Reading, Resting & Unwinding",
-            "Emotional Piano Collection: Tender Melodies for Quiet Nights Alone",
-            "Sleep Piano Radio 🎹 Continuous Calming Melodies All Night Long"
+            "Piano Music for Deep Sleep: Relaxing Melodies to Calm Your Mind Instantly",
+            "Piano Music for Sleep: Peaceful Piano & Soft Rain to Fall Asleep Fast",
+            "Piano Music for Anxiety Relief: Soothing Instrumental for Stress-Free Nights",
+            "Piano Music for Sleep & Meditation: Beautiful Melodies for Deep Relaxation (60 Mins)",
+            "Piano Music at Midnight: Gentle Keys to Release Stress and Drift into Sweet Dreams",
+            "Piano Lullaby for Insomnia: Soft, Slow Melodies for Peaceful Rest",
+            "Piano Music 432Hz: Healing Tones for Deep Relaxation of Mind and Body",
+            "Piano Music for a Cozy Evening: Warm Melodies for Reading, Resting & Unwinding",
+            "Piano Music Collection: Emotional Melodies for Quiet Nights Alone",
+            "Sleep Piano Music: Continuous Calming Melodies All Night Long"
         ]
     elif "hujan" in niche_lower or "rain" in niche_lower:
         templates = [
-            "Rain Sounds for Sleeping 😴 Gentle Rain on Roof & Distant Thunder for Deep Sleep",
-            "Cozy Rainy Night Ambience • Rain on Window for Instant Relaxation & Sleep",
-            "Heavy Rain & Thunderstorm Sounds for Deep Sleep (No Ads, All Night)",
-            "Rain in a Cabin in the Woods • Peaceful Night Ambience for Insomnia Relief",
-            "Soft Rain & Piano: The Perfect Combination to Fall Asleep in Minutes",
-            "Rain Sounds for Focus & Study • Calm Rainy Day Ambience for Deep Work",
-            "Midnight Rainstorm • Soothing Rain Sounds to Block Noise & Sleep Better",
-            "Gentle Rain on Leaves • Nature Sounds for Meditation & Stress Relief",
-            "Rainy Day in Tokyo • Cozy Rain Ambience with Soft City Sounds",
-            "Fall Asleep to Rain • 8 Hours of Pure Relaxing Rain Sounds"
+            "Rain Sounds for Sleeping: Gentle Rain on Roof & Distant Thunder for Deep Sleep",
+            "Rain Sounds for Relaxation: Cozy Rainy Night Ambience on Window",
+            "Rain Sounds for Deep Sleep: Heavy Rain & Thunderstorm (No Ads, All Night)",
+            "Rain Sounds in a Cabin: Peaceful Night Ambience in the Woods for Insomnia",
+            "Rain Sounds & Piano: The Perfect Combination to Fall Asleep in Minutes",
+            "Rain Sounds for Focus & Study: Calm Rainy Day Ambience for Deep Work",
+            "Rain Sounds at Midnight: Soothing Rainstorm to Block Noise & Sleep Better",
+            "Rain Sounds on Leaves: Gentle Nature Sounds for Meditation & Stress Relief",
+            "Rain Sounds in Tokyo: Cozy Rain Ambience with Soft City Sounds",
+            "Rain Sounds for Sleep: 8 Hours of Pure Relaxing Rain"
         ]
     elif "meditasi" in niche_lower or "meditation" in niche_lower:
         templates = [
-            "Guided Meditation Music 🧘 Deep Relaxation & Inner Peace (60 Mins)",
-            "Morning Meditation: Calm Your Mind, Breathe Slowly & Start Fresh",
-            "Healing Meditation Music 432Hz • Release Anxiety & Find Stillness",
-            "Zen Garden Ambience • Peaceful Meditation Sounds for Mindfulness",
-            "Deep Breathing Meditation Music • Slow Tones for Stress Relief",
-            "Chakra Healing Meditation • Soothing Sounds for Balance & Energy",
-            "Sleep Meditation: Drift into Deep Rest with Gentle Ambient Tones",
-            "Mindfulness Meditation Music for Focus, Calm & Emotional Healing",
-            "Sunrise Meditation • Soft Ambient Music for a Peaceful Morning",
-            "Let Go of Stress: Guided Relaxation Music for Body & Mind"
+            "Meditation Music for Deep Relaxation: Guided Meditation & Inner Peace (60 Mins)",
+            "Meditation Music for the Morning: Calm Your Mind, Breathe Slowly & Start Fresh",
+            "Meditation Music 432Hz: Healing Sounds to Release Anxiety & Find Stillness",
+            "Meditation Music: Zen Garden Ambience for Peaceful Mindfulness",
+            "Meditation Music for Breathing: Deep Breathing & Slow Tones for Stress Relief",
+            "Meditation Music for Chakra Healing: Soothing Sounds for Balance & Energy",
+            "Meditation Music for Sleep: Drift into Deep Rest with Gentle Ambient Tones",
+            "Meditation Music for Focus: Mindfulness Sounds for Calm & Emotional Healing",
+            "Meditation Music at Sunrise: Soft Ambient Music for a Peaceful Morning",
+            "Meditation Music for Stress Relief: Guided Relaxation for Body & Mind"
         ]
     elif "fokus" in niche_lower or "focus" in niche_lower:
         templates = [
-            "Deep Focus Music 🎯 Concentration Sounds for Studying, Working & Reading",
-            "Focus Flow State • Steady Rhythms to Keep Your Brain in the Zone (60 Mins)",
-            "Deep Work Music for Maximum Productivity • No Distractions, Pure Focus",
-            "Study Music for Concentration • Calm Instrumental for Exams & Deadlines",
-            "Pomodoro Focus Session • 25 Minutes of Pure Concentration Music",
-            "Brain Food: Focus Music Backed by Science for Deep Thinking",
-            "Concentration Boost • Ambient Focus Sounds for Coding & Writing",
-            "Flow State Music: Enter Deep Focus in 5 Minutes (Study & Work)",
-            "Morning Focus Ritual • Energizing Yet Calm Music for a Productive Day",
-            "Silent Mind, Sharp Focus • Minimal Ambient Music for Deep Work"
+            "Focus Music for Deep Focus: Concentration Sounds for Studying, Working & Reading",
+            "Focus Music for Flow State: Steady Rhythms to Keep Your Brain in the Zone (60 Mins)",
+            "Focus Music for Deep Work: Maximum Productivity with No Distractions",
+            "Focus Music for Study: Calm Instrumental for Concentration, Exams & Deadlines",
+            "Focus Music for Pomodoro: 25 Minutes of Pure Concentration",
+            "Focus Music for Deep Thinking: Brain Food Backed by Science",
+            "Focus Music for Coding & Writing: Ambient Sounds for a Concentration Boost",
+            "Focus Music for Flow State: Enter Deep Focus in 5 Minutes (Study & Work)",
+            "Focus Music for the Morning: Energizing Yet Calm Music for a Productive Day",
+            "Focus Music for Deep Work: Silent Mind, Sharp Focus with Minimal Ambient Music"
         ]
     elif "lofi" in niche_lower or "study" in niche_lower or "chill" in niche_lower:
         templates = [
-            "Lofi Hip Hop Radio ☕ Beats to Relax/Study to [Cozy Rain Ambience]",
-            "Late Night Study Session • Chill Lofi Beats for Focus & Concentration",
-            "Cozy Bedroom Lofi Beats • Smooth Instrumental for Reading & Working",
-            "Peaceful Morning Lofi ☀️ Beats to Start Your Productive Day with Joy",
-            "Alone in Tokyo Rain • Nostalgic Lofi Chill Beats for Overthinkers",
-            "Deep Work Flow • Instrumental Lofi Beats to Maximize Productivity",
-            "Coffee Shop Ambience & Chill Lofi Beats for Rainy Afternoons",
-            "Sunday Evening Relax • Soft Lofi Beats for Stress Relief & Unwinding",
-            "Midnight Coding & Deep Focus • Minimal Chillhop Beats 2026",
-            "Warm Autumn Lofi • Relaxing Beats to Study, Chill, and Sleep to"
+            "Lofi Hip Hop Radio: Beats to Relax & Study to with Cozy Rain Ambience",
+            "Lofi Beats for Study: Late Night Session with Chill Beats for Focus",
+            "Lofi Beats for Reading: Cozy Bedroom Beats with Smooth Instrumental",
+            "Lofi Beats for the Morning: Peaceful Beats to Start Your Productive Day",
+            "Lofi Chill Beats: Alone in Tokyo Rain, Nostalgic Beats for Overthinkers",
+            "Lofi Beats for Deep Work: Instrumental Beats to Maximize Productivity",
+            "Lofi Beats & Coffee Shop Ambience: Chill Beats for Rainy Afternoons",
+            "Lofi Beats for Sunday Evening: Soft Beats for Stress Relief & Unwinding",
+            "Lofi Beats for Coding: Midnight Coding & Deep Focus with Minimal Chillhop (2026)",
+            "Lofi Beats for Autumn: Warm Relaxing Beats to Study, Chill, and Sleep to"
         ]
     else:
         templates = [
-            f"Relaxing {niche.title()} Music • Soothing Melodies for Stress Relief & Peace",
-            f"Deep Focus & Calm • Beautiful {niche.title()} Instrumental Collection",
-            f"Peaceful Mind: Calming {niche.title()} Sounds for Instant Relaxation",
-            f"Healing & Recharging: {niche.title()} Ambience for Restful Days",
-            f"Serenity Now • Gentle {niche.title()} Melodies to Refresh Your Soul",
-            f"Morning Harmony • Uplifting {niche.title()} Music for Positive Energy",
-            f"End of Day Reflection • Soft {niche.title()} Instrumental for Relaxing",
-            f"Quiet Moments: {niche.title()} Soundscapes to Melt Stress Away",
-            f"Deep Relaxation 2026 • Peaceful {niche.title()} Compilation",
-            f"Comfort & Calm • Pure Acoustic {niche.title()} for Study and Work"
+            f"{niche.title()} Music: Relaxing Melodies for Stress Relief & Peace",
+            f"{niche.title()} Instrumental: Deep Focus & Calm Collection",
+            f"{niche.title()} Sounds: Peaceful & Calming for Instant Relaxation",
+            f"{niche.title()} Ambience: Healing & Recharging for Restful Days",
+            f"{niche.title()} Melodies: Serenity Now, Gentle Sounds to Refresh Your Soul",
+            f"{niche.title()} Music for the Morning: Uplifting Harmony for Positive Energy",
+            f"{niche.title()} Instrumental: End of Day Reflection with Soft Relaxing Sounds",
+            f"{niche.title()} Soundscapes: Quiet Moments to Melt Stress Away",
+            f"{niche.title()} Compilation 2026: Deep Relaxation & Peaceful Music",
+            f"{niche.title()} for Study & Work: Comfort & Calm Acoustic Sounds"
         ]
-        
+
     while len(templates) < count:
-        templates.append(f"Ultimate {niche.title()} Relaxation Vol. {len(templates)+1} (60 Mins)")
+        templates.append(f"{niche.title()} Relaxation Vol. {len(templates)+1} (60 Mins)")
     return templates[:count]
 
 # ==========================================

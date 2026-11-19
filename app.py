@@ -345,7 +345,7 @@ _OPERATOR_ENDPOINTS = {'operator_retry_task', 'operator_approve_task',
                       'operator_pixabay_key_add', 'operator_pixabay_key_list',
                       'operator_pixabay_key_del', 'operator_backup_create',
                       'operator_backup_status', 'operator_playlist_research',
-                      'operator_playlist_create', 'operator_playlist_from_url', 'operator_update_panel',
+                      'operator_playlist_create', 'operator_playlist_from_url', 'operator_update_panel', 'operator_publish_now',
                       'operator_restart_services', 'operator_set_channel_auto_shorts',
                       'operator_set_channel_publish_time', 'operator_kie_key_add',
                       'operator_kie_key_list', 'operator_kie_key_del',
@@ -12403,6 +12403,32 @@ def _playlist_do_research(yt_id, theme, min_duration_sec=None, max_duration_sec=
                                  else "Riset memakai ~101 unit kuota per tier yang dicoba (tier berikutnya hanya bila tier sebelumnya kosong).")}, 200
 
 
+def _playlist_find_duplicate(jobs, job_id, yt_id, video_id, now_wib, window_min=120):
+    """Cari job LAIN untuk channel + referensi yang sama dalam `window_min`
+    menit terakhir. Mencegah order dobel (pernah: jembatan + konfirmasi bot
+    membuat 2 batch Malaysia yang sama). Kembalikan job dict yang cocok,
+    atau None. Job yang sudah gagal / tanpa task & tidak live tidak dihitung."""
+    if not yt_id or not video_id:
+        return None
+    for j in jobs or []:
+        if j.get('job_id') == job_id:
+            continue
+        if j.get('yt_id') != yt_id:
+            continue
+        if j.get('video_id') != video_id:
+            continue
+        if j.get('task_id') is None and j.get('status') not in ('downloading', 'preparing', 'queued'):
+            continue
+        ts_raw = j.get('updated_at') or j.get('created_at') or ''
+        try:
+            ts = datetime.strptime(str(ts_raw)[:16], '%Y-%m-%d %H:%M').replace(tzinfo=ZoneInfo('Asia/Jakarta'))
+        except Exception:
+            continue
+        if (now_wib - ts).total_seconds() <= window_min * 60:
+            return j
+    return None
+
+
 def _playlist_do_create(job_id, video_id, publish_date='', privacy='public',
                         pixabay_theme='', playlist_id=''):
     """Pilih kandidat → bangun playlist di thread latar. Kembalikan
@@ -12418,6 +12444,13 @@ def _playlist_do_create(job_id, video_id, publish_date='', privacy='public',
         return False, "Kandidat tidak ditemukan — riset ulang.", 404
     if job.get('status') in ('downloading', 'preparing', 'queued'):
         return False, "Job ini sedang berjalan.", 409
+    # 🔥 v1.3.6: cegah order dobel — referensi yang sama untuk channel yang
+    # sama dalam 2 jam terakhir (pernah dibuat 2x: jembatan + konfirmasi bot).
+    _dup = _playlist_find_duplicate(_playlist_jobs_load().get('jobs', []),
+                                    job_id, job.get('yt_id'), video_id, _wib_now())
+    if _dup:
+        return False, ("Playlist referensi ini sudah dibuat untuk channel ini "
+                       "dalam 2 jam terakhir — tidak dibuat dobel."), 409
     pub = (publish_date or '').strip()
     if pub:
         try:
@@ -12682,6 +12715,69 @@ def operator_playlist_create():
         data.get('publish_date') or '', data.get('privacy') or 'public',
         (data.get('pixabay_theme') or '').strip())
     return jsonify({"status": "success" if ok else "error", "message": message}), http
+
+
+@app.route('/api/operator/publish_now', methods=['POST'])
+def operator_publish_now():
+    """🔥 v1.3.6: ubah task yang masih dijadwalkan (publish_date di masa depan)
+    jadi tayang langsung (publish_date = sekarang). Auth HMAC operator_key.
+    Body: {key, yt_ids? (list, kosong = semua channel)}.
+    Task approval-pending & channel dijeda dilewati (tidak diubah).
+    Upload yang rendernya sudah selesai langsung publik (tanpa publishAt);
+    yang masih render tetap render dulu, lalu langsung tayang."""
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    yt_filter = set(data.get('yt_ids') or [])
+    now_wib = _wib_now()
+    now_s = now_wib.strftime('%Y-%m-%d %H:%M')
+    updated = []
+    skipped_approval = 0
+    skipped_paused = 0
+    with db_lock:
+        for t in active_tasks:
+            yt = _active_task_yt_id(t)
+            if yt_filter and yt not in yt_filter:
+                continue
+            if _approval_of(t) == 'pending':
+                skipped_approval += 1
+                continue
+            if _channel_paused(yt):
+                skipped_paused += 1
+                continue
+            pub_raw = t.get('time') or (t.get('blueprint') or {}).get('publish_date') or ''
+            try:
+                pub_dt = datetime.strptime(str(pub_raw)[:16], '%Y-%m-%d %H:%M').replace(tzinfo=ZoneInfo('Asia/Jakarta'))
+            except Exception:
+                continue
+            if pub_dt <= now_wib:
+                continue
+            t['time'] = now_s
+            bp = t.get('blueprint') or {}
+            bp['publish_date'] = now_s
+            t['blueprint'] = bp
+            updated.append({'task_id': t.get('id'), 'yt_id': yt})
+        if updated:
+            save_tasks_db()
+    if updated:
+        _ids = {u['task_id'] for u in updated}
+        try:
+            _jd = _playlist_jobs_load()
+            _changed = False
+            for _j in _jd.get('jobs', []):
+                if _j.get('task_id') in _ids and _j.get('publish_date') != now_s:
+                    _j['publish_date'] = now_s
+                    _changed = True
+            if _changed:
+                _playlist_jobs_save(_jd)
+        except Exception:
+            pass
+    return jsonify({"status": "success",
+                    "message": ("Tayang langsung: %d video diubah." % len(updated)) if updated else "Tidak ada video yang masih dijadwalkan.",
+                    "updated": updated,
+                    "skipped_approval": skipped_approval,
+                    "skipped_paused": skipped_paused}), 200
 
 
 @app.route('/api/playlist_jobs')

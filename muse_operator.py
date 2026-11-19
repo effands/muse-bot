@@ -80,14 +80,19 @@ def load_channels():
 def load_tasks():
     if not os.path.exists(TASKS_FILE):
         return {"active": [], "history": []}
-    try:
-        with open(TASKS_FILE, 'r') as f:
-            data = json.load(f)
-            if isinstance(data, list):
-                return {"active": data, "history": []}
-            return data
-    except Exception:
-        return {"active": [], "history": []}
+    # 🔥 v1.3.6: baca gagal (file sedang ditulis / JSON rusak sesaat) JANGAN
+    # langsung dianggap kosong — coba lagi 3x. Pernah: /jadwal jawab 0 task
+    # padahal 8 task aktif ada di file.
+    for _attempt in range(3):
+        try:
+            with open(TASKS_FILE, 'r') as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return {"active": data, "history": []}
+                return data
+        except Exception:
+            time.sleep(0.2)
+    return {"active": [], "history": []}
 
 # ==========================================
 # 🔥 FASE 1 MONITORING — STATE DEDUPE & HELPER DATA
@@ -6750,13 +6755,29 @@ def _match_new_command(clean):
     return None
 
 
+def _is_publish_now_order(clean):
+    """True bila pesan memerintahkan video yang SUDAH dijadwalkan tayang
+    langsung (bukan order baru). 'tidak usah dijadwalkan' = negasi jadwal,
+    bukan perintah LIHAT jadwal — itu yang salah dibaca v1.3.5."""
+    if 'tayang sekarang' in clean or 'langsung tayang' in clean:
+        return True
+    if 'publish' in clean and ('langsung' in clean or 'sekarang' in clean or 'saja' in clean):
+        return True
+    if 'jadwal' in clean and any(p in clean for p in
+                                 ('tidak usah', 'tidak perlu', 'nggak usah',
+                                  'gak usah', 'jangan')):
+        return True
+    return False
+
+
 def parse_natural_command(text, channels):
     """Terjemahkan pesan bebas → {intent, confidence 0-100, slots}.
     Intent: buat_short, buat_long, buat_playlist, buat_zumo, buat_zumobank, buat_zumorakit, status, laporan, kuota, stok, statistik,
     monetisasi, jadwal, gagal, channel_list, bantuan, jeda_channel,
     lanjutkan_channel, perpanjang_jadwal, ubah_mode, hapus,
     hentikan_antrean, tidak_dikenali, jadwal_bulan, laporan_detail,
-    atur_jadwal (🔥 v1.2.20 — perintah baru Bagian B + sinonim/typo)."""
+    atur_jadwal (🔥 v1.2.20 — perintah baru Bagian B + sinonim/typo),
+    publish_now (🔥 v1.3.6 — tayangkan langsung video yang sudah dijadwalkan)."""
     clean = _nlu_clean(text)
     slots = {}
     conf = 0
@@ -6918,6 +6939,12 @@ def parse_natural_command(text, channels):
         intent, conf = _new_cmd[0], _new_cmd[1]
         if _new_cmd[2]:
             slots['fuzzy_match'] = True
+    # --- 🔥 v1.3.6: publish langsung — video yang SUDAH dijadwalkan tayang
+    # sekarang (bukan order baru). Dicek SEBELUM 'jadwal' supaya
+    # "tidak usah dijadwalkan" tidak dibaca sebagai perintah LIHAT jadwal.
+    elif _is_publish_now_order(clean):
+        intent = 'publish_now'
+        conf = 75
     # --- Baca saja. ---
     elif 'status' in clean:
         intent = 'status'
@@ -7299,6 +7326,8 @@ def _nlu_describe(pending):
         return "tampilkan daftar channel"
     if intent == 'jadwal':
         return "tampilkan jadwal 7 hari"
+    if intent == 'publish_now':
+        return "publish langsung video yang masih dijadwalkan" + (f" untuk {ch}" if ch else "")
     if intent == 'laporan':
         return "tampilkan laporan harian"
     return intent or 'sesuatu'
@@ -7705,6 +7734,42 @@ def _execute_nlu_create_long(token, chat_id, pending):
                                resp)
 
 
+def _execute_nlu_publish_now(token, chat_id, pending):
+    """Publish langsung (v1.3.6): ubah task yang masih dijadwalkan jadi
+    tayang sekarang, lewat endpoint operator panel (tanpa edit file
+    langsung — panel yang pegang state in-memory)."""
+    slots = pending.get('slots') or {}
+    chans = slots.get('channels')
+    if chans == 'all' or not chans:
+        yt_ids = [c.get('yt_id') for c in load_channels() if c.get('yt_id')]
+    else:
+        yt_ids = [y for y in chans if y]
+    ok, msg, data = _operator_post('/api/operator/publish_now', {'yt_ids': yt_ids})
+    if not ok:
+        send_message(token, chat_id,
+                     "Gagal publish langsung Bos — " + (msg or 'panel tidak merespons'))
+        return
+    updated = (data or {}).get('updated') or []
+    if not updated:
+        send_message(token, chat_id,
+                     "Tidak ada video yang masih dijadwalkan Bos — semua sudah tayang atau antrean kosong.")
+        return
+    _all_ch = load_channels()
+    _names = []
+    for _u in updated:
+        _c = next((c for c in _all_ch if c.get('yt_id') == _u.get('yt_id')), None)
+        _names.append(_channel_display_name(_c) if _c else (_u.get('yt_id') or '?'))
+    _uniq = sorted(set(_names))
+    _extra = ""
+    if (data or {}).get('skipped_approval'):
+        _extra += f"\n{(data or {}).get('skipped_approval')} video masih menunggu approval — tidak ikut dipublish."
+    if (data or {}).get('skipped_paused'):
+        _extra += f"\n{(data or {}).get('skipped_paused')} video di channel yang dijeda — tidak ikut dipublish."
+    send_message(token, chat_id,
+                 f"Siap Bos, {len(updated)} video langsung tayang: {', '.join(_uniq)}. "
+                 "Begitu render selesai langsung tayang di YouTube, tidak menunggu jadwal." + _extra)
+
+
 def _execute_nlu_extend(token, chat_id, pending):
     slots = pending.get('slots') or {}
     days = slots.get('days') or 30
@@ -8086,6 +8151,8 @@ def _nlu_execute(token, chat_id, pending):
         _execute_nlu_set_paused(token, chat_id, pending)
     elif kind in ('hapus', 'hentikan_antrean'):
         _execute_nlu_destructive(token, chat_id, pending)
+    elif kind == 'publish_now':
+        _execute_nlu_publish_now(token, chat_id, pending)
 
 
 def _nlu_run_readonly(token, chat_id, intent, slots=None):

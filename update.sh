@@ -7,8 +7,14 @@
 #  1) git pull TANPA --force / reset --hard.
 #     Bila pull gagal (perubahan lokal/konflik/jaringan) -> tulis
 #     status gagal ke update_status.json dan BERHENTI (tidak restart).
-#  2) Bila pull sukses -> bash ziqva.sh restart (panel + operator),
-#     lalu kirim notifikasi Telegram (token dibaca dari config.json).
+#     Bila pull tidak mengubah apa-apa (sudah versi terbaru) -> tulis
+#     status sukses dan BERHENTI TANPA restart (restart panel membunuh
+#     skrip ini sebelum sempat menulis status — tanpa jalur ini update
+#     no-op selalu berakhir "failed" palsu via self-heal).
+#  2) Bila pull sukses ADA perubahan -> bash ziqva.sh restart (panel +
+#     operator), lalu kirim notifikasi Telegram (token dibaca dari
+#     config.json). Status success untuk jalur ini dipulihkan self-heal
+#     boot-time (v1.2.1) karena restart membunuh skrip ini.
 # ============================================================
 cd "$(dirname "$0")" || exit 1
 
@@ -79,8 +85,16 @@ if [ -f backup_core.py ]; then
   python3 backup_core.py backup --trigger pre_update 2>&1 | tail -2
 fi
 
-PULL_OUT=$(git pull 2>&1)PULL_RC=$?
-if [ $PULL_RC -ne 0 ]; then
+# 🔥 v1.2.36: tangkap HEAD SEBELUM pull (untuk deteksi no-op) dan pisah
+# PULL_RC ke baris sendiri. Dulu `PULL_OUT=$(git pull 2>&1)PULL_RC=$?`
+# ditulis satu baris: bash menafsirkan `PULL_RC=$?` sebagai bagian dari
+# nilai PULL_OUT, jadi variabel PULL_RC tidak pernah di-set dan baris
+# test di bawah selalu error "unary operator expected" — pull gagal pun
+# tidak pernah terdeteksi.
+HEAD_BEFORE=$(git rev-parse HEAD 2>/dev/null)
+PULL_OUT=$(git pull 2>&1)
+PULL_RC=$?
+if [ "$PULL_RC" -ne 0 ]; then
   write_status "failed" "$PULL_OUT"
   notify_tg "❌ *Update panel gagal, Bos* 😅
 
@@ -88,6 +102,21 @@ if [ $PULL_RC -ne 0 ]; then
 
 Cek output lengkap di Settings → UPDATE & VERSI, atau tanya Muse."
   exit 1
+fi
+
+# 🔥 v1.2.36: pull NO-OP (HEAD tidak bergerak = sudah versi terbaru) ->
+# tulis success dan LEWATI restart. Tanpa ini, restart panel membunuh
+# skrip ini sebelum sempat menulis status, lalu self-heal melihat versi
+# sama dan salah menyimpulkan "failed". Perbandingan HEAD (bukan teks
+# "Already up to date") supaya andal di semua locale/pesan git.
+HEAD_AFTER=$(git rev-parse HEAD 2>/dev/null)
+if [ -n "$HEAD_BEFORE" ] && [ "$HEAD_BEFORE" = "$HEAD_AFTER" ]; then
+  VER_NOW=$(head -n 1 VERSION 2>/dev/null | tr -d '[:space:]')
+  write_status "success" "Sudah versi terbaru v${VER_NOW:-?} — tidak ada perubahan."
+  notify_tg "✅ *Panel sudah versi terbaru, Bos* 😎
+
+Versi sekarang: \`v${VER_NOW:-?}\` — tidak ada perubahan, panel *tidak* di-restart."
+  exit 0
 fi
 
 # Restart kedua service. Urutan diatur DI DALAM ziqva.sh (operator dulu,

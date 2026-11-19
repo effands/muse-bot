@@ -1387,6 +1387,103 @@ def _fmt_num(n):
         return str(n)
 
 
+# ==========================================
+# 🔥 v1.2.22 — FORMAT SATU BARIS VIDEO (judul + views + tanggal + durasi)
+# User 14:05–14:06 WIB: daftar video di Telegram harus menampilkan views,
+# tanggal upload/tayang DAN durasi — sesimpel & serapi mungkin, satu baris
+# ringkas per video dengan pemisah yang sama di SEMUA daftar (riwayat,
+# jadwal, jadwalbulan, laporan detail, statistik, channel, antrean, gagal).
+# Data HANYA dari sumber yang sudah ada (video_stats_cache, tasks_db,
+# metadata task) — bila tidak tersedia tampilkan "—", JANGAN karang angka.
+# ==========================================
+def _fmt_dur_sec(sec):
+    """Durasi singkat konsisten: '1:17:24' (jam) atau '0:30' (di bawah 1 jam);
+    '—' bila tidak ada / tidak valid. Satu format di semua daftar.
+    Dibulatkan (target_duration_hours float bisa 4619.9998, bukan 4620)."""
+    try:
+        s = int(round(float(sec)))
+    except Exception:
+        return "—"
+    if s < 0:
+        return "—"
+    h, m, r = s // 3600, (s % 3600) // 60, s % 60
+    if h:
+        return f"{h}:{m:02d}:{r:02d}"
+    return f"{m}:{r:02d}"
+
+
+def _task_duration_sec(t):
+    """Durasi video (detik) dari metadata task yang SUDAH ADA: Shorts
+    (shorts_duration_sec), playlist/long (target_duration_hours di
+    blueprint), audio_duration. None bila tidak tersedia."""
+    bp = (t or {}).get('blueprint') or {}
+    for v in ((t or {}).get('shorts_duration_sec'), bp.get('shorts_duration_sec'),
+              (t or {}).get('audio_duration'), bp.get('audio_duration')):
+        try:
+            f = float(v)
+            if f > 0:
+                return f
+        except Exception:
+            pass
+    for v in (bp.get('target_duration_hours'), (t or {}).get('target_duration_hours')):
+        try:
+            f = float(v)
+            if f > 0:
+                return f * 3600.0
+        except Exception:
+            pass
+    return None
+
+
+def _video_views_of(t, cache_videos):
+    """Views dari video_stats_cache via video_id; None bila belum ada data
+    (video belum tayang / belum sempat di-fetch / missing) — jangan karang."""
+    vid = _history_task_video_id(t)
+    if not vid:
+        return None
+    st = (cache_videos or {}).get(vid) or {}
+    if not st or st.get('missing'):
+        return None
+    try:
+        return int(st.get('views', 0))
+    except Exception:
+        return None
+
+
+def _fmt_date_short(s, with_time=False):
+    """'2026-11-19' -> '19 Nov'; '2026-11-19 19:00' + with_time -> '19 Nov 19:00'.
+    '—' bila kosong/rusak."""
+    s = (s or '').strip()
+    if not s:
+        return "—"
+    try:
+        d = datetime.strptime(s[:10], "%Y-%m-%d")
+        out = f"{d.day} {_MONTHS_ID[d.month - 1]}"
+        if with_time and len(s) >= 16:
+            out += f" {s[11:16]}"
+        return out
+    except Exception:
+        return s[:10] or "—"
+
+
+def _fmt_dt_short(dt):
+    """datetime WIB -> '19 Nov 19:00'; '—' bila None."""
+    if dt is None:
+        return "—"
+    return f"{dt.day} {_MONTHS_ID[dt.month - 1]} {dt.strftime('%H:%M')}"
+
+
+def _video_meta(title, views, date_str, dur_sec):
+    """SATU format baris video untuk semua daftar Telegram (v1.2.22):
+    'Judul | 1.234 views | 19 Nov | 1:17:24' — '—' bila data tak ada.
+    Judul & tanggal di-escape Markdown; pemanggil menambahkan bullet/ikon
+    atau nomor sendiri di depan."""
+    v = _fmt_num(views) if views is not None else "—"
+    d = (date_str or '').strip() or "—"
+    return (f"{_tg_escape(str(title or '?')[:45])} | {v} views | "
+            f"{_tg_escape(d)} | {_fmt_dur_sec(dur_sec)}")
+
+
 def _uptime_str(seconds):
     """'2 hari 3 jam 15 mnt' dari detik."""
     try:
@@ -1481,7 +1578,7 @@ def _stats_by_channel():
                                         "views_7d": 0, "views_30d": 0, "hours": 0.0})
         e["videos"].append({"title": t.get('title', '?'), "views": views,
                             "likes": likes, "comments": comments, "pub": pub,
-                            "video_id": vid})
+                            "video_id": vid, "dur": _task_duration_sec(t)})
         e["views"] += views
         e["likes"] += likes
         e["comments"] += comments
@@ -1603,9 +1700,10 @@ def build_history_report():
     fail = sum(1 for t in history if 'Gagal' in str(t.get('status', '')))
     lines.append(f"Total riwayat: `{len(history)} task` (✅ tayang/selesai `{ok}` • ❌ gagal `{fail}`)")
     lines.append("")
+    cache = _load_video_stats_cache().get('videos', {})
     for t in history[:8]:
-        date = (t.get('finished_date') or (t.get('publish_date') or '')[:10] or '-')[:10]
-        title = (t.get('title') or '?')[:45]
+        date = _fmt_date_short(t.get('finished_date') or (t.get('publish_date') or '')[:10])
+        title = (t.get('title') or '?')
         st = str(t.get('status', '-'))
         if 'Tayang' in st or 'Selesai' in st or 'Sukses' in st:
             icon = "✅"
@@ -1617,8 +1715,8 @@ def build_history_report():
             icon = "•"
         ch_name = name_by_yt.get(_history_task_yt_id(t), '')
         ch_txt = f" ({_tg_escape(ch_name)})" if ch_name else ""
-        lines.append(f"{icon} `{_tg_escape(date)}` — {_tg_escape(title)}{ch_txt}")
-        lines.append(f"   Status: {_tg_escape(st[:60])}")
+        # 🔥 v1.2.22: satu baris ringkas — judul | views | tanggal | durasi.
+        lines.append(f"{icon} {_video_meta(title, _video_views_of(t, cache), date, _task_duration_sec(t))}{ch_txt}")
     if len(history) > 8:
         lines.append(f"_...dan {len(history) - 8} riwayat lainnya (cek di panel)._")
     return "\n".join(lines)
@@ -1649,10 +1747,10 @@ def build_stats_report():
         vids = sorted(e["videos"], key=lambda v: v["views"], reverse=True)
         if vids:
             best = vids[0]
-            lines.append(f"  🏆 Terbaik: {_tg_escape(best['title'][:45])} ({_fmt_num(best['views'])} views)")
+            lines.append(f"  🏆 Terbaik: {_video_meta(best['title'], best['views'], _fmt_date_short(best.get('pub')), best.get('dur'))}")
             if len(vids) > 1:
                 worst = vids[-1]
-                lines.append(f"  📉 Terendah: {_tg_escape(worst['title'][:45])} ({_fmt_num(worst['views'])} views)")
+                lines.append(f"  📉 Terendah: {_video_meta(worst['title'], worst['views'], _fmt_date_short(worst.get('pub')), worst.get('dur'))}")
         lines.append("")
     if len(per_channel) > 8:
         lines.append(f"_...dan {len(per_channel) - 8} channel lainnya._")
@@ -1774,13 +1872,14 @@ def build_failed_report():
     if not failed_hist and not failed_active:
         lines.append("Nggak ada yang gagal Bos, semua mulus 💪")
         return "\n".join(lines), None
+    cache = _load_video_stats_cache().get('videos', {})
     if failed_hist:
         lines.append(f"Di riwayat: `{len(failed_hist)} task` gagal.")
         for t in failed_hist[:5]:
-            title = (t.get('title') or '?')[:45]
+            title = (t.get('title') or '?')
             st = str(t.get('status', ''))[:60]
-            date = (t.get('finished_date') or '')[:10] or '-'
-            lines.append(f"• `{_tg_escape(date)}` {_tg_escape(title)}")
+            date = _fmt_date_short(t.get('finished_date') or '')
+            lines.append(f"• {_video_meta(title, _video_views_of(t, cache), date, _task_duration_sec(t))}")
             lines.append(f"  Status: {_tg_escape(st)}")
             if t.get('blueprint') and t.get('approval') != 'rejected' and isinstance(t.get('id'), int):
                 retryable.append(t)
@@ -1899,7 +1998,7 @@ def _pending_approval_lines(active, channels, limit=5):
             sched = "jadwal: —"
         else:
             sched = f"tayang {dt.strftime('%d %b %H:%M')} ({_fmt_approval_delta(dt, now)})"
-        lines.append(f"• *{_tg_escape(name)}* — {_tg_escape(title)} — {sched}")
+        lines.append(f"• *{_tg_escape(name)}* — {_tg_escape(title)} — {sched} | Durasi {_fmt_dur_sec(_task_duration_sec(t))}")
     if len(pend) > limit:
         lines.append(f"_...dan {len(pend) - limit} video lainnya — ketuk ✅ di pesan preview-nya ya Bos._")
     return lines
@@ -2030,7 +2129,7 @@ def build_schedule_report(days=7):
         if over:
             lines.append(f"  ⚠️ Terlambat: `{len(over)} task` belum tayang")
             for dt, t in over[:3]:
-                lines.append(f"  • {dt.strftime('%d %b %H:%M')} — {_tg_escape((t.get('title') or '?')[:40])}")
+                lines.append(f"  • {_video_meta((t.get('title') or '?'), None, _fmt_dt_short(dt), _task_duration_sec(t))}")
         if not items and not over:
             lines.append("  _Nggak ada jadwal 7 hari ke depan Bos 😌_")
         by_day = {}
@@ -2042,7 +2141,7 @@ def build_schedule_report(days=7):
             lines.append(f"  📅 *{day_lbl}*")
             for dt, t in sorted(by_day[day], key=lambda x: x[0]):
                 label = _task_schedule_label(t, paused)
-                lines.append(f"  • `{dt.strftime('%H:%M')}` {_tg_escape((t.get('title') or '?')[:40])} — {label}")
+                lines.append(f"  • {_video_meta((t.get('title') or '?'), None, _fmt_dt_short(dt), _task_duration_sec(t))} — {label}")
         lines.append("")
     # Task yang channel-nya tidak dikenal (mis. channel baru dihapus).
     unknown = [(dt, t) for dt, t in upcoming + overdue if _task_yt(t) not in known_ids]
@@ -2051,7 +2150,7 @@ def build_schedule_report(days=7):
         lines.append("📺 *Channel Tidak Dikenal*")
         for dt, t in sorted(unknown, key=lambda x: x[0])[:5]:
             label = _task_schedule_label(t)
-            lines.append(f"  • `{dt.strftime('%d %b %H:%M')}` {_tg_escape((t.get('title') or '?')[:40])} — {label}")
+            lines.append(f"  • {_video_meta((t.get('title') or '?'), None, _fmt_dt_short(dt), _task_duration_sec(t))} — {label}")
         lines.append("")
     lines.append(f"Total: `{total} task` dalam 7 hari ke depan (termasuk yang terlambat).")
     lines.append("Bos, ketik /status buat cek kuota & antrean terkini 😎")
@@ -2141,7 +2240,7 @@ def build_month_schedule_blocks(channel_arg=None, days=30):
         if overdue:
             lines.append(f"⚠️ *Terlambat: `{len(overdue)} task` belum tayang*")
             for dt, t in sorted(overdue, key=lambda x: x[0])[:3]:
-                lines.append(f"  • {dt.strftime('%d %b %H:%M')} — {_tg_escape((t.get('title') or '?')[:40])}")
+                lines.append(f"  • {_video_meta((t.get('title') or '?'), None, _fmt_dt_short(dt), _task_duration_sec(t))}")
         filled = 0
         gap_start = None
         gap_len = 0
@@ -2166,7 +2265,7 @@ def build_month_schedule_blocks(channel_arg=None, days=30):
                 lines.append(f"  📅 *{_day_label(day)}*")
                 for dt, t in sorted(items, key=lambda x: x[0]):
                     label = _task_schedule_label(t, paused)
-                    lines.append(f"  • `{dt.strftime('%H:%M')}` {_tg_escape((t.get('title') or '?')[:40])} — {label}")
+                    lines.append(f"  • {_video_meta((t.get('title') or '?'), None, _fmt_dt_short(dt), _task_duration_sec(t))} — {label}")
             else:
                 if gap_start is None:
                     gap_start = day
@@ -2242,8 +2341,19 @@ def build_channel_list_report():
         return "\n".join(lines)
     stats = _get_report_channel_stats(channels)
     cache = _load_video_stats_cache()
+    cache_videos = cache.get('videos', {})
     history = load_tasks().get('history', [])
     today_str = _wib_today_str()
+    # 🔥 v1.2.22: video terbaru per channel (dari riwayat) untuk baris
+    # 'Terbaru' — judul | views | tanggal | durasi.
+    latest_by_yt = {}
+    for t in history:
+        yt = _history_task_yt_id(t)
+        if not yt:
+            continue
+        key = (t.get('finished_date') or (t.get('publish_date') or '')[:10] or '')
+        if yt not in latest_by_yt or key > latest_by_yt[yt][0]:
+            latest_by_yt[yt] = (key, t)
     for ch, st in zip(channels, stats):
         name = _channel_display_name(ch)
         mode = 'Full-Auto 🤖' if _autopilot_of(ch) == 'auto' else 'Approval 👀'
@@ -2254,6 +2364,12 @@ def build_channel_list_report():
         else:
             lines.append("   👥 subs — • 📹 video — • 👁️ views — (data belum bisa diambil)")
         lines.append(f"   Mode: {mode}")
+        lt = latest_by_yt.get(ch.get('yt_id'))
+        if lt:
+            _lt = lt[1]
+            lines.append(f"   🎬 Terbaru: {_video_meta(_lt.get('title'), _video_views_of(_lt, cache_videos), _fmt_date_short(_lt.get('finished_date') or (_lt.get('publish_date') or '')[:10]), _task_duration_sec(_lt))}")
+        else:
+            lines.append("   🎬 Terbaru: —")
         stock = get_stock_days(ch)
         last = ch.get('last_scheduled_date', '-') or '-'
         if stock is None:
@@ -2337,7 +2453,7 @@ def build_detail_report():
         if top:
             lines.append("   🏆 *3 video terbaik:*")
             for i, v in enumerate(top, 1):
-                lines.append(f"      {i}. {_tg_escape(str(v.get('title') or '?')[:45])} — 👁️ {_fmt_num(v.get('views', 0))}")
+                lines.append(f"      {i}. {_video_meta(v.get('title'), v.get('views'), _fmt_date_short(v.get('pub')), v.get('dur'))}")
         else:
             lines.append("   🏆 Video terbaik: belum ada data (video tayang belum tercatat di statistik).")
         lines.append("")
@@ -2381,19 +2497,92 @@ def _log_safe_text(text):
 def get_main_keyboard():
     return {
         "keyboard": [
-            [{"text": "📊 Status Server"}, {"text": "🎯 Kuota Upload"}],
-            [{"text": "📺 Cek Channel"}, {"text": "📂 Antrean Render"}],
-            [{"text": "🗓️ Jadwal 7 Hari"}, {"text": "📈 Statistik Video"}],
-            [{"text": "💰 Monetisasi"}, {"text": "❌ Task Gagal"}],
-            [{"text": "💡 10 Judul Sleep"}, {"text": "🎬 Ide Shorts"}],
-            [{"text": "📝 Template Deskripsi"}, {"text": "📐 Blueprint Resep"}],
-            [{"text": "🎬 Buat Short"}, {"text": "🎥 Buat Video Long"}]
+            [{"text": "Status Server"}, {"text": "Kuota Upload"}],
+            [{"text": "Cek Channel"}, {"text": "Antrean Render"}],
+            [{"text": "Jadwal 7 Hari"}, {"text": "Statistik Video"}],
+            [{"text": "Monetisasi"}, {"text": "Task Gagal"}],
+            [{"text": "10 Judul Sleep"}, {"text": "Ide Shorts"}],
+            [{"text": "Template Deskripsi"}, {"text": "Blueprint Resep"}],
+            [{"text": "Buat Short"}, {"text": "Buat Video Long"}]
         ],
         "resize_keyboard": True,
         "is_persistent": True
     }
 
+# 🔥 v1.2.21: sanitizer emoji/ikon untuk SEMUA pesan Telegram.
+# User minta pesan bot jadi TEKS BIASA (tanpa ❌🥀😅👍 dsb.).
+# Pola karakter sama seperti sanitasi upload v1.2.13 di app.py,
+# KECUALI dua hal yang dipertahankan sebagai tipografi biasa:
+#   - panah (U+2190–U+21FF) — dipakai di pesan ("→ jam 19:00")
+#   - box drawing (U+2500–U+257F) — pemisah "━━━" format rapi v1.2.20
+# Huruf (termasuk beraksen), angka, spasi, baris baru, dan SEMUA tanda
+# baca (termasuk Markdown *, `, _, | dan tipografi • — … "" '') tetap utuh.
+_TG_STRIP_EMOJI_RE = re.compile(
+    '['
+    '\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f'  # kontrol + C1 (tab/LF sengaja TIDAK di sini)
+    '\u00a9\u00ae\u00aa\u00ba\u00ad'   # © ® ª º soft-hyphen
+    '\u061c\u180e'                    # arabic letter mark, mongolian VS
+    '\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff'  # zero-width / ZWJ / bidi / BOM
+    '\ufe00-\ufe0f\ufe20-\ufe2f'      # variation selector
+    '\u20d0-\u20ff\u1ab0-\u1aff\u1dc0-\u1dff'  # combining enclosing (keycap)
+    '\u203c\u2049\u2122\u2139\u3030\u303d\u3297\u3299'  # ‼ ⁉ ™ ℹ 〰 〽 ㊗ ㊙
+    '\u2300-\u23ff'                   # simbol teknis (⌚ ⌛ ⏰)
+    '\u2460-\u24ff'                   # ① ② Ⓐ ⓨ ...
+    '\u2580-\u259f'                   # block (█ ▄ — bukan pemisah box drawing)
+    '\u25a0-\u25ff\u2600-\u26ff'      # geometri ★■▶, misc ☀♠♥♪
+    '\u2700-\u27bf\u2b00-\u2bff'      # dingbat ✓✗, misc ⬛⭐
+    '\u3200-\u32ff\u3300-\u33ff'      # enclosed CJK ㊗ ㍿ ...
+    '\u00b2\u00b3\u00b9\u2070-\u207f\u2080-\u208f'  # superskrip/subskrip
+    '\u2160-\u217f'                   # angka Romawi Ⅰ Ⅱ ...
+    '\ue000-\uf8ff'                   # private use
+    '\U0001f000-\U0001faff'           # semua emoji (plane 1)
+    '\U000f0000-\U000fffff\U00100000-\U0010ffff'  # private use plane 15/16
+    ']')
+
+
+def _strip_emoji_tg(text):
+    """Buang emoji & ikon dari teks Telegram → teks biasa.
+    Nada persona tetap di KATA-KATA (bukan glif). Spasi ganda sisa
+    penghapusan dirapikan per baris; indentasi awal baris (format rapi
+    v1.2.20) dipertahankan; baris kosong beruntun jadi maksimal dua."""
+    s = '' if text is None else str(text)
+    if not s:
+        return s
+    lines = []
+    for ln in s.split('\n'):
+        # Indentasi diambil dari baris ASLI (sebelum emoji dibuang) —
+        # spasi sisa emoji di awal baris ("✅ Ya" → " Ya") TIDAK dihitung
+        # sebagai indentasi.
+        indent = ln[:len(ln) - len(ln.lstrip(' '))]
+        rest = ' '.join(_TG_STRIP_EMOJI_RE.sub('', ln).strip().split())
+        lines.append(indent + rest if rest else '')
+    s = '\n'.join(lines)
+    s = re.sub(r'\n{3,}', '\n\n', s)
+    return s.strip('\n')
+
+
+def _sanitize_tg_markup(markup):
+    """Bersihkan label tombol (keyboard balasan & inline) dari emoji.
+    Callback data TIDAK disentuh (pencocokan tombol memakai itu).
+    Kembalikan salinan baru — dict asli pemanggil tidak diubah."""
+    if isinstance(markup, dict):
+        out = {}
+        for k, v in markup.items():
+            if k == 'text' and isinstance(v, str):
+                out[k] = _strip_emoji_tg(v)
+            else:
+                out[k] = _sanitize_tg_markup(v)
+        return out
+    if isinstance(markup, list):
+        return [_sanitize_tg_markup(v) for v in markup]
+    return markup
+
+
 def send_message(token, chat_id, text, parse_mode="Markdown", reply_markup=None):
+    # 🔥 v1.2.21: bersihkan emoji/ikon dulu — semua pesan bot jadi teks biasa.
+    text = _strip_emoji_tg(text)
+    if reply_markup is not None:
+        reply_markup = _sanitize_tg_markup(reply_markup)
     # Pengaman batas 4096 karakter Telegram — pesan kepanjangan dipotong rapi.
     text = _clip(str(text or ''))
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -2423,11 +2612,12 @@ def send_message(token, chat_id, text, parse_mode="Markdown", reply_markup=None)
 _cb_in_flight = set()  # data callback yang sedang diproses (anti dobel-klik)
 
 def answer_callback(token, callback_query_id, text):
-    """Jawab callback query supaya tombol berhenti berputar di Telegram."""
+    """Jawab callback query supaya tombol berhenti berputar di Telegram.
+    🔥 v1.2.21: teks toast juga dibersihkan dari emoji/ikon."""
     try:
         requests.post(
             f"https://api.telegram.org/bot{token}/answerCallbackQuery",
-            json={"callback_query_id": callback_query_id, "text": text[:200]},
+            json={"callback_query_id": callback_query_id, "text": _strip_emoji_tg(text)[:200]},
             timeout=10
         )
     except Exception as e:
@@ -7001,10 +7191,12 @@ def handle_user_command(token, chat_id, text, message_id=None):
                 for idx, t in enumerate(active[:8], 1):
                     title = t.get('title', 'Video Kompilasi')
                     status = t.get('status', 'Menunggu')
-                    sched = t.get('schedule_date', '-')
+                    _dt = _parse_schedule_dt(t.get('time') or (t.get('blueprint') or {}).get('publish_date') or '')
+                    sched = _fmt_dt_short(_dt) if _dt else (t.get('schedule_date') or '-')[:16] or '—'
                     # 🔥 v1.2.18: tampilkan persen progres task yang sedang jalan.
                     prog = _task_progress_line(t)
-                    msg += f"*{idx}. {_tg_escape(title[:35])}...*\nStatus: `{_tg_escape(status)}` | Tayang: `{_tg_escape(sched)}`"
+                    # 🔥 v1.2.22: satu baris ringkas — judul | views | tanggal | durasi.
+                    msg += f"*{idx}. {_video_meta(title, None, sched, _task_duration_sec(t))}*\nStatus: `{_tg_escape(status)}`"
                     if prog:
                         msg += f"\n{prog}"
                     msg += "\n\n"

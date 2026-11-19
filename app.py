@@ -617,16 +617,86 @@ def _task_set_progress(task_id, pct=None, stage=None, force=False):
 # ==========================================
 # 🛡️ SISTEM KETAHANAN (ANTI-STUCK & ANTI-LOST)
 # ==========================================
+# 🔥 v1.2.21: sanitizer emoji/ikon untuk SEMUA pesan Telegram.
+# User minta pesan bot jadi TEKS BIASA (tanpa ❌🥀😅👍 dsb.).
+# Pola karakter sama seperti _CLEAN_REMOVE_RE (sanitasi upload v1.2.13),
+# KECUALI dua hal yang dipertahankan sebagai tipografi biasa:
+#   - panah (U+2190–U+21FF) — dipakai di pesan ("→ jam 19:00")
+#   - box drawing (U+2500–U+257F) — pemisah "━━━" format rapi v1.2.20
+# Huruf (termasuk beraksen), angka, spasi, baris baru, dan SEMUA tanda
+# baca (termasuk Markdown *, `, _, | dan tipografi • — … "" '') tetap utuh.
+_TG_STRIP_EMOJI_RE = re.compile(
+    '['
+    '\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f'  # kontrol + C1 (tab/LF sengaja TIDAK di sini)
+    '\u00a9\u00ae\u00aa\u00ba\u00ad'   # © ® ª º soft-hyphen
+    '\u061c\u180e'                    # arabic letter mark, mongolian VS
+    '\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff'  # zero-width / ZWJ / bidi / BOM
+    '\ufe00-\ufe0f\ufe20-\ufe2f'      # variation selector
+    '\u20d0-\u20ff\u1ab0-\u1aff\u1dc0-\u1dff'  # combining enclosing (keycap)
+    '\u203c\u2049\u2122\u2139\u3030\u303d\u3297\u3299'  # ‼ ⁉ ™ ℹ 〰 〽 ㊗ ㊙
+    '\u2300-\u23ff'                   # simbol teknis (⌚ ⌛ ⏰)
+    '\u2460-\u24ff'                   # ① ② Ⓐ ⓨ ...
+    '\u2580-\u259f'                   # block (█ ▄ — bukan pemisah box drawing)
+    '\u25a0-\u25ff\u2600-\u26ff'      # geometri ★■▶, misc ☀♠♥♪
+    '\u2700-\u27bf\u2b00-\u2bff'      # dingbat ✓✗, misc ⬛⭐
+    '\u3200-\u32ff\u3300-\u33ff'      # enclosed CJK ㊗ ㍿ ...
+    '\u00b2\u00b3\u00b9\u2070-\u207f\u2080-\u208f'  # superskrip/subskrip
+    '\u2160-\u217f'                   # angka Romawi Ⅰ Ⅱ ...
+    '\ue000-\uf8ff'                   # private use
+    '\U0001f000-\U0001faff'           # semua emoji (plane 1)
+    '\U000f0000-\U000fffff\U00100000-\U0010ffff'  # private use plane 15/16
+    ']')
+
+
+def _strip_emoji_tg(text):
+    """Buang emoji & ikon dari teks Telegram → teks biasa.
+    Nada persona tetap di KATA-KATA (bukan glif). Spasi ganda sisa
+    penghapusan dirapikan per baris; indentasi awal baris (format rapi
+    v1.2.20) dipertahankan; baris kosong beruntun jadi maksimal dua."""
+    s = '' if text is None else str(text)
+    if not s:
+        return s
+    lines = []
+    for ln in s.split('\n'):
+        # Indentasi diambil dari baris ASLI (sebelum emoji dibuang) —
+        # spasi sisa emoji di awal baris ("✅ Ya" → " Ya") TIDAK dihitung
+        # sebagai indentasi.
+        indent = ln[:len(ln) - len(ln.lstrip(' '))]
+        rest = ' '.join(_TG_STRIP_EMOJI_RE.sub('', ln).strip().split())
+        lines.append(indent + rest if rest else '')
+    s = '\n'.join(lines)
+    s = re.sub(r'\n{3,}', '\n\n', s)
+    return s.strip('\n')
+
+
+def _sanitize_tg_markup(markup):
+    """Bersihkan label tombol (keyboard balasan & inline) dari emoji.
+    Callback data TIDAK disentuh (pencocokan tombol memakai itu).
+    Kembalikan salinan baru — dict asli pemanggil tidak diubah."""
+    if isinstance(markup, dict):
+        out = {}
+        for k, v in markup.items():
+            if k == 'text' and isinstance(v, str):
+                out[k] = _strip_emoji_tg(v)
+            else:
+                out[k] = _sanitize_tg_markup(v)
+        return out
+    if isinstance(markup, list):
+        return [_sanitize_tg_markup(v) for v in markup]
+    return markup
+
+
 def send_tg_message(msg, reply_markup=None):
     """Kirim pesan ke Telegram kalau token & chat_id tersimpan. Aman gagal silent.
-    reply_markup opsional — dipakai untuk tombol inline (mis. Retry) dari operator."""
+    reply_markup opsional — dipakai untuk tombol inline (mis. Retry) dari operator.
+    🔥 v1.2.21: teks + label tombol dibersihkan dari emoji/ikon dulu."""
     try:
         bot_config = load_bot_config()
         token, chat_id = bot_config.get('tg_token'), bot_config.get('tg_chat_id')
         if not token or not chat_id: return
-        payload = {"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}
+        payload = {"chat_id": chat_id, "text": _strip_emoji_tg(msg), "parse_mode": "Markdown"}
         if reply_markup is not None:
-            payload["reply_markup"] = reply_markup
+            payload["reply_markup"] = _sanitize_tg_markup(reply_markup)
         requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
             json=payload,
@@ -3587,7 +3657,8 @@ def background_worker():
                 # bersih ditulis balik ke blueprint + task aktif supaya
                 # panel/riwayat/notifikasi konsisten.
                 _up_title = _clean_upload_text(task.get('title', ''), max_len=100,
-                                               fallback='Video Tanpa Judul')
+                                               fallback='Video Tanpa Judul',
+                                               strip_channel=(channel_data or {}).get('name', ''))
                 _up_desc = _clean_upload_text(task.get('description', ''), max_len=5000,
                                               fallback=_up_title)
                 if _up_title != (task.get('title') or '') or _up_desc != (task.get('description') or ''):
@@ -3712,6 +3783,11 @@ def background_worker():
                             _pl_thumb = (task.get('playlist_thumb') or '').strip()
                             if _pl_thumb and os.path.exists(_pl_thumb):
                                 thumb_path = _pl_thumb
+                            elif task.get('kind') == PLAYLIST_KIND:
+                                # 🔥 v1.2.22: playlist WAJIB pakai thumbnail
+                                # hasil modifikasi; jangan fallback ke
+                                # thumbnail galeri acak (bukan gambar playlist).
+                                thumb_path = None
                             elif task.get('kind') == SHORTS_MUSE_KIND:
                                 thumb_path = None
                             else:
@@ -3739,10 +3815,17 @@ def background_worker():
                                 # memakai frame video sebagai sampul (bukan
                                 # rusak). Video long: folder kosong / tidak ada
                                 # gambar yang bisa dibuka, catat seperti dulu.
+                                # Playlist tanpa thumbnail modifikasi: katakan
+                                # jelas (bukan "tidak ada thumbnail valid").
                                 with db_lock:
                                     for d in active_tasks:
                                         if d['id'] == task_id:
-                                            d['thumb_status'] = ("Sampul dari frame video" if task.get('kind') == SHORTS_MUSE_KIND else "Tidak ada thumbnail valid")
+                                            if task.get('kind') == SHORTS_MUSE_KIND:
+                                                d['thumb_status'] = "Sampul dari frame video"
+                                            elif task.get('kind') == PLAYLIST_KIND:
+                                                d['thumb_status'] = "Thumbnail playlist tidak tersedia"
+                                            else:
+                                                d['thumb_status'] = "Tidak ada thumbnail valid"
                                 save_tasks_db()
                                 
                             try:
@@ -5658,10 +5741,13 @@ def _explain_failure_reason(reason, title=None):
             parts.append("ada emoji")
         cause = " dan ".join(parts) if parts else "judulnya ada karakter yang ditolak YouTube"
         return (cause + " — YouTube menolaknya",
-                "Update panel ke v1.2.16 (judul otomatis dibersihkan & dipotong sebelum upload).")
+                "Pastikan panel sudah di-Update ke versi terbaru — judul otomatis dibersihkan & dipotong sebelum upload.")
     if 'invaliddescription' in low:
         return ("deskripsinya kepanjangan / ada karakter yang ditolak YouTube — YouTube menolaknya",
-                "Update panel ke v1.2.16 (deskripsi otomatis dibersihkan sebelum upload).")
+                "Pastikan panel sudah di-Update ke versi terbaru — deskripsi otomatis dibersihkan sebelum upload.")
+    if 'klip footage playlist tidak ditemukan' in low:
+        return ("klip footage playlist sudah tidak ada dan video hasil render sebelumnya juga tidak ditemukan",
+                "Buat ulang playlist dari awal (riset + render baru).")
     if 'quotaexceeded' in low or 'uploadlimitexceeded' in low:
         return ("kuota upload hari ini habis",
                 "Tunggu sampai besok (kuota reset tengah malam), lalu pencet Coba Lagi.")
@@ -8090,7 +8176,43 @@ _CLEAN_REMOVE_RE = re.compile(
     ']')
 
 
-def _clean_upload_text(text, max_len=None, fallback=''):
+def _strip_channel_title_suffix(title, channel_name):
+    """Hapus suffix nama channel di AKHIR judul (v1.2.23): nama channel
+    tidak boleh memakan kuota 100 karakter judul YouTube. Cocok persis
+    (case-insensitive, spasi dinormalisasi), hanya di posisi akhir.
+    Bentuk yang dihapus — ketiganya pernah dihasilkan
+    _playlist_rewrite_title lama: ' (Nama Channel)', ' | Nama Channel',
+    ' — Nama Channel' / ' - Nama Channel'. Kurung lain — mis.
+    '(Full Album)' — TIDAK disentuh."""
+    s = (title or '').strip()
+    ch = (channel_name or '').strip()
+    if not s or not ch:
+        return title
+    ch_norm = ' '.join(ch.lower().split())
+    m = re.search(r'\(\s*([^()]*?)\s*\)\s*$', s)
+    if m and ' '.join(m.group(1).lower().split()) == ch_norm:
+        return s[:m.start()].rstrip()
+    for sep in (' | ', ' — ', ' - '):
+        if sep in s:
+            head, _, tail = s.rpartition(sep)
+            if ' '.join(tail.lower().split()) == ch_norm:
+                return head.rstrip()
+    # Bentuk 4: nama channel telanjang di akhir ('X | Channel' — tanda
+    # '|' sudah dibuang sanitasi emoji v1.2.13 sebelum pemeriksaan ini,
+    # jadi pemisahnya tidak ada lagi). Hanya bila seluruh ekor kata
+    # sama persis dengan nama channel (case-insensitive, spasi fleksibel).
+    words = [re.escape(w) for w in ch.split()]
+    if words:
+        pat = r'\s+'.join(words)
+        m2 = re.search(r'\s+' + pat + r'\s*$', s, flags=re.I)
+        if m2:
+            return s[:m2.start()].rstrip()
+        if re.fullmatch(pat + r'\s*', s, flags=re.I):
+            return ''
+    return title
+
+
+def _clean_upload_text(text, max_len=None, fallback='', strip_channel=None):
     """Bersihkan teks untuk judul/deskripsi YouTube: buang emoji,
     simbol dekoratif, karakter kontrol & invisible; pertahankan huruf
     (termasuk beraksen), angka, spasi, baris baru, dan tanda baca aman.
@@ -8098,10 +8220,15 @@ def _clean_upload_text(text, max_len=None, fallback=''):
     Bila max_len diberikan, potong di batas kata. Bila hasil bersih
     KOSONG dan fallback diberikan, kembalikan fallback yang sudah
     dibersihkan (tidak pernah string kosong — YouTube menolak
-    judul/deskripsi kosong)."""
+    judul/deskripsi kosong).
+    strip_channel (v1.2.23): bila diisi nama channel, suffix nama
+    channel di akhir judul dihapus SEBELUM pemotongan max_len, supaya
+    judul utuhnya muat. Hanya dipakai di jalur JUDUL — deskripsi &
+    tag tidak pernah melewatkan ini."""
     s = '' if text is None else str(text)
     if not s:
-        return _clean_upload_text(fallback, max_len=max_len) if fallback else ''
+        return _clean_upload_text(fallback, max_len=max_len,
+                                  strip_channel=strip_channel) if fallback else ''
     s = unicodedata.normalize('NFC', s)
     out = []
     for ch in s:
@@ -8139,6 +8266,12 @@ def _clean_upload_text(text, max_len=None, fallback=''):
     while cleaned_lines and cleaned_lines[-1] == '':
         cleaned_lines.pop()
     s = '\n'.join(cleaned_lines)
+    # 🔥 v1.2.23: hapus suffix nama channel SEBELUM pemotongan max_len —
+    # kalau dihapus sesudah potong, suffix yang sudah terpotong ('(Cozy
+    # Sax') tidak akan cocok dan judul tetap kepotong. Hanya bila
+    # strip_channel diisi (jalur judul saja).
+    if strip_channel:
+        s = _strip_channel_title_suffix(s, strip_channel)
     if max_len is not None and len(s) > max_len:
         cut = s[:max_len]
         if s[max_len] not in (' ', '\n'):
@@ -8147,7 +8280,8 @@ def _clean_upload_text(text, max_len=None, fallback=''):
                 cut = cut[:sp]
         s = cut.rstrip(' .,!?;:-').rstrip()
     if not s and fallback:
-        return _clean_upload_text(fallback, max_len=max_len)
+        return _clean_upload_text(fallback, max_len=max_len,
+                                  strip_channel=strip_channel)
     return s
 
 
@@ -8306,10 +8440,10 @@ def _create_shorts_muse_task(data):
     # user bisa mengandung emoji) — lalu dedup ulang, karena pembersihan
     # bisa saja menyamakan judul dengan yang sudah dipakai.
     _raw_title = title
-    _ch_clean = _clean_upload_text(channel_rec.get('name', '') or '') or 'ZIMUSE'
     _date_s = _wib_now().strftime('%Y-%m-%d')
     title = _clean_upload_text(title, max_len=100,
-                               fallback=f"Shorts {_ch_clean} {_date_s}")
+                               fallback=f"Shorts {_date_s}",
+                               strip_channel=channel_rec.get('name', ''))
     title_cleaned = (title != _raw_title)
     if title != _raw_title:
         title = _shorts_dedup_title(yt_id, title, channel_rec)
@@ -8866,9 +9000,13 @@ def _playlist_download_audio(video_id, out_dir):
     return audio_path
 
 
-def _playlist_rewrite_title(ref_title, channel_name):
-    """Judul baru: inti referensi + branding channel (selalu berbeda
-    dari referensi). Varian dipilih deterministik dari judul referensi."""
+def _playlist_rewrite_title(ref_title):
+    """Judul baru: inti referensi TANPA nama channel (v1.2.23 — nama
+    channel memakan kuota 100 karakter judul YouTube). Inti diambil
+    dari bagian sebelum pemisah (' | ', ' - ', ' • ', ' — ') bila
+    cukup panjang, lalu dipotong 90 karakter. Bila hasilnya sama
+    persis dengan judul referensi, tambah ' (Playlist)' supaya tetap
+    berbeda dari referensi."""
     core = (ref_title or '').strip()
     for sep in (' | ', ' - ', ' • ', ' — '):
         if sep in core:
@@ -8877,12 +9015,9 @@ def _playlist_rewrite_title(ref_title, channel_name):
                 core = head
                 break
     core = core[:90] or 'Musik Pilihan'
-    ch = (channel_name or '').strip() or 'ZIMUSE'
-    variants = [f"{core} | {ch}", f"{core} ({ch})", f"{core} — {ch}"]
-    pick = variants[sum(ord(c) for c in ref_title) % len(variants)]
-    if ' '.join(pick.lower().split()) == ' '.join((ref_title or '').lower().split()):
-        pick = f"{core} | {ch} (Playlist)"
-    return pick
+    if ' '.join(core.lower().split()) == ' '.join((ref_title or '').lower().split()):
+        core = (core[:88] or 'Musik Pilihan') + ' (Playlist)'
+    return core
 
 
 def _playlist_rewrite_description(ref_desc, channel_name, new_title):
@@ -8947,42 +9082,171 @@ def _playlist_wrap_text(text, font, max_w, draw):
     return lines or ['']
 
 
-def _playlist_make_thumbnail(ref_thumb_url, new_title, channel_name, out_path):
-    """Unduh thumbnail referensi (hanya *.ytimg.com) lalu MODIFIKASI:
-    crop 1280x720, warna/kontras naik sedikit, overlay teks judul baru
-    + nama channel. Simpan JPG <= 2 MB (batas thumbnail YouTube)."""
+def _playlist_thumb_fetch(ref_thumb_url):
+    """Unduh thumbnail referensi (hanya *.ytimg.com). Coba URL asli dulu,
+    lalu varian ukuran dari video id yang sama (maxres → hq → mq → sd) —
+    API YouTube kadang mengembalikan maxres yang ternyata 404 (kasus video
+    Malaysia lFp_RY_jyqQ: maxres 404, hq 200). Kembalikan PIL Image RGB."""
+    urls = []
+    m = re.search(r'https://i\d*\.ytimg\.com/vi/([A-Za-z0-9_-]{11})/',
+                  ref_thumb_url or '')
+    if m:
+        for name in ('maxresdefault', 'hqdefault', 'mqdefault', 'sddefault'):
+            urls.append(f'https://i.ytimg.com/vi/{m.group(1)}/{name}.jpg')
+    if ref_thumb_url and ref_thumb_url not in urls:
+        urls.insert(0, ref_thumb_url)
+    last_err = 'URL tidak valid'
+    for u in urls:
+        if not re.match(r'^https://i\d*\.ytimg\.com/', u):
+            continue
+        try:
+            r = requests.get(u, timeout=30, headers={'User-Agent': 'Mozilla/5.0'})
+            if r.status_code != 200:
+                last_err = f'HTTP {r.status_code}'
+                continue
+            if not (r.headers.get('content-type') or '').startswith('image/'):
+                last_err = 'bukan gambar'
+                continue
+            import io as _io
+            from PIL import Image
+            return Image.open(_io.BytesIO(r.content)).convert('RGB')
+        except Exception as e:
+            last_err = str(e)[:80]
+            continue
+    raise ValueError(f'Thumbnail referensi tidak bisa diunduh ({last_err}).')
+
+
+def _playlist_thumb_palette(img):
+    """Warna dominan referensi: (c1, c2, aksen). c1/c2 digelapkan untuk
+    gradien latar (teks putih tetap terbaca); aksen = warna paling jenuh
+    & cerah (kuning bila tidak ada yang cocok)."""
+    import colorsys
+    small = img.convert('RGB').resize((32, 18))
+    counts = {}
+    for r, g, b in small.getdata():
+        key = (r // 24 * 24, g // 24 * 24, b // 24 * 24)
+        counts[key] = counts.get(key, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+
+    def _dark(c, f):
+        return tuple(max(0, min(255, int(v * f))) for v in c)
+
+    def _lum(c):
+        return (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) / 255.0
+    c1 = ranked[0][0] if ranked else (30, 30, 40)
+    c2 = ranked[1][0] if len(ranked) > 1 else c1
+    while _lum(c1) > 0.35:
+        c1 = _dark(c1, 0.8)
+    while _lum(c2) > 0.25:
+        c2 = _dark(c2, 0.8)
+    if sum(abs(a - b) for a, b in zip(c1, c2)) < 40:
+        c2 = _dark(c2, 0.6)
+    accent, best = (255, 212, 0), 0.0
+    for c, _n in ranked:
+        _h, s, v = colorsys.rgb_to_hsv(c[0] / 255, c[1] / 255, c[2] / 255)
+        # Aksen harus CERAH (v > 0.6) supaya teks hitam di badge dan teks
+        # aksen di atas latar gelap tetap terbaca — merah gelap (v ~0.47)
+        # tidak boleh terpilih.
+        if s * v > best and v > 0.6 and s > 0.4:
+            best, accent = s * v, c
+    return c1, c2, accent
+
+
+def _playlist_thumb_gradient(w, h, c1, c2):
+    """Gradien vertikal c1 (atas) → c2 (bawah), 1280x720."""
+    from PIL import Image
+    col = Image.new('RGB', (1, h))
+    for y in range(h):
+        t = y / max(1, h - 1)
+        col.putpixel((0, y), tuple(int(c1[i] + (c2[i] - c1[i]) * t)
+                                   for i in range(3)))
+    return col.resize((w, h))
+
+
+def _playlist_make_thumbnail(ref_thumb_url, new_title, channel_name, out_path,
+                             badge=None):
+    """Generate ulang thumbnail playlist — DESAIN BARU v1.2.22 (layout split):
+    kiri = gradien dari warna dominan referensi + badge (mis. 'FULL ALBUM')
+    + judul BARU yang sama BESAR + nama channel; kanan = foto referensi
+    (panel 520px + garis aksen). Jelas beda dari thumbnail asli sekilas,
+    tapi tetap nyambung temanya (foto + warna + teks sama). Bila unduhan
+    referensi gagal total → thumbnail gradien lokal (tanpa foto). Hanya
+    unduh dari *.ytimg.com. Simpan JPG 1280x720 <= 2 MB (batas YouTube).
+    Gagal total (PIL rusak) → raise, JANGAN pakai thumbnail asli."""
     if not ref_thumb_url or not re.match(r'^https://i\d*\.ytimg\.com/', ref_thumb_url):
         raise ValueError('URL thumbnail referensi tidak valid.')
-    r = requests.get(ref_thumb_url, timeout=30,
-                     headers={'User-Agent': 'Mozilla/5.0'})
-    r.raise_for_status()
-    if not (r.headers.get('content-type') or '').startswith('image/'):
-        raise ValueError('Thumbnail referensi bukan gambar.')
-    import io as _io
-    from PIL import Image, ImageDraw, ImageEnhance
-    img = Image.open(_io.BytesIO(r.content)).convert('RGB')
-    w, h = img.size
-    target = 16 / 9
-    if w / h > target:
-        nw = int(h * target)
-        x = (w - nw) // 2
-        img = img.crop((x, 0, x + nw, h))
+    title = _clean_upload_text(new_title, max_len=100) or 'Musik Playlist'
+    ch = _clean_upload_text(channel_name or '') or 'ZIMUSE'
+    badge = (badge or ('FULL ALBUM' if 'full album' in title.lower()
+                       else 'PLAYLIST')).strip()[:20].upper()
+    photo = None
+    try:
+        photo = _playlist_thumb_fetch(ref_thumb_url)
+    except Exception as e:
+        print(f"[playlist] thumbnail referensi tidak bisa diunduh ({e}) "
+              f"— pakai gradien lokal.", flush=True)
+        photo = None
+    from PIL import Image, ImageDraw
+    if photo is not None:
+        c1, c2, accent = _playlist_thumb_palette(photo)
     else:
-        nh = int(w / target)
-        y = (h - nh) // 2
-        img = img.crop((0, y, w, y + nh))
-    img = img.resize((1280, 720), Image.LANCZOS)
-    img = ImageEnhance.Color(img).enhance(1.15)
-    img = ImageEnhance.Contrast(img).enhance(1.05)
+        c1, c2, accent = (24, 24, 34), (8, 8, 14), (255, 212, 0)
+    img = _playlist_thumb_gradient(1280, 720, c1, c2)
     draw = ImageDraw.Draw(img, 'RGBA')
-    draw.rectangle([0, 560, 1280, 720], fill=(0, 0, 0, 160))
-    font = _playlist_thumb_font(48)
-    font_small = _playlist_thumb_font(28)
-    y = 575
-    for ln in _playlist_wrap_text(new_title, font, 1200, draw)[:2]:
-        draw.text((40, y), ln, font=font, fill=(255, 255, 255))
-        y += 55
-    draw.text((40, 685), (channel_name or '')[:60], font=font_small, fill=(255, 220, 0))
+    photo_w = 520
+    if photo is not None:
+        # Panel foto kanan: crop tengah (cover 520x720) + garis aksen.
+        w, h = photo.size
+        target = photo_w / 720
+        if w / h > target:
+            nw = int(h * target)
+            x = (w - nw) // 2
+            photo = photo.crop((x, 0, x + nw, h))
+        else:
+            nh = int(w / target)
+            y = (h - nh) // 2
+            photo = photo.crop((0, y, w, y + nh))
+        photo = photo.resize((photo_w, 720), Image.LANCZOS)
+        img.paste(photo, (1280 - photo_w, 0))
+        draw.rectangle([1280 - photo_w - 6, 0, 1280 - photo_w, 720],
+                       fill=accent + (255,))
+        max_w = 1280 - photo_w - 6 - 56 - 40  # zona teks kiri
+    else:
+        max_w = 1280 - 56 - 40
+    # Badge (pil) kiri atas.
+    font_badge = _playlist_thumb_font(30)
+    tw = draw.textlength(badge, font=font_badge)
+    bx, by = 56, 52
+    draw.rounded_rectangle([bx, by, bx + tw + 40, by + 52], radius=26,
+                           fill=accent + (255,))
+    draw.text((bx + 20, by + 9), badge, font=font_badge, fill=(0, 0, 0))
+    # Judul: coba font besar dulu, turunkan bila butuh > 5 baris.
+    # Judul TIDAK BOLEH terpotong diam-diam (kasus Malaysia: 108 karakter
+    # butuh 5 baris) — bila bahkan font terkecil masih > 5 baris, baris
+    # terakhir dipotong + '…' supaya kelihatan terpotong.
+    font = _playlist_thumb_font(64)
+    lines = _playlist_wrap_text(title, font, max_w, draw)
+    for size in (64, 56, 48, 40, 36):
+        font = _playlist_thumb_font(size)
+        lines = _playlist_wrap_text(title, font, max_w, draw)
+        if len(lines) <= 5:
+            break
+    if len(lines) > 5:
+        lines = lines[:5]
+        # Potong baris terakhir + '…' supaya muat (wrap sudah sesuai lebar).
+        while draw.textlength(lines[4] + '…', font=font) > max_w and len(lines[4]) > 3:
+            lines[4] = lines[4][:-1]
+        lines[4] = lines[4].rstrip() + '…'
+    line_h = int(font.size * 1.18)
+    block_h = line_h * len(lines)
+    y = 170 + max(0, (430 - block_h) // 2)
+    for ln in lines:
+        draw.text((58, y + 3), ln, font=font, fill=(0, 0, 0, 200))
+        draw.text((56, y), ln, font=font, fill=(255, 255, 255))
+        y += line_h
+    # Nama channel kiri bawah (warna aksen).
+    font_small = _playlist_thumb_font(30)
+    draw.text((56, 648), ch[:60], font=font_small, fill=accent)
     q = 88
     while True:
         img.save(out_path, 'JPEG', quality=q, optimize=True)
@@ -9058,11 +9322,32 @@ def _playlist_render(task_id, task, yt_id):
     seragam atau bukan 1080p, normalisasi seminimal mungkin (re-encode
     video ke 1080p30, audio tetap copy) — dicatat di
     task['playlist_render_method']. Durasi final = durasi audio.
-    Setelah render sukses, klip + file antara DIHAPUS (audio +
-    thumbnail dipertahankan sampai upload). Gagal → file DISIMPAN
+    🔥 v1.2.21: (a) bila video final dari render sebelumnya masih ada
+    dan valid → dipakai langsung TANPA render ulang (retry setelah
+    upload gagal tidak boleh gagal hanya karena klip sudah dibersihkan);
+    (b) klip + file normalisasi DIPERTAHANKAN sampai upload BERHASIL
+    (dihapus _playlist_cleanup_after_upload) — dulu dihapus di sini
+    setelah render sukses, sehingga retry render ulang tanpa footage
+    (insiden Cozy Sax 2026-11-19). Gagal render → file DISIMPAN
     untuk debug (lokasi ada di job)."""
     if stop_flags.get(task_id):
         raise Exception('Dibatalkan')
+    final_video = os.path.join(BASE_DIR, f"static/final_{task_id}.mp4")
+    if os.path.exists(final_video) and os.path.getsize(final_video) > 0:
+        # Render sebelumnya sudah sukses (klip lama mungkin sudah
+        # dibersihkan) tapi upload gagal — pakai hasil render itu.
+        try:
+            _pv = _probe_video(final_video)
+            _pdur = float((_pv.get('format') or {}).get('duration') or 0) if _pv else 0
+        except Exception:
+            _pdur = 0
+        if _pdur > 0:
+            task['playlist_render_method'] = task.get('playlist_render_method') or 'reuse-final'
+            try:
+                _playlist_job_update(task.get('playlist_job_id'), render_method='reuse-final')
+            except Exception:
+                pass
+            return final_video
     audio = (task.get('playlist_audio') or '').strip()
     clips = [c for c in (task.get('playlist_clips') or []) if isinstance(c, str)]
     job_dir = (task.get('playlist_job_dir') or '').strip()
@@ -9070,7 +9355,7 @@ def _playlist_render(task_id, task, yt_id):
         raise Exception('File audio playlist tidak ditemukan.')
     clips = [c for c in clips if os.path.exists(c)]
     if not clips:
-        raise Exception('Klip footage playlist tidak ditemukan.')
+        raise Exception('Klip footage playlist tidak ditemukan (video hasil render sebelumnya juga tidak ada).')
     audio_dur = _playlist_media_duration(audio)
     if audio_dur <= 0:
         raise Exception('Durasi audio tidak terbaca.')
@@ -9096,7 +9381,6 @@ def _playlist_render(task_id, task, yt_id):
     uniform = len({(i['codec'], i['w'], i['h'], i['fps']) for i in infos}) == 1
     is_1080p = infos[0]['w'] == 1920 and infos[0]['h'] == 1080
     ff = get_ffmpeg_path()
-    final_video = os.path.join(BASE_DIR, f"static/final_{task_id}.mp4")
     concat_txt = os.path.join(job_dir or BASE_UPLOAD, f"pl_concat_{task_id}.txt")
     os.makedirs(os.path.dirname(concat_txt) or BASE_UPLOAD, exist_ok=True)
     total_dur = sum(i['dur'] for i in infos)
@@ -9185,19 +9469,15 @@ def _playlist_render(task_id, task, yt_id):
         except Exception:
             pass
     finally:
-        # Bersihkan klip + file antara SETELAH render sukses; bila gagal,
-        # biarkan file tetap ada untuk debug (finally di bawah hanya
-        # menghapus bila final_video berhasil dibuat).
-        if os.path.exists(final_video) and os.path.getsize(final_video) > 0:
-            for p in list(clips) + norm_files:
-                try:
-                    os.remove(p)
-                except Exception:
-                    pass
-            try:
-                os.remove(concat_txt)
-            except Exception:
-                pass
+        # 🔥 v1.2.21: klip + file normalisasi DIPERTAHANKAN sampai upload
+        # berhasil (dihapus _playlist_cleanup_after_upload). Dulu dihapus
+        # di sini setelah render sukses → retry setelah upload gagal
+        # tidak punya footage lagi (insiden Cozy Sax 2026-11-19).
+        # Hanya concat_txt (dibuat ulang tiap render) yang dibersihkan.
+        try:
+            os.remove(concat_txt)
+        except Exception:
+            pass
     return final_video
 
 
@@ -9242,10 +9522,10 @@ def _playlist_create_task(data):
     # sering mengandung emoji) — lalu dedup ulang, karena pembersihan
     # bisa saja menyamakan judul dengan yang sudah dipakai.
     _raw_title = title
-    _ch_clean = _clean_upload_text(channel_rec.get('name', '') or '') or 'ZIMUSE'
     _date_s = _wib_now().strftime('%Y-%m-%d')
     title = _clean_upload_text(title, max_len=100,
-                               fallback=f"Playlist {_ch_clean} {_date_s}")
+                               fallback=f"Playlist {_date_s}",
+                               strip_channel=channel_rec.get('name', ''))
     title_cleaned = bool(data.get('title_cleaned')) or (title != _raw_title)
     if title != _raw_title:
         title = _shorts_dedup_title(yt_id, title, channel_rec)
@@ -9408,11 +9688,11 @@ def _playlist_build_thread(job_id):
         # 🧹 v1.2.13: bersihkan judul/deskripsi/tag hasil rewrite —
         # judul referensi YouTube sering mengandung emoji/simbol yang
         # ditolak saat upload. Thumbnail memakai judul yang sudah bersih.
-        _raw_title = _playlist_rewrite_title(job.get('ref_title', ''), ch_name)
-        _ch_clean = _clean_upload_text(ch_name) or 'ZIMUSE'
+        _raw_title = _playlist_rewrite_title(job.get('ref_title', ''))
         _date_s = _wib_now().strftime('%Y-%m-%d')
         new_title = _clean_upload_text(_raw_title, max_len=100,
-                                       fallback=f"Playlist {_ch_clean} {_date_s}")
+                                       fallback=f"Playlist {_date_s}",
+                                       strip_channel=ch_name)
         _raw_desc = _playlist_rewrite_description(job.get('ref_description', ''), ch_name, new_title)
         new_desc = _clean_upload_text(_raw_desc, max_len=5000, fallback=new_title)
         _raw_tags = _playlist_build_tags(job.get('ref_tags') or [], job.get('theme', ''))
@@ -9426,8 +9706,10 @@ def _playlist_build_thread(job_id):
                     job['ref_thumbnail_url'], new_title, ch_name,
                     os.path.join(job_dir, 'thumb.jpg'))
             except Exception as e:
-                print(f"[playlist] thumbnail gagal: {e}", flush=True)
-                thumb_path = ''
+                # 🔥 v1.2.22: thumbnail gagal = job GAGAL dengan pesan jelas.
+                # Jangan diam-diam lanjut tanpa thumbnail (dulu: saat upload
+                # fallback ke thumbnail galeri acak — bukan gambar playlist).
+                raise RuntimeError(f'Thumbnail playlist gagal dibuat: {e}')
         _playlist_job_update(job_id, status='preparing',
                              progress='Membuat task upload...',
                              new_title=new_title, new_description=new_desc,
@@ -9904,10 +10186,10 @@ def _create_long_batch(data, max_count=BATCH_MAX_COUNT):
         # 🧹 v1.2.13: bersihkan judul & deskripsi tiap video (bank judul
         # bisa mengandung emoji) — fallback aman bila hasil bersih kosong.
         _raw_title = titles[i] if i < len(titles) else f"Auto Video #{i+1}"
-        _ch_clean = _clean_upload_text(channel_name) or 'ZIMUSE'
         _date_s = _wib_now().strftime('%Y-%m-%d')
         _title = _clean_upload_text(_raw_title, max_len=100,
-                                    fallback=f"Video {_ch_clean} {_date_s}")
+                                    fallback=f"Video {_date_s}",
+                                    strip_channel=channel_name)
         _raw_desc = descs[i] if i < len(descs) else data.get('description', '')
         _desc = _clean_upload_text(_raw_desc, max_len=5000, fallback=_title)
         _title_cleaned = (_title != _raw_title) or (_desc != _raw_desc)
@@ -10450,7 +10732,7 @@ def telegram_reminder_worker():
                     
                     # Jika sisa waktu <= 24 Jam (dan belum kelewat jauh)
                     if timedelta(hours=0) < time_diff <= timedelta(hours=24):
-                        msg = f"⚠️ Notifikasi Ziqva Muse Bot\n\nChannel: *{_tg_escape(c['name'])}*\nStok jadwal video hampir habis!\nJadwal terakhir: {_tg_escape(last_date_str)}\n\nWaktunya buat video baru, Bos K!"
+                        msg = _strip_emoji_tg(f"Notifikasi Ziqva Muse Bot\n\nChannel: *{_tg_escape(c['name'])}*\nStok jadwal video hampir habis!\nJadwal terakhir: {_tg_escape(last_date_str)}\n\nWaktunya buat video baru, Bos K!")
                         try:
                             # Kirim pesan ke Telegram
                             requests.post(
@@ -10774,7 +11056,7 @@ def save_telegram():
         try:
             requests.post(
                 f"https://api.telegram.org/bot{bot_config['tg_token']}/sendMessage", 
-                json={"chat_id": bot_config['tg_chat_id'], "text": "✅ Ziqva Muse Bot: Notifikasi Telegram berhasil dihubungkan!"}
+                json={"chat_id": bot_config['tg_chat_id'], "text": _strip_emoji_tg("Ziqva Muse Bot: Notifikasi Telegram berhasil dihubungkan!")}
             )
         except: 
             pass

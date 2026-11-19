@@ -2324,6 +2324,24 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
   </div>
 </div>
 
+<!-- ✅ MODAL KONFIRMASI BERTEMA — pengganti dialog bawaan browser (v1.2.30).
+     Satu modal dipakai ulang semua aksi konfirmasi (hapus riwayat, hapus client,
+     hapus backup, hapus key, dll.) via themedConfirm() -> Promise<boolean>.
+     Gaya sama dengan modal lain (upd-confirm-modal): overlay gelap, kartu var(--card). -->
+<div id="themed-confirm-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)_tcClose(false)">
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);max-width:460px;width:100%;padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.35)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div class="card-title" style="font-size:15px" id="tc-title">Konfirmasi</div>
+      <button type="button" class="btn btn-g btn-sm" onclick="_tcClose(false)" title="Tutup">✕</button>
+    </div>
+    <div id="tc-msg" style="font-size:13px;line-height:1.6;margin-bottom:16px;white-space:pre-line"></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px">
+      <button type="button" class="btn" id="tc-cancel" onclick="_tcClose(false)">Batal</button>
+      <button type="button" class="btn btn-danger" id="tc-ok" onclick="_tcClose(true)">Ya</button>
+    </div>
+  </div>
+</div>
+
 <div id="add-ch-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closeAddChannelModal()">
   <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);max-width:520px;width:100%;padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.35)">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
@@ -2396,8 +2414,8 @@ function editTgConfig() {
     if (el) { el.focus(); el.select(); }
 }
 
-function deleteTgConfig() {
-    if (!confirm('Hapus konfigurasi Telegram yang tersimpan?')) return;
+async function deleteTgConfig() {
+    if (!(await themedConfirm('Hapus konfigurasi Telegram yang tersimpan?', { title: 'Hapus Konfigurasi Telegram', okLabel: 'Ya, Hapus' }))) return;
     fetch('/api/delete_telegram', { method: 'POST' }).then(r => r.json()).then(d => {
         if (d.status === 'success') {
             document.getElementById('tg-token').value = '';
@@ -2555,7 +2573,7 @@ function loadDescPreset(name) {
     document.getElementById('bc-desc').value = descBankPerChannel[yt_id][name];
 }
 
-function deleteDescPreset() {
+async function deleteDescPreset() {
     const yt_id = document.getElementById('bc-channel')?.value;
     if (!yt_id) return;
 
@@ -2563,7 +2581,7 @@ function deleteDescPreset() {
     const name = sel.value;
     if (!name) { toast('Pilih preset dari dropdown dulu untuk dihapus!', 'warn'); return; }
     
-    if (!confirm(`Yakin ingin membuang preset deskripsi "${name}" dari channel ini?`)) return;
+    if (!(await themedConfirm(`Yakin ingin membuang preset deskripsi "${name}" dari channel ini?`, { title: 'Hapus Preset Deskripsi', okLabel: 'Ya, Hapus' }))) return;
     
     if (descBankPerChannel[yt_id] && descBankPerChannel[yt_id][name]) {
         delete descBankPerChannel[yt_id][name];
@@ -2815,8 +2833,8 @@ function renderDashboardChannels() {
   renderChannelTable();
 }
 
-function stopChannelTasks(yt_id) {
-  if (!confirm('Hentikan seluruh antrean untuk channel ini?\n(Aset Gallery dan Profil Channel tetap utuh)')) return;
+async function stopChannelTasks(yt_id) {
+  if (!(await themedConfirm('Hentikan seluruh antrean untuk channel ini?\n(Aset Gallery dan Profil Channel tetap utuh)', { okLabel: 'Ya, Hentikan' }))) return;
   fetch('/api/stop_channel/' + yt_id, { method: 'POST' })
     .then(r => r.json())
     .then(d => { 
@@ -2827,8 +2845,8 @@ function stopChannelTasks(yt_id) {
     .catch(() => toast('Gagal menghentikan antrean', 'error'));
 }
 
-function deleteChannel(yt_id) {
-  if (!confirm('⚠️ PERINGATAN NUKLIR!\n\nYakin ingin menghapus channel ini secara permanen?\nSeluruh folder aset (Video, Audio, Background), Title Bank, dan sisa antrean akan dimusnahkan tanpa jejak!')) return;
+async function deleteChannel(yt_id) {
+  if (!(await themedConfirm('⚠️ PERINGATAN NUKLIR!\n\nYakin ingin menghapus channel ini secara permanen?\nSeluruh folder aset (Video, Audio, Background), Title Bank, dan sisa antrean akan dimusnahkan tanpa jejak!', { okLabel: 'Ya, Hapus Permanen' }))) return;
   const fd = new FormData();
   fd.append('yt_id', yt_id);
   fd.append('confirm', 'yes'); // 🔒 #5: konfirmasi ulang di server
@@ -2970,13 +2988,13 @@ function calDayRow(dt, t, chName, isPaused) {
   return `<div class="task-row"><div class="task-icon">🗓</div><div class="task-info"><div class="task-name">${escapeHtml(t.title || 'Task')}</div><div class="task-meta">${hhmm} · ${escapeHtml(chName(yt))}</div></div><span class="pill ${s.cls}" style="flex-shrink:0">${s.txt}</span></div>`;
 }
 
-function toggleChannelPause(yt_id, paused) {
+async function toggleChannelPause(yt_id, paused) {
   const c = (calData.channels || []).concat(channels || []).find(x => x.yt_id === yt_id);
   const name = c ? c.name : yt_id;
   const msg = paused
     ? `Jeda channel "${name}"?\nTask terjadwal channel ini tidak dieksekusi/di-upload sampai dilanjutkan lagi.`
     : `Lanjutkan lagi channel "${name}"?\nTask yang tertahan akan masuk antrean render.`;
-  if (!confirm(msg)) return;
+  if (!(await themedConfirm(msg, { danger: false, okLabel: paused ? 'Ya, Jeda' : 'Ya, Lanjutkan' }))) return;
   fetch('/api/set_channel_paused', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ yt_id, paused }) })
     .then(r => r.json())
     .then(d => {
@@ -2991,13 +3009,13 @@ function toggleChannelPause(yt_id, paused) {
 // ────────────────────────────────────────────────────────
 //  FASE 6: AUTOPILOT PER CHANNEL
 // ────────────────────────────────────────────────────────
-function toggleChannelAutopilot(yt_id, mode) {
+async function toggleChannelAutopilot(yt_id, mode) {
   const c = (calData.channels || []).concat(channels || []).find(x => x.yt_id === yt_id);
   const name = c ? c.name : yt_id;
   const msg = mode === 'auto'
     ? `Aktifkan Full-Auto untuk channel "${name}"?\nBatch baru langsung masuk antrean render TANPA approval. Pakai untuk channel terpercaya saja.`
     : `Kembalikan channel "${name}" ke mode Approval?\nBatch baru akan menunggu persetujuan dulu (preview ke Telegram).`;
-  if (!confirm(msg)) return;
+  if (!(await themedConfirm(msg, { danger: false, okLabel: 'Ya' }))) return;
   fetch('/api/set_channel_autopilot', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ yt_id, autopilot: mode }) })
     .then(r => r.json())
     .then(d => {
@@ -3013,13 +3031,13 @@ function toggleChannelAutopilot(yt_id, mode) {
 // via /api/set_channel_monetized). Channel yang ditandai tampil
 // "💰 Monetisasi Aktif" di tabel & kartu channel, dan tidak masuk penilaian
 // kesiapan monetisasi lagi.
-function toggleChannelMonetized(yt_id, val) {
+async function toggleChannelMonetized(yt_id, val) {
   const c = (channels || []).find(x => x.yt_id === yt_id);
   const name = c ? c.name : yt_id;
   const msg = val
     ? `Tandai channel "${name}" sebagai SUDAH monetisasi?\n\nIni penanda MANUAL (tidak ada data API untuk status monetisasi). Channel ini akan tampil "💰 Monetisasi Aktif" di tabel dan tidak masuk penilaian kesiapan lagi.`
     : `Hapus tanda monetisasi channel "${name}"?\n\nChannel kembali masuk penilaian kesiapan monetisasi.`;
-  if (!confirm(msg)) return;
+  if (!(await themedConfirm(msg, { danger: false, okLabel: 'Ya' }))) return;
   fetch('/api/set_channel_monetized', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ yt_id, monetized: val }) })
     .then(r => r.json())
     .then(d => {
@@ -3151,6 +3169,50 @@ function closeUpdConfirm() {
   const m = document.getElementById('upd-confirm-modal');
   if (m) m.style.display = 'none';
 }
+// ✅ MODAL KONFIRMASI BERTEMA (v1.2.30) — pengganti dialog bawaan browser.
+// themedConfirm(pesan, {title, danger, okLabel, cancelLabel}) -> Promise<boolean>.
+// Judul: dari opts.title, atau baris pertama pesan bila pesan multi-baris
+// (baris pertama jadi judul, sisanya jadi isi). Escape / klik overlay / Batal = false.
+// Fokus awal di tombol Batal (aman untuk aksi destruktif).
+let _tcResolve = null;
+function themedConfirm(msg, opts) {
+  opts = opts || {};
+  return new Promise((resolve) => {
+    if (_tcResolve) { const prev = _tcResolve; _tcResolve = null; prev(false); }
+    let title = opts.title || 'Konfirmasi';
+    let body = msg || '';
+    if (!opts.title && typeof msg === 'string' && msg.indexOf('\n') !== -1) {
+      const parts = msg.split('\n');
+      title = (parts[0] || '').trim() || title;
+      body = parts.slice(1).join('\n').trim();
+    }
+    const m = document.getElementById('themed-confirm-modal');
+    const t = document.getElementById('tc-title');
+    const b = document.getElementById('tc-msg');
+    const ok = document.getElementById('tc-ok');
+    const cancel = document.getElementById('tc-cancel');
+    if (t) t.textContent = title;
+    if (b) b.textContent = body;
+    if (ok) { ok.textContent = opts.okLabel || 'Ya'; ok.className = 'btn ' + (opts.danger === false ? 'btn-p' : 'btn-danger'); }
+    if (cancel) cancel.textContent = opts.cancelLabel || 'Batal';
+    _tcResolve = resolve;
+    if (m) m.style.display = 'flex';
+    setTimeout(() => { const c = document.getElementById('tc-cancel'); if (c && c.focus) c.focus(); }, 0);
+  });
+}
+function _tcClose(val) {
+  const m = document.getElementById('themed-confirm-modal');
+  if (m) m.style.display = 'none';
+  if (_tcResolve) { const r = _tcResolve; _tcResolve = null; r(val); }
+}
+function _tcOnKeydown(e) {
+  if (e && e.key === 'Escape') {
+    const m = document.getElementById('themed-confirm-modal');
+    if (m && m.style && m.style.display === 'flex') _tcClose(false);
+  }
+}
+document.addEventListener('keydown', _tcOnKeydown);
+
 function startUpdate() { openUpdConfirm(); }
 function doUpdate() {
   const btn = document.getElementById('upd-run-btn');
@@ -3294,8 +3356,8 @@ function backupSaveSettings() {
 function backupDownload(name) {
   window.open('/api/backup_download?name=' + encodeURIComponent(name) + '&csrf_token=' + encodeURIComponent(window.CSRF_TOKEN || ''), '_blank');
 }
-function backupDelete(name) {
-  if (!confirm('Hapus backup ' + name + '? File ini tidak bisa dikembalikan.')) return;
+async function backupDelete(name) {
+  if (!(await themedConfirm('Hapus backup ' + name + '? File ini tidak bisa dikembalikan.', { title: 'Hapus Backup', okLabel: 'Ya, Hapus' }))) return;
   fetch('/api/backup_delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }).then(r => r.json()).then(d => {
     toast(d.message || '', d.status === 'success' ? 'success' : 'error');
     if (d.status === 'success') loadBackupStatus();
@@ -3486,12 +3548,12 @@ function playGalleryVideo(btn) {
   }
 }
 
-function deleteAllGallery() {
+async function deleteAllGallery() {
     const items = galleryData[currentGalleryType] || []; 
     if (!items.length) { toast('Folder sudah kosong!', 'info'); return; }
     
     const typeName = currentGalleryType.toUpperCase();
-    if (!confirm(`⚠️ PERINGATAN!\nYakin ingin menghapus SEMUA file ${typeName} di channel ini?`)) return;
+    if (!(await themedConfirm(`⚠️ PERINGATAN!\nYakin ingin menghapus SEMUA file ${typeName} di channel ini?`, { okLabel: 'Ya, Hapus Semua' }))) return;
     
     toast(`Membersihkan folder...`, 'info');
     
@@ -3605,8 +3667,8 @@ function uploadGalleryFiles(files) {
   xhr.send(fd);
 }
 
-function deleteGalleryFile(name) {
-  if (!confirm(`Hapus file "${name}"?`)) return;
+async function deleteGalleryFile(name) {
+  if (!(await themedConfirm(`Hapus file "${name}"?`, { title: 'Hapus File Galeri', okLabel: 'Ya, Hapus' }))) return;
   const fd = new FormData();
   fd.append('yt_id', currentGalleryCh);
   fd.append('type', currentGalleryType);
@@ -3681,9 +3743,9 @@ function deleteTitle(idx) {
   renderTitleList(titleBankData[currentTitleCh]);
 }
 
-function clearTitleBank() {
+async function clearTitleBank() {
   if (!currentTitleCh) { toast('Pilih channel dulu!', 'warn'); return; }
-  if (!confirm('Hapus semua judul?')) return;
+  if (!(await themedConfirm('Hapus semua judul?', { title: 'Hapus Semua Judul', okLabel: 'Ya, Hapus' }))) return;
   titleBankData[currentTitleCh] = [];
   saveTitleBankToServer(currentTitleCh);
   renderTitleList([]);
@@ -4428,8 +4490,8 @@ function pixabayKeyAdd() {
       else toast(d.message || 'Gagal menambah key', 'error');
     }).catch(() => toast('Gagal menghubungi server', 'error'));
 }
-function pixabayKeyDel(ident) {
-  if (!confirm('Hapus API key Pixabay ini?')) return;
+async function pixabayKeyDel(ident) {
+  if (!(await themedConfirm('Hapus API key Pixabay ini?', { title: 'Hapus API Key Pixabay', okLabel: 'Ya, Hapus' }))) return;
   fetch('/api/playlist_pixabay_key_del', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ident }) })
     .then(r => r.json()).then(d => {
       if (d.status === 'success') { toast(d.message, 'success'); loadPixabayKeys(); }
@@ -4601,10 +4663,10 @@ function importVisPreset() {
   inp.click();
 }
 
-function deleteVisPreset() {
+async function deleteVisPreset() {
   const sel = document.getElementById('vis-preset-load'); const name = sel.value;
   if (!name) { toast('Pilih preset dari dropdown dulu untuk dihapus!', 'warn'); return; }
-  if (!confirm(`Yakin ingin menghapus preset "${name}" secara permanen?`)) return;
+  if (!(await themedConfirm(`Yakin ingin menghapus preset "${name}" secara permanen?`, { title: 'Hapus Preset Visual', okLabel: 'Ya, Hapus' }))) return;
   delete visPresets[name]; localStorage.setItem('wp_presets', JSON.stringify(visPresets)); refreshVisPresetList();
   fetch('/api/delete_preset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name }) }).catch(() => {});
   toast(`Preset "${name}" berhasil dibuang! 🗑️`, 'success');
@@ -5285,9 +5347,9 @@ function renderTasks() {
   if (bnBadge) { if (allActive.length) { bnBadge.style.display = 'block'; bnBadge.textContent = allActive.length; } else bnBadge.style.display = 'none'; }
 }
 
-function stopTask(id) {
-  if (!confirm('Hentikan paksa?')) return;
+async function stopTask(id) {
   const btn = event && event.target;
+  if (!(await themedConfirm('Hentikan paksa?', { title: 'Hentikan Task', okLabel: 'Ya, Hentikan' }))) return;
   if (btn) { btn.disabled = true; btn.textContent = 'Menghentikan...'; }
   fetch('/api/stop_task/' + id, { method: 'POST' })
     .then(r => r.json())
@@ -5308,31 +5370,31 @@ function approveTask(id) {
     .catch(() => toast('Gagal menyetujui task', 'error'));
 }
 
-function rejectTask(id) {
-  if (!confirm('Tolak task ini? Task tidak akan dieksekusi dan pindah ke riwayat.')) return;
+async function rejectTask(id) {
+  if (!(await themedConfirm('Tolak task ini? Task tidak akan dieksekusi dan pindah ke riwayat.', { title: 'Tolak Task', okLabel: 'Ya, Tolak' }))) return;
   fetch('/api/reject_task', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task_id: id }) })
     .then(r => r.json()).then(d => { toast(d.message, d.status === 'success' ? 'success' : 'error'); fetchServerTasks(); })
     .catch(() => toast('Gagal menolak task', 'error'));
 }
 
-function clearHistory() {
-  if (!confirm('Hapus SEMUA riwayat? Entri yang dihapus tidak bisa dikembalikan. Task aktif tidak ikut terhapus.')) return;
+async function clearHistory() {
+  if (!(await themedConfirm('Hapus SEMUA riwayat? Entri yang dihapus tidak bisa dikembalikan. Task aktif tidak ikut terhapus.', { title: 'Hapus Semua Riwayat', okLabel: 'Ya, Hapus Semua' }))) return;
   fetch('/api/clear_history', { method: 'POST' }).then(r => r.json()).then(d => { toast(d.message, 'success'); fetchServerTasks(); }).catch(() => toast('Gagal menghapus riwayat', 'error'));
 }
 
 // Hapus SATU entri riwayat (tombol 🗑️ per baris). Riwayat adalah jejak
 // audit — tidak ada edit, hanya hapus. Task aktif tidak bisa dihapus
 // dari sini (backend menolak bila id masih ada di antrean aktif).
-function deleteHistoryItem(id) {
-  if (!confirm('Hapus entri riwayat ini?')) return;
+async function deleteHistoryItem(id) {
+  if (!(await themedConfirm('Hapus entri riwayat ini?', { title: 'Hapus Riwayat', okLabel: 'Ya, Hapus' }))) return;
   fetch('/api/delete_history_item', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task_id: id }) })
     .then(r => r.json()).then(d => { toast(d.message, d.status === 'success' ? 'success' : 'error'); fetchServerTasks(); })
     .catch(() => toast('Gagal menghapus entri riwayat', 'error'));
 }
 
 // 🔥 BARU: memulihkan task gagal (watchdog stuck) dari history ke antrean aktif
-function recoverFailedTasks() {
-  if (!confirm('Pulihkan task yang digagalkan otomatis ke antrean render?\nJadwal tayang & judul tetap utuh.')) return;
+async function recoverFailedTasks() {
+  if (!(await themedConfirm('Pulihkan task yang digagalkan otomatis ke antrean render?\nJadwal tayang & judul tetap utuh.', { danger: false, okLabel: 'Ya, Pulihkan' }))) return;
   fetch('/api/recover_failed_tasks', { method: 'POST' }).then(r => r.json()).then(d => {
     if (d.recovered) { toast(`${d.recovered} task dipulihkan ke antrean ✓`, 'success'); fetchServerTasks(); }
     else { toast('Tidak ada task gagal yang perlu dipulihkan', 'info'); }
@@ -5600,10 +5662,10 @@ function runFormulaTune() {
       fetchFormulaAnalytics();
     }).catch(() => toast('Gagal menjalankan lingkaran analitik.', 'error'));
 }
-function resetFormulaWeights() {
+async function resetFormulaWeights() {
   const fv = document.getElementById('analytics_filter') ? document.getElementById('analytics_filter').value : 'ALL';
   if (!fv || fv === 'ALL') { toast('Pilih satu channel dulu di filter Analytics untuk reset bobot.', 'warn'); return; }
-  if (!confirm('Reset semua bobot judul channel ini ke 1,0? Judul tidak dihapus, hanya bobot yang dikembalikan.')) return;
+  if (!(await themedConfirm('Reset semua bobot judul channel ini ke 1,0? Judul tidak dihapus, hanya bobot yang dikembalikan.', { title: 'Reset Bobot Judul', danger: false, okLabel: 'Ya, Reset' }))) return;
   fetch('/api/reset_formula_weights', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ yt_id: fv }) })
     .then(r => r.json()).then(d => { toast(d.message || 'Bobot direset.', d.status === 'success' ? 'success' : 'error'); fetchFormulaAnalytics(); })
     .catch(() => toast('Gagal mereset bobot.', 'error'));
@@ -5754,10 +5816,10 @@ function checkApiStatus() {
   }).catch(() => {});
 }
 
-function oauthClientDelete(cid) {
+async function oauthClientDelete(cid) {
   const c = _oauthClients.find(x => x.client_id === cid);
   if (!c) return;
-  if (!confirm('Hapus client ' + _oauthClientLabel(c) + '? Token channel yang sudah diterbitkan client ini tetap tersimpan, tapi channel tidak bisa refresh / login ulang dengan client ini sampai JSON-nya di-upload lagi.')) return;
+  if (!(await themedConfirm('Hapus client ' + _oauthClientLabel(c) + '? Token channel yang sudah diterbitkan client ini tetap tersimpan, tapi channel tidak bisa refresh / login ulang dengan client ini sampai JSON-nya di-upload lagi.', { title: 'Hapus Client OAuth', okLabel: 'Ya, Hapus' }))) return;
   fetch('/api/oauth_client_delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: cid }) }).then(r => r.json()).then(d => {
     toast(d.message || 'Client dihapus.', d.status === 'success' ? 'success' : 'error');
     checkApiStatus();
@@ -6185,12 +6247,13 @@ function exportChannels() {
     window.location.href = '/api/export_channels';
 }
 
-function importChannels(event) {
-    const file = event.target.files[0];
+async function importChannels(event) {
+    const input = event.target;
+    const file = input.files[0];
     if (!file) return;
 
-    if (!confirm("⚠️ PERINGATAN: Import data akan menimpa SEMUA channel yang ada saat ini. Lanjutkan?")) {
-        event.target.value = ''; // Reset input
+    if (!(await themedConfirm("⚠️ PERINGATAN: Import data akan menimpa SEMUA channel yang ada saat ini. Lanjutkan?", { title: 'Import Channel', okLabel: 'Ya, Import' }))) {
+        input.value = ''; // Reset input
         return;
     }
 

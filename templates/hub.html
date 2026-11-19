@@ -345,8 +345,10 @@
             body { overflow-y: auto; }
         }
     </style>
+    <link rel="icon" href="/static/logo.png">
+    <link rel="stylesheet" href="/static/css/studio.css">
 </head>
-<body class="min-h-screen w-screen overflow-x-hidden flex flex-col justify-between p-3 sm:p-5 select-none relative">
+<body class="studio-hub min-h-screen w-full overflow-x-hidden flex flex-col justify-between p-3 sm:p-5 select-none relative">
     <!-- 🔒 #12: token CSRF per-sesi (diisi server saat render). -->
     <script>window.CSRF_TOKEN = "{{ csrf_token }}";</script>
     <div class="bg-mesh"></div>
@@ -354,7 +356,7 @@
     <div class="aurora aurora-b"></div>
     <div class="aurora aurora-c"></div>
 
-    <div class="relative z-10 w-full max-w-6xl mx-auto flex-1 flex flex-col justify-between gap-3 sm:gap-4">
+    <main class="hub-shell relative z-10 w-full max-w-6xl mx-auto flex-1 flex flex-col justify-between gap-3 sm:gap-4">
 
         <!-- ════════ COMPACT HEADER ════════ -->
         <header class="glass-card rounded-xl px-4 py-2.5 sm:px-5 sm:py-3 flex items-center justify-between gap-3 reveal d1">
@@ -372,7 +374,7 @@
                 </div>
             </a>
 
-            <div class="flex items-center gap-2">
+            <div class="hub-actions flex items-center gap-2">
                 <!-- Status Node -->
                 <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 text-[11px] text-slate-300">
                     <span class="status-dot w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
@@ -402,13 +404,20 @@
         <!-- ════════ HERO ════════ -->
         <section class="hero rounded-xl px-4 py-4 sm:px-6 sm:py-5 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-6 reveal d2">
             <div class="flex-1 min-w-0">
-                <p class="text-[10px] font-bold tracking-[0.22em] text-cyan-400 mono mb-1">COMMAND CENTER &bull; ONLINE 24/7</p>
+                <p class="text-[10px] font-bold tracking-[0.22em] text-cyan-400 mono mb-1">ZIMUSE BOT / HUB</p>
                 <h1 class="hero-title text-xl sm:text-2xl font-black text-white tracking-tight leading-snug">
-                    Pabrik Konten Anda, <span class="grad-text">Siap Berproduksi.</span>
+                    Ruang produksi<br><span class="grad-text">konten Anda.</span>
                 </h1>
                 <p class="hero-sub text-xs sm:text-sm text-slate-400 mt-1 leading-relaxed">
-                    Pilih modul di bawah untuk meracik video kompilasi panjang atau memotong klip viral — semua berjalan otomatis di VPS.
+                    Buat kompilasi musik untuk YouTube atau potong video panjang menjadi Shorts dengan subtitle AI.
                 </p>
+            </div>
+            <div class="studio-signal" aria-hidden="true">
+                <div class="signal-frame">
+                    <div class="signal-bars">
+                        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                    </div>
+                </div>
             </div>
             <div class="hero-badges flex items-center gap-2 flex-shrink-0">
                 <span class="hero-badge flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold text-slate-300">
@@ -423,68 +432,8 @@
             </div>
         </section>
 
-        <!-- ════════ SLIM TELEMETRY BOARD (NO SCROLL) ════════ -->
-        <div class="glass-card rounded-xl p-3 sm:p-4 reveal d3">
-            <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
-                <!-- Stat 1 -->
-                <div class="stat-card bg-slate-900/90 rounded-lg p-2.5 border border-slate-800 flex items-center justify-between">
-                    <div>
-                        <span class="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Factory Render</span>
-                        <div class="flex items-baseline gap-1.5 mt-0.5">
-                            <span class="text-xl sm:text-2xl font-black text-white mono" id="stat-factory">0</span>
-                            <span class="text-[10px] text-slate-500">tugas aktif</span>
-                        </div>
-                    </div>
-                    <div class="w-8 h-8 rounded-lg bg-cyan-500/10 text-cyan-400 flex items-center justify-center text-sm">
-                        <i class="fa-solid fa-film"></i>
-                    </div>
-                </div>
-
-                <!-- Stat 2 -->
-                <div class="stat-card bg-slate-900/90 rounded-lg p-2.5 border border-slate-800 flex items-center justify-between">
-                    <div>
-                        <span class="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Clipper Jobs</span>
-                        <div class="flex items-baseline gap-1.5 mt-0.5">
-                            <span class="text-xl sm:text-2xl font-black text-white mono" id="stat-clipper">0</span>
-                            <span class="text-[10px] text-slate-500">klip AI</span>
-                        </div>
-                    </div>
-                    <div class="w-8 h-8 rounded-lg bg-purple-500/10 text-purple-400 flex items-center justify-center text-sm">
-                        <i class="fa-solid fa-scissors"></i>
-                    </div>
-                </div>
-
-                <!-- Stat 3 -->
-                <div class="stat-card bg-slate-900/90 rounded-lg p-2.5 border border-slate-800 flex items-center justify-between">
-                    <div>
-                        <span class="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Beban CPU</span>
-                        <div class="flex items-baseline gap-1.5 mt-0.5">
-                            <span class="text-xl sm:text-2xl font-black text-amber-400 mono" id="stat-cpu">0%</span>
-                            <span class="text-[10px] text-slate-500">VPS Core</span>
-                        </div>
-                    </div>
-                    <div class="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-400 flex items-center justify-center text-sm">
-                        <i class="fa-solid fa-microchip"></i>
-                    </div>
-                </div>
-
-                <!-- Stat 4 -->
-                <div class="stat-card bg-slate-900/90 rounded-lg p-2.5 border border-slate-800 flex items-center justify-between">
-                    <div>
-                        <span class="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Cloud Engine</span>
-                        <div class="flex items-baseline gap-1.5 mt-0.5">
-                            <span class="text-xs sm:text-sm font-bold text-emerald-400">FFmpeg 24/7</span>
-                        </div>
-                    </div>
-                    <div class="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center text-sm">
-                        <i class="fa-solid fa-bolt"></i>
-                    </div>
-                </div>
-            </div>
-        </div>
-
         <!-- ════════ TWO MAIN MODULE CARDS (BALANCED FIT) ════════ -->
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-5 flex-1 items-stretch reveal d4">
+        <section class="hub-modules grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-5 flex-1 items-stretch reveal d4" aria-label="Modul produksi">
 
             <!-- 1. FACTORY CARD -->
             <div class="module-box rounded-xl p-4 sm:p-6 flex flex-col justify-between">
@@ -578,7 +527,67 @@
                 </a>
             </div>
 
-        </div>
+        </section>
+
+        <!-- ════════ SLIM TELEMETRY BOARD (NO SCROLL) ════════ -->
+        <section class="hub-telemetry glass-card rounded-xl p-3 sm:p-4 reveal d3" aria-label="Statistik produksi">
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
+                <!-- Stat 1 -->
+                <div class="stat-card bg-slate-900/90 rounded-lg p-2.5 border border-slate-800 flex items-center justify-between">
+                    <div>
+                        <span class="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Factory Render</span>
+                        <div class="flex items-baseline gap-1.5 mt-0.5">
+                            <span class="text-xl sm:text-2xl font-black text-white mono" id="stat-factory">0</span>
+                            <span class="text-[10px] text-slate-500">tugas aktif</span>
+                        </div>
+                    </div>
+                    <div class="w-8 h-8 rounded-lg bg-cyan-500/10 text-cyan-400 flex items-center justify-center text-sm">
+                        <i class="fa-solid fa-film"></i>
+                    </div>
+                </div>
+
+                <!-- Stat 2 -->
+                <div class="stat-card bg-slate-900/90 rounded-lg p-2.5 border border-slate-800 flex items-center justify-between">
+                    <div>
+                        <span class="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Clipper Jobs</span>
+                        <div class="flex items-baseline gap-1.5 mt-0.5">
+                            <span class="text-xl sm:text-2xl font-black text-white mono" id="stat-clipper">0</span>
+                            <span class="text-[10px] text-slate-500">klip AI</span>
+                        </div>
+                    </div>
+                    <div class="w-8 h-8 rounded-lg bg-purple-500/10 text-purple-400 flex items-center justify-center text-sm">
+                        <i class="fa-solid fa-scissors"></i>
+                    </div>
+                </div>
+
+                <!-- Stat 3 -->
+                <div class="stat-card bg-slate-900/90 rounded-lg p-2.5 border border-slate-800 flex items-center justify-between">
+                    <div>
+                        <span class="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Beban CPU</span>
+                        <div class="flex items-baseline gap-1.5 mt-0.5">
+                            <span class="text-xl sm:text-2xl font-black text-amber-400 mono" id="stat-cpu">0%</span>
+                            <span class="text-[10px] text-slate-500">VPS Core</span>
+                        </div>
+                    </div>
+                    <div class="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-400 flex items-center justify-center text-sm">
+                        <i class="fa-solid fa-microchip"></i>
+                    </div>
+                </div>
+
+                <!-- Stat 4 -->
+                <div class="stat-card bg-slate-900/90 rounded-lg p-2.5 border border-slate-800 flex items-center justify-between">
+                    <div>
+                        <span class="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Cloud Engine</span>
+                        <div class="flex items-baseline gap-1.5 mt-0.5">
+                            <span class="text-xs sm:text-sm font-bold text-emerald-400">FFmpeg 24/7</span>
+                        </div>
+                    </div>
+                    <div class="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center text-sm">
+                        <i class="fa-solid fa-bolt"></i>
+                    </div>
+                </div>
+            </div>
+        </section>
 
         <!-- ════════ SLIM COMPACT FOOTER WITH ZIMUSE BOT WATERMARK ════════ -->
         <footer class="glass-card rounded-xl px-4 py-2 flex items-center justify-between text-[11px] text-slate-400 reveal d5">
@@ -595,7 +604,7 @@
             </div>
         </footer>
 
-    </div>
+    </main>
 
     <!-- MODAL TELEGRAM SETTINGS -->
     <div id="tg-modal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 hidden">

@@ -59,16 +59,22 @@
         [data-theme="light"] .bg-slate-900\/90 { background-color: #f8fafc !important; border-color: #cbd5e1 !important; color: #0f172a !important; }
         [data-theme="light"] .border-slate-800 { border-color: #e2e8f0 !important; }
     </style>
+    <link rel="icon" href="/static/logo.png">
+    <link rel="stylesheet" href="/static/css/studio.css">
 </head>
-<body class="p-4">
+<body class="studio-auth p-4">
     <div class="bg-mesh"></div>
+    <div class="auth-brand" aria-hidden="true">
+        <img src="/static/ziqva-logo.png" alt="" width="56" height="56">
+        <strong>Zimuse Bot</strong>
+    </div>
 
-    <div class="glass-card rounded-2xl p-8 sm:p-10 w-full max-w-md relative z-10 border border-slate-800">
+    <div class="auth-card glass-card rounded-2xl p-8 sm:p-10 w-full max-w-md relative z-10 border border-slate-800">
         <!-- Top Status Pill -->
         <div class="flex items-center justify-between mb-8">
             <div class="flex items-center gap-2 px-3 py-1 rounded-full bg-slate-800/80 border border-slate-700/60 text-xs text-slate-300">
                 <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span class="mono">ZIMUSE BOT • CLOUD PRODUCTION</span>
+                <button type="button" class="auth-theme" id="auth-theme" aria-label="Ganti tema">Mode terang</button>
             </div>
             <span class="text-xs text-slate-400 mono">PORT: 8000</span>
         </div>
@@ -161,10 +167,7 @@
                 icon.classList.add('fa-eye');
             }
         }
-        (function() {
-            const saved = localStorage.getItem('ziqva_theme') || 'dark';
-            document.documentElement.setAttribute('data-theme', saved);
-        })();
     </script>
+    <script src="/static/js/auth-theme.js"></script>
 </body>
 </html>

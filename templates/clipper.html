@@ -62,14 +62,16 @@
             color: #0f172a; 
         }
     </style>
+    <link rel="icon" href="/static/logo.png">
+    <link rel="stylesheet" href="/static/css/studio.css">
 </head>
-<body class="min-h-screen flex flex-col items-center p-6">
+<body class="studio-clipper min-h-screen flex flex-col items-center p-6">
     
     <!-- HEADER -->
-    <div class="w-full max-w-5xl flex justify-between items-center mb-8">
+    <header class="clipper-header w-full max-w-5xl flex justify-between items-center mb-8">
         <div>
-            <h1 class="text-3xl font-bold tracking-wide">Ziqva Muse Bot <span class="text-primary">Clipper Pro</span></h1>
-            <p class="text-gray-400 text-sm mt-1">Autonomous AI Video Slicer & Cloud Batch Publisher</p>
+            <h1 class="text-3xl font-bold tracking-wide">Shorts AI <span class="text-primary">/ Clipper Pro</span></h1>
+            <p class="text-gray-400 text-sm mt-1">Potong video, buat subtitle, dan jadwalkan publikasi klip.</p>
         </div>
         
         <div class="flex items-center gap-3">
@@ -88,9 +90,9 @@
         <i class="fa-solid fa-folder-open text-primary"></i> Buka Galeri
     </button>
 </div>
-    </div>
+    </header>
 
-    <div class="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <div class="clipper-workspace w-full max-w-5xl grid grid-cols-1 lg:grid-cols-3 gap-6">
         
         <!-- KOLOM KIRI: SETTING & INPUT -->
         <div class="lg:col-span-2 space-y-6">

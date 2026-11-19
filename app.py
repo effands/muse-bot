@@ -10231,7 +10231,8 @@ def _playlist_thumb_fetch(ref_thumb_url):
     """Unduh thumbnail referensi (hanya *.ytimg.com). Coba URL asli dulu,
     lalu varian ukuran dari video id yang sama (maxres → hq → mq → sd) —
     API YouTube kadang mengembalikan maxres yang ternyata 404 (kasus video
-    Malaysia lFp_RY_jyqQ: maxres 404, hq 200). Kembalikan PIL Image RGB."""
+    Malaysia lFp_RY_jyqQ: maxres 404, hq 200). Kembalikan (PIL Image RGB,
+    bytes asli) — bytes dipakai _playlist_make_thumbnail apa adanya (v1.3.3)."""
     urls = []
     m = re.search(r'https://i\d*\.ytimg\.com/vi/([A-Za-z0-9_-]{11})/',
                   ref_thumb_url or '')
@@ -10254,7 +10255,7 @@ def _playlist_thumb_fetch(ref_thumb_url):
                 continue
             import io as _io
             from PIL import Image
-            return Image.open(_io.BytesIO(r.content)).convert('RGB')
+            return Image.open(_io.BytesIO(r.content)).convert('RGB'), r.content
         except Exception as e:
             last_err = str(e)[:80]
             continue
@@ -10310,54 +10311,49 @@ def _playlist_thumb_gradient(w, h, c1, c2):
 
 def _playlist_make_thumbnail(ref_thumb_url, new_title, channel_name, out_path,
                              badge=None):
-    """Generate ulang thumbnail playlist — DESAIN BARU v1.2.22 (layout split):
-    kiri = gradien dari warna dominan referensi + badge (mis. 'FULL ALBUM')
-    + judul BARU yang sama BESAR + nama channel; kanan = foto referensi
-    (panel 520px + garis aksen). Jelas beda dari thumbnail asli sekilas,
-    tapi tetap nyambung temanya (foto + warna + teks sama). Bila unduhan
-    referensi gagal total → thumbnail gradien lokal (tanpa foto). Hanya
-    unduh dari *.ytimg.com. Simpan JPG 1280x720 <= 2 MB (batas YouTube).
-    Gagal total (PIL rusak) → raise, JANGAN pakai thumbnail asli."""
+    """Thumbnail playlist — v1.3.3: foto referensi dipakai APA ADANYA
+    (tanpa crop, tanpa resize, tanpa overlay teks/badge, tanpa gradien),
+    supaya teks asli thumbnail tidak hilang (kasus nostalgia 2000an:
+    layout split v1.2.22 memotong teks jadi "LAGU N..." / "POP ER...").
+    Simpan bytes asli; hanya bila >2MB, re-encode JPEG turunkan quality
+    bertahap (88→50) sampai <=2MB — tetap tanpa crop/resize. Bila unduhan
+    referensi gagal total → thumbnail gradien lokal + judul (tanpa foto),
+    seperti sebelumnya. Hanya unduh dari *.ytimg.com. Gagal total (PIL
+    rusak) → raise, JANGAN pakai thumbnail asli."""
     if not ref_thumb_url or not re.match(r'^https://i\d*\.ytimg\.com/', ref_thumb_url):
         raise ValueError('URL thumbnail referensi tidak valid.')
-    title = _clean_upload_text(new_title, max_len=100) or 'Musik Playlist'
-    ch = _clean_upload_text(channel_name or '') or 'ZIMUSE'
-    badge = (badge or ('FULL ALBUM' if 'full album' in title.lower()
-                       else 'PLAYLIST')).strip()[:20].upper()
     photo = None
+    photo_bytes = None
     try:
-        photo = _playlist_thumb_fetch(ref_thumb_url)
+        photo, photo_bytes = _playlist_thumb_fetch(ref_thumb_url)
     except Exception as e:
         print(f"[playlist] thumbnail referensi tidak bisa diunduh ({e}) "
               f"— pakai gradien lokal.", flush=True)
         photo = None
-    from PIL import Image, ImageDraw
+        photo_bytes = None
     if photo is not None:
-        c1, c2, accent = _playlist_thumb_palette(photo)
-    else:
-        c1, c2, accent = (24, 24, 34), (8, 8, 14), (255, 212, 0)
+        # 🔥 v1.3.3: foto apa adanya — teks asli thumbnail utuh.
+        if photo_bytes is not None and len(photo_bytes) <= 2_000_000:
+            with open(out_path, 'wb') as f:
+                f.write(photo_bytes)
+            return out_path
+        q = 88
+        while True:
+            photo.save(out_path, 'JPEG', quality=q, optimize=True)
+            if os.path.getsize(out_path) <= 2_000_000 or q <= 50:
+                break
+            q -= 8
+        return out_path
+    # --- Fallback: gradien lokal + judul (tanpa foto), seperti sebelumnya.
+    title = _clean_upload_text(new_title, max_len=100) or 'Musik Playlist'
+    ch = _clean_upload_text(channel_name or '') or 'ZIMUSE'
+    badge = (badge or ('FULL ALBUM' if 'full album' in title.lower()
+                       else 'PLAYLIST')).strip()[:20].upper()
+    c1, c2, accent = (24, 24, 34), (8, 8, 14), (255, 212, 0)
+    from PIL import Image, ImageDraw
     img = _playlist_thumb_gradient(1280, 720, c1, c2)
     draw = ImageDraw.Draw(img, 'RGBA')
-    photo_w = 520
-    if photo is not None:
-        # Panel foto kanan: crop tengah (cover 520x720) + garis aksen.
-        w, h = photo.size
-        target = photo_w / 720
-        if w / h > target:
-            nw = int(h * target)
-            x = (w - nw) // 2
-            photo = photo.crop((x, 0, x + nw, h))
-        else:
-            nh = int(w / target)
-            y = (h - nh) // 2
-            photo = photo.crop((0, y, w, y + nh))
-        photo = photo.resize((photo_w, 720), Image.LANCZOS)
-        img.paste(photo, (1280 - photo_w, 0))
-        draw.rectangle([1280 - photo_w - 6, 0, 1280 - photo_w, 720],
-                       fill=accent + (255,))
-        max_w = 1280 - photo_w - 6 - 56 - 40  # zona teks kiri
-    else:
-        max_w = 1280 - 56 - 40
+    max_w = 1280 - 56 - 40
     # Badge (pil) kiri atas.
     font_badge = _playlist_thumb_font(30)
     tw = draw.textlength(badge, font=font_badge)

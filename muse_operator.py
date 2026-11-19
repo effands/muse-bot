@@ -2572,18 +2572,24 @@ def _log_safe_text(text):
 
 
 def get_main_keyboard():
+    """Keyboard menu utama (🔥 v1.3.3): 14 tombol BERIKON — ikon adalah
+    chrome UI menu, bukan isi pesan (hapus emoji itu aturan untuk JUDUL
+    VIDEO YOUTUBE v1.2.13; teks pesan Telegram tetap polos — keputusan
+    terpisah yang dipertahankan). one_time_keyboard supaya keyboard
+    minimize setelah dipakai (tidak memenuhi setengah layar terus);
+    TANPA is_persistent."""
     return {
         "keyboard": [
-            [{"text": "Status Server"}, {"text": "Kuota Upload"}],
-            [{"text": "Cek Channel"}, {"text": "Antrean Render"}],
-            [{"text": "Jadwal 7 Hari"}, {"text": "Statistik Video"}],
-            [{"text": "Monetisasi"}, {"text": "Task Gagal"}],
-            [{"text": "10 Judul Sleep"}, {"text": "Ide Shorts"}],
-            [{"text": "Template Deskripsi"}, {"text": "Blueprint Resep"}],
-            [{"text": "Buat Short"}, {"text": "Buat Video Long"}]
+            [{"text": "📊 Status Server"}, {"text": "📤 Kuota Upload"}],
+            [{"text": "📺 Cek Channel"}, {"text": "📂 Antrean Render"}],
+            [{"text": "📅 Jadwal 7 Hari"}, {"text": "📈 Statistik Video"}],
+            [{"text": "💰 Monetisasi"}, {"text": "❌ Task Gagal"}],
+            [{"text": "💡 10 Judul Sleep"}, {"text": "🎬 Ide Shorts"}],
+            [{"text": "📝 Template Deskripsi"}, {"text": "📐 Blueprint Resep"}],
+            [{"text": "📱 Buat Short"}, {"text": "🎥 Buat Video Long"}]
         ],
         "resize_keyboard": True,
-        "is_persistent": True
+        "one_time_keyboard": True
     }
 
 # 🔥 v1.2.21: sanitizer emoji/ikon untuk SEMUA pesan Telegram.
@@ -2639,10 +2645,19 @@ def _strip_emoji_tg(text):
 
 
 def _sanitize_tg_markup(markup):
-    """Bersihkan label tombol (keyboard balasan & inline) dari emoji.
-    Callback data TIDAK disentuh (pencocokan tombol memakai itu).
-    Kembalikan salinan baru — dict asli pemanggil tidak diubah."""
+    """Bersihkan label tombol dari emoji — KECUALI keyboard balasan
+    (reply keyboard): ikon di tombol menu (📊 Status Server dsb.) adalah
+    chrome UI dan HARUS tampil (🔥 v1.3.3; hapus emoji itu aturan untuk
+    JUDUL VIDEO YOUTUBE v1.2.13 — teks pesan Telegram tetap polos sebagai
+    keputusan terpisah yang dipertahankan). Inline keyboard tetap
+    dibersihkan seperti sebelumnya. Callback data TIDAK disentuh
+    (pencocokan tombol memakai itu). Kembalikan salinan baru — dict asli
+    pemanggil tidak diubah."""
     if isinstance(markup, dict):
+        if 'keyboard' in markup:
+            # Keyboard balasan (menu utama): ikon dipertahankan.
+            import copy as _copy
+            return _copy.deepcopy(markup)
         out = {}
         for k, v in markup.items():
             if k == 'text' and isinstance(v, str):
@@ -2668,10 +2683,10 @@ def send_message(token, chat_id, text, parse_mode="Markdown", reply_markup=None)
         "text": text,
         "parse_mode": parse_mode
     }
+    # 🔥 v1.3.3: TANPA reply_markup → kirim TANPA keyboard (minimize
+    # default). Keyboard menu hanya dipasang eksplisit di /start & /menu.
     if reply_markup is not None:
         payload["reply_markup"] = reply_markup
-    else:
-        payload["reply_markup"] = get_main_keyboard()
         
     try:
         res = requests.post(url, json=payload, timeout=15)
@@ -8482,8 +8497,11 @@ def handle_user_command(token, chat_id, text, message_id=None):
 
         # 1. MENU / START — teks dibangun dari _BOT_COMMANDS (satu sumber
         # dengan setMyCommands, supaya daftarnya tidak pernah beda).
-        if first_word in ["/start", "/help", "halo", "menu", "hai"]:
-            send_message(token, chat_id, _build_start_text())
+        if first_word in ["/start", "/menu", "/help", "halo", "menu", "hai"]:
+            # 🔥 v1.3.3: keyboard menu dipasang eksplisit di sini saja
+            # (lengkap + berikon); pesan lain tidak membawa keyboard.
+            send_message(token, chat_id, _build_start_text(),
+                         reply_markup=get_main_keyboard())
             return
 
         # --- 🎬 BUAT VIDEO (alur terpandu) — dicek sebelum cabang lama

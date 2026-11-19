@@ -5178,7 +5178,12 @@ function renderTasks() {
             // 🔥 FASE 2: task pending menampilkan tombol approval langsung di panel
             // (cadangan kalau operator Telegram mati).
             const _apprBtns = _pend ? `<button class="stop-btn icon-btn appr" title="Setujui" onclick="approveTask(${Number(t.id)})">✅</button><button class="stop-btn icon-btn rej" title="Tolak" onclick="rejectTask(${Number(t.id)})">❌</button>` : '';
-            return `<div class="task-row${_qw ? ' q-waiting' : ''}"><div class="task-icon">${_qw ? '⏳' : '⚙️'}</div><div class="task-info"><div class="task-name">${escapeHtml(t.title || 'Task')}</div><div class="task-meta">${escapeHtml(t.time || '')}${t.thumb_status ? `<span style="color:var(--text2);font-size:10px"> · 🖼️ ${escapeHtml(t.thumb_status)}</span>` : ''}</div></div><span class="pill ${_qw ? 'p-yellow' : 'p-cyan'}" style="flex-shrink:0;max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(t.status || '—')}">${escapeHtml(t.status || '—')}</span><span class="task-actions">${_apprBtns}<button class="stop-btn" title="Hentikan" onclick="stopTask(${Number(t.id)})">Stop</button></span></div>`;
+            // 🔥 v1.2.18: bar progres render/upload (hanya bila task sedang jalan).
+            const _pct = (typeof t.progress_pct === 'number') ? Math.max(0, Math.min(100, Math.round(t.progress_pct))) : null;
+            const _pst = String(t.progress_stage || '');
+            const _bar = (_pct !== null && (_pst === 'render' || _pst === 'upload'))
+              ? `<div style="margin-top:4px;height:6px;border-radius:3px;background:var(--accent-dim);overflow:hidden"><div style="height:100%;width:${_pct}%;background:var(--accent);border-radius:3px"></div></div><div style="font-size:10px;color:var(--text2);margin-top:2px">${_pst === 'upload' ? '🚀 Mengunggah' : '⚙️ Merender'} ${_pct}%</div>` : '';
+            return `<div class="task-row${_qw ? ' q-waiting' : ''}"><div class="task-icon">${_qw ? '⏳' : '⚙️'}</div><div class="task-info"><div class="task-name">${escapeHtml(t.title || 'Task')}</div><div class="task-meta">${escapeHtml(t.time || '')}${t.thumb_status ? `<span style="color:var(--text2);font-size:10px"> · 🖼️ ${escapeHtml(t.thumb_status)}</span>` : ''}</div>${_bar}</div><span class="pill ${_qw ? 'p-yellow' : 'p-cyan'}" style="flex-shrink:0;max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(t.status || '—')}">${escapeHtml(t.status || '—')}</span><span class="task-actions">${_apprBtns}<button class="stop-btn" title="Hentikan" onclick="stopTask(${Number(t.id)})">Stop</button></span></div>`;
           }
         }).join('');
         html += `<div class="q-group-content">${rows}</div>`;

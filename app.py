@@ -552,6 +552,67 @@ def save_tasks_db():
         with open(temp_file, 'w') as f: json.dump(data, f, indent=4)
         os.replace(temp_file, TASKS_FILE)
 
+# 🔥 v1.2.18: PROGRES RENDER/UPLOAD — persen 0-100 di task (panel + Telegram).
+# Task aktif mendapat field progress_pct (int 0-100, PER TAHAP — bukan persen
+# keseluruhan video) + progress_stage ('render' / 'upload' / 'qc').
+# Persen render DIUKUR dari FFmpeg (time= di stderr, atau frame ke-N dari
+# total frame di render klasik); persen upload DIUKUR dari next_chunk()
+# YouTube (sudah ada di teks status, di sini ditulis juga ke field
+# terstruktur). Penulisan di-throttle (~5 detik / naik >=5% / ganti tahap /
+# 100%) supaya tasks_db.json tidak ditulis tiap frame. Fungsi-fungsi ini
+# TIDAK PERNAH melempar — progres tidak boleh merusak render.
+_PROGRESS_LAST_WRITE = {}
+
+def _ffmpeg_time_to_sec(text):
+    """Parse 'time=HH:MM:SS.cc' dari stderr FFmpeg -> detik (float) atau None.
+    Bila ada beberapa baris, ambil yang TERAKHIR (paling baru)."""
+    try:
+        all_m = re.findall(r'time=(\d+):(\d+):([\d.]+)', text or '')
+        if not all_m:
+            return None
+        h, m, s = all_m[-1]
+        return int(h) * 3600 + int(m) * 60 + float(s)
+    except Exception:
+        return None
+
+def _task_set_progress(task_id, pct=None, stage=None, force=False):
+    """Tulis progress_pct / progress_stage ke task aktif (throttle ~5 dtk /
+    naik >=5% / ganti tahap / 100%). pct=None = jangan ubah persen;
+    stage=None = jangan ubah tahap. Aman gagal silent."""
+    try:
+        now = time.time()
+        if pct is not None:
+            pct = max(0, min(100, int(pct)))
+        last = _PROGRESS_LAST_WRITE.get(task_id)
+        if not force and last is not None:
+            lt, lp, ls = last
+            stage_changed = stage is not None and stage != ls
+            pct_moved = (pct is not None and lp is not None and pct - lp >= 5)
+            pct_done = (pct == 100 and lp != 100)
+            if not stage_changed and not pct_moved and not pct_done and (now - lt) < 5:
+                return
+        found = False
+        with db_lock:
+            for d in active_tasks:
+                if d.get('id') == task_id:
+                    if pct is not None:
+                        d['progress_pct'] = pct
+                    if stage is not None:
+                        d['progress_stage'] = stage
+                    d['updated_at'] = now
+                    found = True
+                    break
+        if not found:
+            return
+        save_tasks_db()
+        _PROGRESS_LAST_WRITE[task_id] = (
+            now,
+            pct if pct is not None else (last[1] if last else None),
+            stage if stage is not None else (last[2] if last else None),
+        )
+    except Exception:
+        pass
+
 # ==========================================
 # 🛡️ SISTEM KETAHANAN (ANTI-STUCK & ANTI-LOST)
 # ==========================================
@@ -2013,14 +2074,19 @@ def hex_to_rgb(h): return tuple(int(str(h).lstrip('#')[i:i+2], 16) for i in (0, 
 # 🔥 BARU: daftar preset kecepatan render x264 yang diizinkan
 RENDER_PRESETS_ALLOWED = ('ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium')
 
-def _run_ffmpeg_zoom(task_id, cmd, err_tag):
+def _run_ffmpeg_zoom(task_id, cmd, err_tag, total_sec=None, pct_base=0.0, pct_span=100.0):
     """🔥 BARU v1.5: jalankan ffmpeg untuk mode Zoom — dukung force-stop + ping watchdog.
-    stderr ditulis ke file log sementara agar pipe tidak penuh (deadlock) saat encode panjang."""
+    stderr ditulis ke file log sementara agar pipe tidak penuh (deadlock) saat encode panjang.
+    🔥 v1.2.18: total_sec = durasi target (detik) → persen render dihitung dari
+    time= terakhir di log FFmpeg (pengukuran, bukan perkiraan); pct_base/pct_span
+    memetakan panggilan ini ke slice persen (mis. segmen ke-i dari N). total_sec=None
+    = tanpa pelaporan progres."""
     log_path = os.path.join(BASE_UPLOAD, f"zoomlog_{task_id}.txt")
     log_f = open(log_path, 'w', encoding='utf-8', errors='ignore')
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=log_f)
     active_processes[task_id] = proc
     last_ping = time.time()
+    last_prog = time.time()
     # 🔒 #16: batas waktu 3600 dtk per panggilan ffmpeg Zoom (satu segmen /
     # gabung durasinya paling lama = durasi video, maks ~80 menit).
     _zoom_deadline = time.time() + 3600
@@ -2039,6 +2105,20 @@ def _run_ffmpeg_zoom(task_id, cmd, err_tag):
                     for d in active_tasks:
                         if d['id'] == task_id:
                             d['updated_at'] = now_t
+            # 🔥 v1.2.18: progres render — baca time= terakhir dari log FFmpeg.
+            if total_sec and float(total_sec) > 0 and (now_t - last_prog) > 5:
+                last_prog = now_t
+                try:
+                    with open(log_path, 'rb') as _lf:
+                        _lf.seek(0, 2)
+                        _sz = _lf.tell()
+                        _lf.seek(max(0, _sz - 8192))
+                        _tail = _lf.read().decode('utf-8', errors='ignore')
+                    _el = _ffmpeg_time_to_sec(_tail)
+                    if _el is not None:
+                        _task_set_progress(task_id, pct_base + pct_span * _el / float(total_sec), 'render')
+                except Exception:
+                    pass
             time.sleep(1)
     finally:
         try: log_f.close()
@@ -2053,14 +2133,18 @@ def _run_ffmpeg_zoom(task_id, cmd, err_tag):
         try: os.remove(log_path)
         except Exception: pass
         raise Exception(f"{err_tag}: " + " | ".join(err_lines[-6:]))
+    # 🔥 v1.2.18: tutup progres segmen ini di ujung slice-nya.
+    if total_sec and float(total_sec) > 0:
+        _task_set_progress(task_id, pct_base + pct_span, 'render', force=True)
     try: os.remove(log_path)
     except Exception: pass
 
-def render_zoom_core(task_id, audio_path, bg_paths, output_path, duration, cfg, render_preset='ultrafast'):
+def render_zoom_core(task_id, audio_path, bg_paths, output_path, duration, cfg, render_preset='ultrafast', progress_base=0.0, progress_span=100.0):
     """🔥 BARU v1.5: mode Zoom Saja — background + zoom pelan, 100% FFmpeg (tanpa render
     frame Python, tanpa file overlay, tanpa floating card). Setara overlay dari sisi kecepatan.
     Durasi dibagi rata ke semua background. 🔥 v1.6: zoom BOLAK-BALIK halus (siklus 60 detik:
-    30 dtk zoom-in ke 1+zoom_pct%, 30 dtk zoom-out kembali) agar terasa hidup."""
+    30 dtk zoom-in ke 1+zoom_pct%, 30 dtk zoom-out kembali) agar terasa hidup.
+    🔥 v1.2.18: progress_base/progress_span memetakan render ini ke slice persen task."""
     w, h, fps = 1280, 720, 30
     preset_enc = str(render_preset or 'ultrafast').lower()
     if preset_enc not in RENDER_PRESETS_ALLOWED: preset_enc = 'veryfast'
@@ -2099,7 +2183,10 @@ def render_zoom_core(task_id, audio_path, bg_paths, output_path, duration, cfg, 
             else: cmd += ['-stream_loop', '-1', '-i', bg]
             cmd += ['-vf', vf, '-an', '-t', f"{seg_dur:.3f}",
                     '-c:v', 'libx264', '-preset', preset_enc, '-crf', '18', seg_out]
-            _run_ffmpeg_zoom(task_id, cmd, "FFmpeg Zoom Error")
+            # 🔥 v1.2.18: segmen ke-i memetakan ke slice persennya sendiri.
+            _run_ffmpeg_zoom(task_id, cmd, "FFmpeg Zoom Error", total_sec=seg_dur,
+                             pct_base=progress_base + progress_span * i / max(1, len(bg_paths)),
+                             pct_span=progress_span / max(1, len(bg_paths)))
 
         # Gabung segmen + tempel audio (video copy; audio AAC default — sama seperti jalur lain)
         _write_concat_list(join_txt, seg_files)  # 🔒 #20: escape ' tunggal
@@ -2114,10 +2201,11 @@ def render_zoom_core(task_id, audio_path, bg_paths, output_path, duration, cfg, 
             try: os.remove(sf)
             except Exception: pass
 
-def render_video_core(task_id, audio_path, bg_paths, output_path, duration, cfg, render_preset='ultrafast'):
+def render_video_core(task_id, audio_path, bg_paths, output_path, duration, cfg, render_preset='ultrafast', progress_base=0.0, progress_span=100.0):
     # 🔥 BARU v1.5: mode Zoom Saja → render 100% FFmpeg (paling ringan, setara overlay)
     if cfg.get('zoom_mode'):
-        render_zoom_core(task_id, audio_path, bg_paths, output_path, duration, cfg, render_preset)
+        render_zoom_core(task_id, audio_path, bg_paths, output_path, duration, cfg, render_preset,
+                         progress_base=progress_base, progress_span=progress_span)
         return
     # 🔥 1. RESOLUSI FHD 1080p (Lebih Tajam & Jernih) 🔥
     # 🔥 PERINTAH 3: RESOLUSI 720p 🔥
@@ -2172,6 +2260,7 @@ def render_video_core(task_id, audio_path, bg_paths, output_path, duration, cfg,
     _render_deadline = time.time() + 6 * 3600
     try:
         last_ping = time.time()
+        last_prog = time.time()
         for f in range(total_f):
             if stop_flags.get(task_id):
                 raise Exception("Dibatalkan")
@@ -2185,7 +2274,7 @@ def render_video_core(task_id, audio_path, bg_paths, output_path, duration, cfg,
                 v, is_hit, bars = audio.get_data(f/fps, bar_c)
                 frame = vis.process(bg.get_frame(), v, is_hit, bars, cfg)
             proc.stdin.write(frame.tobytes())
-            
+
             # 🔥 PING WATCHDOG: Lapor ke pos satpam setiap 60 detik agar tidak ditebas
             now_t = time.time()
             if now_t - last_ping > 60:
@@ -2194,19 +2283,25 @@ def render_video_core(task_id, audio_path, bg_paths, output_path, duration, cfg,
                     for d in active_tasks:
                         if d['id'] == task_id:
                             d['updated_at'] = now_t
-                            
+            # 🔥 v1.2.18: progres render klasik — frame ke-f dari total_f (pengukuran).
+            if now_t - last_prog > 2:
+                last_prog = now_t
+                _task_set_progress(task_id, progress_base + progress_span * f / max(1, total_f), 'render')
+
     except Exception as e:
         proc.stdin.close()
         proc.terminate()
         bg.close()
         raise e
-        
+
     proc.stdin.close()
     try:
         proc.wait(timeout=900)  # 🔒 #16: ffmpeg harus selesai 15 menit setelah stdin ditutup
     except subprocess.TimeoutExpired:
         proc.terminate()
         raise Exception("FFmpeg tidak selesai setelah stdin ditutup (timeout 900 dtk)")
+    # 🔥 v1.2.18: tutup progres render ini di ujung slice-nya.
+    _task_set_progress(task_id, progress_base + progress_span, 'render', force=True)
     bg.close()
     active_processes.pop(task_id, None)
 
@@ -2963,7 +3058,8 @@ def render_shorts_muse_core(task_id, task, yt_id):
                 '-t', f"{duration_sec:.3f}",
                 '-threads', '0', output_path]
         # _run_ffmpeg_zoom dipakai ulang: dukung force-stop + ping watchdog.
-        _run_ffmpeg_zoom(task_id, cmd, "FFmpeg Shorts Muse Error")
+        # 🔥 v1.2.18: progres render Shorts dari time= FFmpeg vs durasi target.
+        _run_ffmpeg_zoom(task_id, cmd, "FFmpeg Shorts Muse Error", total_sec=duration_sec)
         if not os.path.exists(output_path) or os.path.getsize(output_path) <= 0:
             raise Exception("Hasil render Shorts Muse tidak ditemukan / 0 byte!")
         return output_path
@@ -3064,6 +3160,9 @@ def background_worker():
                 if d['id'] == task_id:
                     d['status'] = "Mulai Diproses... ⚙️"
                     d['updated_at'] = time.time()
+                    # 🔥 v1.2.18: reset progres (task bisa jadi hasil retry).
+                    d['progress_pct'] = 0
+                    d['progress_stage'] = 'render'
         save_tasks_db()
         
         temp_files = [
@@ -3298,8 +3397,12 @@ def background_worker():
                         if d['id'] == task_id: d['status'] = "Rendering Base FFmpeg... ⚡"
                 save_tasks_db()
 
+                # 🔥 v1.2.18: render utama memetakan 0-85% bila ada lagu khusus
+                # (15% sisanya untuk render lagu khusus), 0-100% bila tidak ada.
+                _main_span = 85.0 if (special_audio_path and special_duration_sec > 0) else 100.0
                 render_video_core(task_id, base_audio, bg_paths, base_video, base_duration_sec, preset,
-                                render_preset=task.get('render_preset', 'ultrafast'))
+                                render_preset=task.get('render_preset', 'ultrafast'),
+                                progress_base=0.0, progress_span=_main_span)
                 if stop_flags.get(task_id): raise Exception("Dibatalkan")
 
                 target_hours = float(task.get('target_duration_hours', 1))
@@ -3323,7 +3426,8 @@ def background_worker():
                     special_video = os.path.join(BASE_UPLOAD, f"temp_sp_{task_id}.mp4")
                     preset_sp = dict(preset); preset_sp['track_schedule'] = special_schedule
                     render_video_core(task_id, special_audio_path, bg_paths, special_video, special_duration_sec, preset_sp,
-                                    render_preset=task.get('render_preset', 'ultrafast'))
+                                    render_preset=task.get('render_preset', 'ultrafast'),
+                                    progress_base=85.0, progress_span=15.0)
                     if stop_flags.get(task_id): raise Exception("Dibatalkan")
 
                 # --- loop/potong bagian utama ke main_target ---
@@ -3417,6 +3521,8 @@ def background_worker():
                     if d['id'] == task_id:
                         d['status'] = "Memeriksa Kualitas Video (QC)... 🔍"
                         d['updated_at'] = time.time()
+                        # 🔥 v1.2.18: tahap QC (persen tidak berubah — QC tanpa %).
+                        d['progress_stage'] = 'qc'
             save_tasks_db()
             qc_failures = run_qc_checks(task, final_video, yt_id)
             if qc_failures:
@@ -3510,6 +3616,9 @@ def background_worker():
                                             for d in active_tasks:
                                                 if d['id'] == task_id:
                                                     d['status'] = f"Mengunggah (Key {index_kunci+1})... {int(status.progress()*100)}% 🚀"
+                                                    # 🔥 v1.2.18: persen upload terstruktur (diukur next_chunk).
+                                                    d['progress_pct'] = int(status.progress() * 100)
+                                                    d['progress_stage'] = 'upload'
                                                     d['updated_at'] = time.time()
                                         save_tasks_db()
                                     retry_count = 0 
@@ -8954,11 +9063,17 @@ def _playlist_render(task_id, task, yt_id):
             norm_paths = []
             for idx, info in enumerate(infos):
                 np_out = os.path.join(os.path.dirname(concat_txt), f"pl_norm_{task_id}_{idx}.mp4")
-                subprocess.run([ff, '-y', '-i', info['path'], '-vf',
-                                'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30',
-                                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
-                                '-an', np_out],
-                               check=True, capture_output=True, timeout=3600)
+                # 🔥 v1.2.18: normalisasi via _run_ffmpeg_zoom — progres DIUKUR
+                # dari time= FFmpeg vs durasi klip; klip ke-i memetakan 0-70%.
+                _run_ffmpeg_zoom(task_id,
+                                 [ff, '-y', '-i', info['path'], '-vf',
+                                  'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30',
+                                  '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+                                  '-an', np_out],
+                                 "FFmpeg Playlist Normalize Error",
+                                 total_sec=info['dur'],
+                                 pct_base=70.0 * idx / max(1, len(infos)),
+                                 pct_span=70.0 / max(1, len(infos)))
                 norm_paths.append(np_out)
                 norm_files.append(np_out)
             use_paths = norm_paths
@@ -8971,8 +9086,22 @@ def _playlist_render(task_id, task, yt_id):
                '-i', audio, '-map', '0:v', '-map', '1:a',
                '-c', 'copy', '-t', f"{audio_dur:.3f}",
                '-movflags', '+faststart', final_video]
+        # 🔥 v1.2.18: concat via _run_ffmpeg_zoom — progres DIUKUR dari time=
+        # FFmpeg vs durasi audio (0-100% bila tanpa normalisasi, 70-100%
+        # bila klip sudah dinormalisasi). _run_ffmpeg_zoom melempar Exception
+        # biasa — ubah ke CalledProcessError (try dalam) supaya jalur fallback
+        # normalisasi lama tetap jalan; "Dibatalkan"/timeout diteruskan apa
+        # adanya (bukan gagal copy).
+        _concat_base = 70.0 if norm_files else 0.0
+        _concat_span = 30.0 if norm_files else 100.0
         try:
-            subprocess.run(cmd, check=True, capture_output=True, timeout=3600)
+            try:
+                _run_ffmpeg_zoom(task_id, cmd, "FFmpeg Playlist Concat Error",
+                                 total_sec=audio_dur, pct_base=_concat_base, pct_span=_concat_span)
+            except Exception as _ce:
+                if 'Dibatalkan' in str(_ce) or 'timeout' in str(_ce).lower():
+                    raise
+                raise subprocess.CalledProcessError(1, cmd, output=None, stderr=str(_ce))
         except subprocess.CalledProcessError:
             if method == 'copy':
                 # Klip ternyata tidak bisa di-copy apa adanya (mis. beda
@@ -8981,18 +9110,23 @@ def _playlist_render(task_id, task, yt_id):
                 norm_paths = []
                 for idx, info in enumerate(infos):
                     np_out = os.path.join(os.path.dirname(concat_txt), f"pl_norm_{task_id}_{idx}.mp4")
-                    subprocess.run([ff, '-y', '-i', info['path'], '-vf',
-                                    'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30',
-                                    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
-                                    '-an', np_out],
-                                   check=True, capture_output=True, timeout=3600)
+                    _run_ffmpeg_zoom(task_id,
+                                     [ff, '-y', '-i', info['path'], '-vf',
+                                      'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30',
+                                      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+                                      '-an', np_out],
+                                     "FFmpeg Playlist Normalize Error",
+                                     total_sec=info['dur'],
+                                     pct_base=70.0 * idx / max(1, len(infos)),
+                                     pct_span=70.0 / max(1, len(infos)))
                     norm_paths.append(np_out)
                     norm_files.append(np_out)
                 with open(concat_txt, 'w', encoding='utf-8') as f:
                     for _r in range(repeats):
                         for p in norm_paths:
                             f.write(_concat_list_line(p))
-                subprocess.run(cmd, check=True, capture_output=True, timeout=3600)
+                _run_ffmpeg_zoom(task_id, cmd, "FFmpeg Playlist Concat Error",
+                                 total_sec=audio_dur, pct_base=70.0, pct_span=30.0)
             else:
                 raise
         if not os.path.exists(final_video) or os.path.getsize(final_video) == 0:

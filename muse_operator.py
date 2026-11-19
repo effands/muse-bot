@@ -614,6 +614,20 @@ def _autopilot_of(channel_data):
     return mode if mode in ('auto', 'approval') else 'approval'
 
 
+def _task_progress_line(t):
+    """🔥 v1.2.18: baris progres untuk /antrean + /status.
+    '⏳ Merender 45%' / '🚀 Mengunggah 80%' — '' bila task tidak sedang
+    dirender/di-upload (tanpa progress_pct atau tahap lain, mis. 'qc')."""
+    try:
+        pct = (t or {}).get('progress_pct')
+        stage = str((t or {}).get('progress_stage') or '')
+        if not isinstance(pct, (int, float)) or stage not in ('render', 'upload'):
+            return ''
+        pct = max(0, min(100, int(pct)))
+        return f"⏳ Merender {pct}%" if stage == 'render' else f"🚀 Mengunggah {pct}%"
+    except Exception:
+        return ''
+
 def build_status_report():
     """Ringkasan /status: channel + kuota, antrean, upload hari ini, service."""
     stats = get_system_telemetry()
@@ -682,6 +696,11 @@ def build_status_report():
         f"❌ *Gagal hari ini:* `{fail_today}`",
         f"📁 *Riwayat:* `{len(history)} task`",
     ]
+    # 🔥 v1.2.18: task yang sedang dirender/di-upload + persennya.
+    _prog_tasks = [t for t in active if _task_progress_line(t)]
+    if _prog_tasks:
+        _pt = _prog_tasks[0]
+        lines.append(f"🎬 *Sedang berjalan:* `{_tg_escape(str(_pt.get('title', 'Video'))[:40])}` — {_task_progress_line(_pt)}")
     # Penutup berbasis data: jangan klaim aman kalau ada yang gagal/mati/pending.
     if fail_today > 0 or not panel_ok or pending:
         lines.append("Bos, ada yang perlu dicek/diputuskan, lihat di atas ya 👀")
@@ -6183,7 +6202,12 @@ def handle_user_command(token, chat_id, text, message_id=None):
                     title = t.get('title', 'Video Kompilasi')
                     status = t.get('status', 'Menunggu')
                     sched = t.get('schedule_date', '-')
-                    msg += f"*{idx}. {_tg_escape(title[:35])}...*\nStatus: `{_tg_escape(status)}` | Tayang: `{_tg_escape(sched)}`\n\n"
+                    # 🔥 v1.2.18: tampilkan persen progres task yang sedang jalan.
+                    prog = _task_progress_line(t)
+                    msg += f"*{idx}. {_tg_escape(title[:35])}...*\nStatus: `{_tg_escape(status)}` | Tayang: `{_tg_escape(sched)}`"
+                    if prog:
+                        msg += f"\n{prog}"
+                    msg += "\n\n"
                 if len(active) > 8:
                     msg += f"_...dan {len(active)-8} video lainnya dalam antrean._"
             send_message(token, chat_id, msg)

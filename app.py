@@ -338,7 +338,8 @@ _OPERATOR_ENDPOINTS = {'operator_retry_task', 'operator_approve_task',
                       'operator_pixabay_key_add', 'operator_pixabay_key_list',
                       'operator_pixabay_key_del', 'operator_backup_create',
                       'operator_backup_status', 'operator_playlist_research',
-                      'operator_playlist_create'}
+                      'operator_playlist_create', 'operator_update_panel',
+                      'operator_restart_services'}
 _CSRF_EXEMPT_ENDPOINTS = {'login', 'setup', 'static'} | _OPERATOR_ENDPOINTS
 
 @app.before_request
@@ -3726,31 +3727,39 @@ def background_worker():
             # yang jelas + notif Telegram + tombol Retry (retry = render ulang).
             reason = str(e)[:200]
             move_to_history(task_id, f"Gagal QC 🛑 ({reason[:100]})")
-            _record_channel_failure(yt_id, task['title'], f"QC: {reason}")
+            _qc_just_paused, _qc_streak, _qc_paused = _record_channel_failure(yt_id, task['title'], f"QC: {reason}")
             if task.get('kind') == PLAYLIST_KIND:
                 _playlist_job_update(task.get('playlist_job_id'), status='failed',
                                      error=f"QC: {reason[:200]}")
             if not stop_flags.get(task_id):
-                retry_markup = {"inline_keyboard": [[
-                    {"text": "🔁 Coba Lagi", "callback_data": f"retry:{task_id}"}
-                ]]}
-                # Pesan QC ditulis ulang (2026-11-19): jelas apa yang terjadi,
-                # kenapa, dan apa yang harus dilakukan. Untuk judul duplikat,
-                # retry TIDAK lagi render ulang judul yang sama (pasti gagal
-                # lagi) — retry otomatis ganti judul baru (lihat
-                # operator_retry_task), dan pesan ini mengatakannya.
-                if 'judul sudah tayang' in reason:
-                    qc_msg = (f"Bos, video ini saya TAHAN dulu ya 😅\n"
-                              f"Alasan: {reason[:120]}\n"
-                              f"Judulnya sudah pernah tayang di channel ini — "
-                              f"kalau di-upload lagi, YouTube bisa menganggapnya duplikat.\n"
-                              f"Pencet 🔁 Coba Lagi — saya render ulang dengan judul baru yang belum dipakai.")
+                if _qc_paused:
+                    # 🔥 v1.2.17: channel dijeda → SATU pesan gabungan (tanpa
+                    # tombol Coba Lagi) — retry tidak jalan sebelum Lanjutkan.
+                    try:
+                        send_tg_message(_failure_combined_message(task['title'], ch_name, f"QC: {reason}", _qc_streak, _qc_just_paused))
+                    except Exception:
+                        pass
                 else:
-                    qc_msg = (f"Bos, video ini nggak lolos pemeriksaan kualitas (QC) — "
-                              f"jadi saya TAHAN, tidak di-upload 😅\n"
-                              f"Alasan: {reason[:120]}\n"
-                              f"Pencet 🔁 Coba Lagi kalau mau saya render ulang.")
-                notify_event("🛑", task['title'], qc_msg, reply_markup=retry_markup)
+                    retry_markup = {"inline_keyboard": [[
+                        {"text": "🔁 Coba Lagi", "callback_data": f"retry:{task_id}"}
+                    ]]}
+                    # Pesan QC ditulis ulang (2026-11-19): jelas apa yang terjadi,
+                    # kenapa, dan apa yang harus dilakukan. Untuk judul duplikat,
+                    # retry TIDAK lagi render ulang judul yang sama (pasti gagal
+                    # lagi) — retry otomatis ganti judul baru (lihat
+                    # operator_retry_task), dan pesan ini mengatakannya.
+                    if 'judul sudah tayang' in reason:
+                        qc_msg = (f"Bos, video ini saya TAHAN dulu ya 😅\n"
+                                  f"Alasan: {reason[:120]}\n"
+                                  f"Judulnya sudah pernah tayang di channel ini — "
+                                  f"kalau di-upload lagi, YouTube bisa menganggapnya duplikat.\n"
+                                  f"Pencet 🔁 Coba Lagi — saya render ulang dengan judul baru yang belum dipakai.")
+                    else:
+                        qc_msg = (f"Bos, video ini nggak lolos pemeriksaan kualitas (QC) — "
+                                  f"jadi saya TAHAN, tidak di-upload 😅\n"
+                                  f"Alasan: {reason[:120]}\n"
+                                  f"Pencet 🔁 Coba Lagi kalau mau saya render ulang.")
+                    notify_event("🛑", task['title'], qc_msg, reply_markup=retry_markup)
 
         except _PausedAbort:
             # 🔥 FASE 3: dibatalkan karena channel dijeda — BUKAN gagal.
@@ -3779,20 +3788,30 @@ def background_worker():
                 # 🔥 FASE 5: catat kegagalan beruntun untuk auto-pause channel.
                 # Pembatalan manual (stop flag / "Dibatalkan") BUKAN kegagalan
                 # channel — jangan dihitung.
+                _fail_just_paused, _fail_streak, _fail_paused = False, 0, False
                 if not stop_flags.get(task_id) and "Dibatalkan" not in err_msg:
-                    _record_channel_failure(yt_id, task['title'], err_msg)
+                    _fail_just_paused, _fail_streak, _fail_paused = _record_channel_failure(yt_id, task['title'], err_msg)
                 # 🔥 FIX: kalau digagalkan watchdog (stop flag), JANGAN kirim
                 # notif gagal lagi — watchdog sudah mengirim notifikasinya sendiri.
                 if not stop_flags.get(task_id):
-                    # 🔥 FASE 1 MONITORING: alert gagal + tombol inline Retry.
-                    # Dikirim langsung (bypass buffer) supaya tombolnya menempel
-                    # di pesan task ini, bukan di pesan gabungan.
-                    retry_markup = {"inline_keyboard": [[
-                        {"text": "🔁 Coba Lagi", "callback_data": f"retry:{task_id}"}
-                    ]]}
-                    notify_event("❌", task['title'],
-                                 f"Bos, ada yang gagal nih 😅 Video ini gagal di channel {ch_name} — penyebab: {err_msg[:120]}. Tenang, saya pantau terus — tinggal pencet Coba Lagi ya 💪",
-                                 reply_markup=retry_markup)
+                    if _fail_paused:
+                        # 🔥 v1.2.17: channel dijeda → SATU pesan gabungan
+                        # (tanpa tombol Coba Lagi) — retry tidak jalan
+                        # sebelum Lanjutkan.
+                        try:
+                            send_tg_message(_failure_combined_message(task['title'], ch_name, err_msg, _fail_streak, _fail_just_paused))
+                        except Exception:
+                            pass
+                    else:
+                        # 🔥 FASE 1 MONITORING: alert gagal + tombol inline Retry.
+                        # Dikirim langsung (bypass buffer) supaya tombolnya menempel
+                        # di pesan task ini, bukan di pesan gabungan.
+                        retry_markup = {"inline_keyboard": [[
+                            {"text": "🔁 Coba Lagi", "callback_data": f"retry:{task_id}"}
+                        ]]}
+                        notify_event("❌", task['title'],
+                                     f"Bos, ada yang gagal nih 😅 Video ini gagal di channel {ch_name} — penyebab: {err_msg[:120]}. Tenang, saya pantau terus — tinggal pencet Coba Lagi ya 💪",
+                                     reply_markup=retry_markup)
         finally:
             # Lepas antrean agar Clipper bisa jalan
             release_resource("Factory Worker")
@@ -5466,38 +5485,90 @@ def _upload_error_transient(pesan_error):
     return True
 
 
+def _explain_failure_reason(reason, title=None):
+    """🔥 v1.2.17: petakan penyebab gagal YouTube → (penyebab sederhana,
+    langkah perbaikan). Selain yang dipetakan → tampilkan pesan asli yang
+    dipotong (jangan ditebak)."""
+    r = (reason or '')
+    low = r.lower()
+    if 'invalidtitle' in low:
+        t = title or ''
+        parts = []
+        if len(t) > 100:
+            parts.append(f"judulnya kepanjangan ({len(t)} huruf, batas YouTube 100)")
+        if any((0x1F000 <= ord(c) <= 0x1FAFF) or (0x2600 <= ord(c) <= 0x27BF)
+               or ord(c) == 0xFE0F for c in t):
+            parts.append("ada emoji")
+        cause = " dan ".join(parts) if parts else "judulnya ada karakter yang ditolak YouTube"
+        return (cause + " — YouTube menolaknya",
+                "Update panel ke v1.2.16 (judul otomatis dibersihkan & dipotong sebelum upload).")
+    if 'invaliddescription' in low:
+        return ("deskripsinya kepanjangan / ada karakter yang ditolak YouTube — YouTube menolaknya",
+                "Update panel ke v1.2.16 (deskripsi otomatis dibersihkan sebelum upload).")
+    if 'quotaexceeded' in low or 'uploadlimitexceeded' in low:
+        return ("kuota upload hari ini habis",
+                "Tunggu sampai besok (kuota reset tengah malam), lalu pencet Coba Lagi.")
+    if 'judul sudah tayang' in low:
+        return ("judulnya sudah pernah tayang di channel ini — YouTube bisa menganggapnya duplikat",
+                "Tidak perlu diperbaiki manual — Coba Lagi akan memakai judul baru otomatis.")
+    return (r[:120] if r else "penyebab belum diketahui",
+            "Cek penyebabnya di panel (Task Monitor → Riwayat).")
+
+
+def _failure_combined_message(title, ch_name, reason, streak, just_paused):
+    """🔥 v1.2.17: SATU pesan gabungan gagal + jeda channel (tanpa tombol
+    Coba Lagi — retry tidak jalan selama channel dijeda). Urutan: penyebab
+    → perbaiki → Lanjutkan → baru Coba Lagi."""
+    cause, fix = _explain_failure_reason(reason, title)
+    lines = [
+        "❌ *Video gagal, Bos — dan channel saya jeda dulu* 😅",
+        "",
+        f"*Video:* {_tg_escape(str(title)[:70])}",
+        f"*Channel:* {_tg_escape(ch_name)}",
+        f"*Penyebab:* {_tg_escape(cause)}",
+    ]
+    if just_paused:
+        lines.append(f"*Ini gagal ke-{streak} berturut-turut*, jadi saya jeda channel-nya dulu biar tidak makin parah.")
+    else:
+        lines.append("*Channel ini sedang dijeda*, jadi video tidak bisa jalan dulu.")
+    lines += [
+        "",
+        "*Langkah selanjutnya:*",
+        f"1. Perbaiki penyebabnya — {_tg_escape(fix)}",
+        "2. Pencet *Lanjutkan* untuk channel ini.",
+        "3. Baru pencet *Coba Lagi* untuk video ini.",
+    ]
+    return "\n".join(lines)
+
+
 def _record_channel_failure(yt_id, title, reason):
     """Tambah 1 ke fail_streak channel. Kalau mencapai 3x berturut-turut,
     jeda channel OTOMATIS (mekanisme paused Fase 3 — gate worker sudah
-    menahan task channel dijeda) + alert Telegram. Dipanggil dari jalur
-    gagal worker (render/upload/QC/disk). BUKAN untuk pembatalan manual."""
+    menahan task channel dijeda). Kembalikan (baru_dijeda, streak,
+    kini_dijeda). Pesan Telegram TIDAK dikirim di sini (🔥 v1.2.17) —
+    pemanggil yang mengirim SATU pesan gabungan (gagal + jeda) supaya tidak
+    dobel dan urutannya benar. Dipanggil dari jalur gagal worker
+    (render/upload/QC/disk). BUKAN untuk pembatalan manual."""
     if not yt_id:
-        return
+        return False, 0, False
     try:
         with db_lock:
             target = next((c for c in database_channel
                            if c.get('yt_id') == yt_id), None)
             if target is None:
-                return
+                return False, 0, False
             streak = int(target.get('fail_streak') or 0) + 1
             target['fail_streak'] = streak
-            name = target.get('name', yt_id)
             auto_paused = False
             if streak >= FAIL_STREAK_AUTO_PAUSE and not target.get('paused'):
                 target['paused'] = True
                 target['auto_paused'] = True
                 auto_paused = True
+            paused_now = bool(target.get('paused'))
             save_channels(database_channel)
     except Exception:
-        return
-    if auto_paused:
-        # 🔒 #23: nama channel + alasan gagal bisa berisi karakter Markdown.
-        send_tg_message(
-            f"⏸️ *Bos, channel {_tg_escape(name)} saya jeda dulu ya* 😅\n"
-            f"Udah gagal {streak}x berturut-turut "
-            f"(terakhir: {_tg_escape((reason or '')[:80])}).\n"
-            f"Biar nggak makin parah, saya tahan dulu — cek penyebabnya, "
-            f"terus pencet Lanjutkan di panel ya 💪")
+        return False, 0, False
+    return auto_paused, streak, paused_now
 
 
 def _record_channel_success(yt_id):
@@ -5998,6 +6069,13 @@ def operator_retry_task():
                 return jsonify({"status": "error", "message": "Task ini tidak punya blueprint, tidak bisa diulang."})
             if "Selesai" in target.get('status', '') or "Tayang" in target.get('status', '') or "Sukses" in target.get('status', ''):
                 return jsonify({"status": "error", "message": "Task sudah berhasil, tidak perlu diulang."})
+            # 🔥 v1.2.17: channel masih dijeda → tolak retry dengan jujur.
+            # Task yang di-retry akan tertahan 'Dijeda (Channel Pause)' dan
+            # tidak jalan sebelum channel dilanjutkan — jangan antrekan sia-sia.
+            _t_yt = target.get('yt_id') or (target.get('blueprint') or {}).get('yt_id')
+            _t_ch = next((c for c in database_channel if c.get('yt_id') == _t_yt), None)
+            if _t_ch and _t_ch.get('paused'):
+                return jsonify({"status": "error", "message": "Channel masih dijeda — pencet Lanjutkan dulu, baru Coba Lagi."}), 400
             # Judul duplikat (2026-11-19): retry dengan judul yang sama
             # PASTI gagal QC lagi. Ganti dulu ke judul baru yang belum
             # dipakai (bank berikutnya / varian bernomor), lalu render ulang.
@@ -6025,11 +6103,14 @@ def operator_retry_task():
                 print(f"Gagal queue retry task {task_id}: {e}", flush=True)
                 return jsonify({"status": "error", "message": "Gagal masuk antrean render. Cek log server."}), 500
         title = target.get('title', '?')[:60]
-        if renamed_title:
-            send_tg_message(f"🔁 *Siap Bos, retry jalan dengan judul baru!* 💪\nJudul lama sudah pernah tayang, jadi saya ganti jadi `{_tg_escape(renamed_title[:60])}` — udah masuk antrean render lagi.")
-            return jsonify({"status": "success", "message": f"Task kembali ke antrean render dengan judul baru: {renamed_title[:60]}.", "title": title})
-        send_tg_message(f"🔁 *Siap Bos, retry jalan!* 💪\nTask `{_tg_escape(title)}` udah masuk antrean render lagi.")
-        return jsonify({"status": "success", "message": "Task kembali ke antrean render.", "title": title})
+        # 🔥 v1.2.17: app.py TIDAK lagi mengirim pesan retry — operator yang
+        # mengirim SATU pesan konfirmasi dari info JSON ini. Dulu ada dua
+        # pesan ("Siap Bos, retry jalan!" dari sini + "Berhasil Bos, retry
+        # jalan!" dari operator).
+        return jsonify({"status": "success",
+                        "message": (f"Task kembali ke antrean render dengan judul baru: {renamed_title[:60]}."
+                                    if renamed_title else "Task kembali ke antrean render."),
+                        "title": title, "renamed_title": renamed_title})
     except Exception as e:
         print(f"Gagal retry operator: {e}", flush=True)
         return jsonify({"status": "error", "message": "Gagal retry task. Cek log server."}), 500
@@ -7182,6 +7263,85 @@ def restart_operator_api():
     _OPERATOR_RESTART_LAST['at'] = now_mono
     return jsonify({"status": "success",
                     "message": "Restart bot Telegram dimulai — bot akan mati sebentar lalu hidup lagi dan menyapa di Telegram. Tunggu ~10–30 detik."})
+
+
+# ============================================================
+#  🔄 UPDATE + RESTART LEWAT TELEGRAM (v1.2.17)
+#  Perintah /update dan /restart di bot Telegram.
+#  - /update memanggil update_panel_api() LANGSUNG (fungsi view yang
+#    sama dengan tombol Update panel) — jadi penjaga 409, backup
+#    pra-update, dan update.sh detached sebagai anak PANEL semuanya
+#    identik, tanpa duplikasi logika. update.sh HARUS jalan sebagai
+#    anak proses PANEL, bukan operator: me-restart operator membunuh
+#    update.sh sebelum panel sempat restart (pelajaran v1.2.11).
+#  - /restart menjalankan ziqva.sh restart (operator dulu, panel
+#    terakhir — urutan di dalam ziqva.sh, v1.2.11) secara detached.
+#  Keduanya HMAC operator_key (masuk _OPERATOR_ENDPOINTS).
+# ============================================================
+_SERVICES_RESTART_LAST = {'at': 0.0}   # monotonic() restart terakhir (anti-spam 60 dtk)
+
+
+@app.route('/api/operator/update_panel', methods=['POST'])
+def operator_update_panel():
+    """Mulai update panel dari Telegram (/update). Jalur SAMA seperti
+    tombol Update panel (update_panel_api): penjaga 409 (update sedang
+    berjalan / ada video dirender), backup pra-update, update.sh
+    detached sebagai anak panel. Notifikasi selesai/gagal + versi baru
+    dikirim update.sh sendiri via Telegram. Keamanan: wajib
+    operator_key (HMAC) seperti endpoint operator lain."""
+    try:
+        data = request.get_json(silent=True) or {}
+        ok_key, msg_key, _st = _validate_operator_key(data)
+        if not ok_key:
+            return jsonify({"status": "error", "message": msg_key}), _st
+        return update_panel_api()
+    except Exception as e:
+        print(f"Gagal update operator: {e}", flush=True)
+        return jsonify({"status": "error", "message": "Gagal memulai update. Cek log server."}), 500
+
+
+@app.route('/api/operator/restart_services', methods=['POST'])
+def operator_restart_services():
+    """Restart panel + operator dari Telegram (/restart). ziqva.sh
+    restart: operator dulu, panel terakhir (dua perintah systemctl
+    terpisah, v1.2.11). Dijalankan detached lalu langsung kembalikan
+    sukses — request TIDAK menunggu restart selesai. Ditolak 409 bila
+    ada video sedang dirender/di-upload atau update sedang berjalan
+    (sama seperti tombol Update panel); anti-spam 429 bila restart
+    terakhir <60 detik lalu. Keamanan: wajib operator_key (HMAC)
+    seperti endpoint operator lain."""
+    try:
+        data = request.get_json(silent=True) or {}
+        ok_key, msg_key, _st = _validate_operator_key(data)
+        if not ok_key:
+            return jsonify({"status": "error", "message": msg_key}), _st
+        if _any_task_rendering():
+            return jsonify({"status": "error",
+                            "message": "Ada video sedang dirender/di-upload. Coba lagi setelah selesai."}), 409
+        _ust = _read_update_status()
+        if _ust.get('status') == 'running' and not _update_running_is_stale(_ust):
+            return jsonify({"status": "error",
+                            "message": "Update sedang berjalan, tunggu sampai selesai."}), 409
+        now_mono = time.monotonic()
+        last = _SERVICES_RESTART_LAST.get('at', 0.0)
+        if now_mono - last < _OPERATOR_RESTART_MIN_INTERVAL:
+            wait = int(_OPERATOR_RESTART_MIN_INTERVAL - (now_mono - last))
+            return jsonify({"status": "error",
+                            "message": f"Baru saja restart. Tunggu {wait} detik lagi sebelum restart ulang."}), 429
+        try:
+            subprocess.Popen(['nohup', 'bash', 'ziqva.sh', 'restart'],
+                             cwd=BASE_DIR, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True, close_fds=True)
+        except Exception as e:
+            return jsonify({"status": "error",
+                            "message": f"Gagal menjalankan restart: {e}"}), 500
+        _SERVICES_RESTART_LAST['at'] = now_mono
+        return jsonify({"status": "success",
+                        "message": "Restart dimulai — panel + bot Telegram akan mati sebentar lalu hidup lagi."})
+    except Exception as e:
+        print(f"Gagal restart services operator: {e}", flush=True)
+        return jsonify({"status": "error", "message": "Gagal restart. Cek log server."}), 500
 
 
 # ============================================================

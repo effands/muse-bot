@@ -34,6 +34,14 @@ def _load_playlist_jobs():
 # 🔥 FASE 1 MONITORING: state dedupe (laporan harian & alert) — file runtime,
 # JANGAN di-commit (sudah masuk .gitignore). Isinya hanya tanggal + kunci alert.
 MONITOR_STATE_FILE = os.path.join(BASE_DIR, 'monitor_state.json')
+# 🔥 v1.2.17 JEMBATAN TELEGRAM ↔ MUSE: kotak masuk chat bebas yang tidak
+# dikenali NLU (file runtime di VPS — JANGAN di-commit, lihat .gitignore).
+# Operator menulis record ke inbox; cron Muse membacanya lewat SSH dan
+# membalas langsung via Bot API. Token bot TIDAK PERNAH ditulis ke file ini.
+BRIDGE_INBOX_FILE = os.path.join(BASE_DIR, 'telegram_inbox.jsonl')
+BRIDGE_STATE_FILE = os.path.join(BASE_DIR, 'telegram_inbox_state.json')
+BRIDGE_STALE_SECONDS = 600  # 10 menit — record 'new' lebih tua dari ini dianggap basi
+_BRIDGE_FORWARDED_CAP = 200  # dedupe: simpan 200 message_id terakhir
 # Batas upload harian per channel — cerminan MAX_UPLOADS_PER_CHANNEL_PER_DAY di app.py.
 MAX_UPLOADS_PER_DAY = 6
 DAILY_REPORT_HOUR_WIB = 7  # laporan harian otomatis tiap pagi 07:00 WIB
@@ -97,11 +105,12 @@ def load_monitor_state():
         data.setdefault("channel_report_snapshot", {})
         data.setdefault("channel_stats_cache", {})
         data.setdefault("approval_reminders", {})
+        data.setdefault("bridge_forwarded_ids", [])
         return data
     except Exception:
         return {"daily_report_date": "", "evening_report_date": "", "alerts": {},
                 "make_drafts": {}, "channel_report_snapshot": {}, "channel_stats_cache": {},
-                "approval_reminders": {}}
+                "approval_reminders": {}, "bridge_forwarded_ids": {}}
 
 def save_monitor_state(state):
     """Simpan state secara atomik (temp + replace) agar tidak rusak saat restart."""
@@ -112,6 +121,123 @@ def save_monitor_state(state):
         os.replace(tmp, MONITOR_STATE_FILE)
     except Exception as e:
         print(f"Gagal simpan monitor_state: {e}", flush=True)
+
+# ==========================================
+# 🌉 JEMBATAN TELEGRAM ↔ MUSE (v1.2.17)
+# Chat bebas yang tidak dikenali NLU diteruskan ke kotak masuk di VPS;
+# cron Muse mengambilnya lewat SSH, menafsirkan, dan membalas via Bot API.
+# Token bot TIDAK PERNAH ditulis ke inbox/state/log/chat.
+# ==========================================
+_LAST_BOT_MESSAGE = {}  # chat_id (str) -> teks pesan bot terakhir (konteks "yang tadi")
+
+
+def _bridge_forward(token, chat_id, message_id, text):
+    """Teruskan chat bebas ke kotak masuk Muse. Tulis 1 baris JSONL
+    (status 'new', source 'nlu_fallback') + catat message_id di
+    monitor_state (dedupe, cap 200). Kembalikan True bila baru diteruskan,
+    False bila message_id sudah pernah diteruskan / gagal tulis."""
+    try:
+        state = load_monitor_state()
+        forwarded = state.get('bridge_forwarded_ids') or []
+        if message_id is not None and message_id in forwarded:
+            return False
+        now = time.time()
+        draft = _load_make_draft(chat_id)
+        pending = _load_nlu_pending(chat_id)
+        rec = {
+            "message_id": message_id,
+            "chat_id": str(chat_id),
+            "from_id": str(chat_id),
+            "text": text,
+            "unix_time": int(now),
+            "timestamp_wib": _wib_now().strftime('%Y-%m-%d %H:%M:%S'),
+            "status": "new",
+            "source": "nlu_fallback",
+            "context": {
+                "draft_step": (draft or {}).get('step') if isinstance(draft, dict) else None,
+                "pending_nlu": (pending or {}).get('intent') if isinstance(pending, dict) else None,
+                "last_bot_message": _LAST_BOT_MESSAGE.get(str(chat_id), '')[:200],
+            },
+            "attempts": 0,
+            "muse_reply_message_id": None,
+            "replied_at_wib": None,
+        }
+        is_new = not os.path.exists(BRIDGE_INBOX_FILE)
+        with open(BRIDGE_INBOX_FILE, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        if is_new:
+            try:
+                os.chmod(BRIDGE_INBOX_FILE, 0o600)
+            except Exception:
+                pass
+        if message_id is not None:
+            forwarded.append(message_id)
+            state['bridge_forwarded_ids'] = forwarded[-_BRIDGE_FORWARDED_CAP:]
+            save_monitor_state(state)
+        return True
+    except Exception as e:
+        print(f"Gagal bridge_forward: {e}", flush=True)
+        return False
+
+
+def _bridge_stale_check(token, chat_id):
+    """Fallback jujur (v1.2.17): record inbox berstatus 'new' yang sudah
+    >10 menit belum dibalas Muse → kirim SATU pesan + tandai 'failed' di
+    state file (maks 5 per tick). Record yang sudah diklaim ('processing')
+    adalah tanggung jawab Muse — tidak disentuh. Dipanggil dari watchdog
+    (tiap 5 menit)."""
+    try:
+        if not os.path.exists(BRIDGE_INBOX_FILE):
+            return
+        state = {}
+        if os.path.exists(BRIDGE_STATE_FILE):
+            try:
+                with open(BRIDGE_STATE_FILE, 'r', encoding='utf-8') as f:
+                    state = json.load(f) or {}
+            except Exception:
+                state = {}
+        now = time.time()
+        stale = []
+        with open(BRIDGE_INBOX_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if rec.get('status') != 'new':
+                    continue
+                st = state.get(str(rec.get('message_id'))) or {}
+                if st.get('status') in ('failed', 'replied', 'processing', 'skipped'):
+                    continue
+                if now - float(rec.get('unix_time') or 0) > BRIDGE_STALE_SECONDS:
+                    stale.append(rec)
+        if not stale:
+            return
+        changed = False
+        for rec in stale[:5]:
+            mid = str(rec.get('message_id'))
+            res = send_message(
+                token, chat_id,
+                "Bos, Muse belum sempat membalas chat tadi 😅 — pesannya sudah saya teruskan, "
+                "coba kirim lagi ya, atau ketik /start buat perintah cepat.")
+            if res and res.get('ok'):
+                state[mid] = {"status": "failed", "reason": "stale_10min",
+                              "replied_at_wib": _wib_now().strftime('%Y-%m-%d %H:%M:%S')}
+                changed = True
+        if changed:
+            tmp = BRIDGE_STATE_FILE + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, BRIDGE_STATE_FILE)
+            try:
+                os.chmod(BRIDGE_STATE_FILE, 0o600)
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"Bridge stale-check exception: {e}", flush=True)
 
 # ==========================================
 # 🎬 BUAT VIDEO LEWAT TELEGRAM — DRAFT PERCAKAPAN
@@ -167,6 +293,29 @@ def _gallery_files(yt_id, sub, exts):
                       if f.lower().endswith(exts))
     except Exception:
         return []
+
+def _friendly_gallery_label(fname, kind, num=None):
+    """Label ramah untuk daftar galeri (v1.2.17): 'Video anak 1',
+    'Gambar gradien anak', 'Lagu tidur nyenyak' — tanpa ekstensi, tanpa
+    jargon. Angka urut TAMPILAN tetap kunci balasan (logika parsing tidak
+    berubah); num = nomor urut di antara file sejenis (khusus video)."""
+    stem = os.path.splitext(os.path.basename(fname or ''))[0]
+    words = stem.replace('_', ' ').replace('-', ' ').split()
+    if kind == 'image':
+        if stem.lower().startswith('auto-gradient-'):
+            theme = ' '.join(words[2:]) or 'gradien'
+            return f"🖼️ Gambar gradien {theme}"
+        return "🖼️ Gambar " + (' '.join(words) or 'tanpa nama')
+    if kind == 'video':
+        theme_words = [w for w in words
+                       if w.lower() != 'clip' and not w.isdigit()]
+        theme = ' '.join(theme_words)
+        label = "🎬 Video" + (f" {theme}" if theme else "")
+        if num is not None:
+            label += f" {num}"
+        return label
+    return "🎵 " + (' '.join(words) or 'tanpa nama')
+
 
 def _next_slot_for_channel(ch):
     """Slot jadwal berikutnya untuk channel: sehari setelah jadwal terakhir
@@ -1946,6 +2095,8 @@ def send_message(token, chat_id, text, parse_mode="Markdown", reply_markup=None)
         
     try:
         res = requests.post(url, json=payload, timeout=15)
+        # 🌉 v1.2.17: catat pesan bot terakhir (konteks jembatan: "yang tadi").
+        _LAST_BOT_MESSAGE[str(chat_id)] = text
         return res.json()
     except Exception as e:
         print(f"Error kirim pesan TG: {e}", flush=True)
@@ -1970,11 +2121,13 @@ def answer_callback(token, callback_query_id, text):
 
 def request_retry(task_id):
     """Panggil endpoint retry di panel (proses app.py). Kunci operator_key
-    dibaca fresh dari config.json — TIDAK pernah dikirim ke chat."""
+    dibaca fresh dari config.json — TIDAK pernah dikirim ke chat.
+    Kembalikan (ok, info, data) — data = JSON panel (judul + judul baru
+    bila diganti; dipakai pesan konfirmasi tunggal v1.2.17)."""
     config = load_config()
     key = config.get('operator_key', '')
     if not key:
-        return False, "Kunci operator belum siap (panel mungkin baru restart). Coba lagi sebentar lagi."
+        return False, "Kunci operator belum siap (panel mungkin baru restart). Coba lagi sebentar lagi.", {}
     try:
         res = requests.post(
             PANEL_URL + '/api/operator/retry_task',
@@ -1983,10 +2136,10 @@ def request_retry(task_id):
         )
         data = res.json()
         if res.status_code == 200 and data.get('status') == 'success':
-            return True, data.get('message', 'Task kembali ke antrean render.')
-        return False, data.get('message', f"Panel menjawab HTTP {res.status_code}.")
+            return True, data.get('message', 'Task kembali ke antrean render.'), data
+        return False, data.get('message', f"Panel menjawab HTTP {res.status_code}."), data
     except Exception as e:
-        return False, f"Tidak bisa menghubungi panel: {e}"
+        return False, f"Tidak bisa menghubungi panel: {e}", {}
 
 def request_approval(action, task_id=None, batch_id=None):
     """Panggil endpoint approval di panel (approve_task / reject_task /
@@ -2120,10 +2273,21 @@ def handle_callback_query(token, chat_id, callback_query):
         _cb_in_flight.add(data)
         try:
             answer_callback(token, cq_id, "Siap Bos, saya kirim retry-nya... 🔁")
-            ok, info = request_retry(task_id)
+            ok, info, data = request_retry(task_id)
             if ok:
-                send_message(token, chat_id,
-                             f"✅ *Berhasil Bos, retry jalan!* 💪\nTask #{task_id} udah masuk antrean render lagi.\n_{info}_")
+                # 🔥 v1.2.17: SATU pesan konfirmasi saja (app.py tidak lagi
+                # mengirim pesan retry — dulu ada dua: "Siap Bos, retry
+                # jalan!" + "Berhasil Bos, retry jalan!").
+                renamed = (data or {}).get('renamed_title')
+                title = (data or {}).get('title') or f"Task #{task_id}"
+                if renamed:
+                    send_message(token, chat_id,
+                                 f"✅ *Sip Bos, retry jalan dengan judul baru!* 💪\n"
+                                 f"Judul lama sudah pernah tayang, jadi saya ganti jadi `{_tg_escape(str(renamed)[:60])}` — sudah masuk antrean render lagi.")
+                else:
+                    send_message(token, chat_id,
+                                 f"✅ *Sip Bos, retry jalan!* 💪\n"
+                                 f"Video `{_tg_escape(str(title)[:60])}` sudah masuk antrean render lagi.")
             else:
                 send_message(token, chat_id,
                              f"⚠️ *Yah, retry-nya gagal Bos* 😅\nTask #{task_id}: {info}")
@@ -2180,6 +2344,52 @@ def handle_callback_query(token, chat_id, callback_query):
         finally:
             _cb_in_flight.discard(data)
         return
+    # --- 🔄 UPDATE / RESTART PANEL (v1.2.17): konfirmasi /update & /restart ---
+    if data in ('upd:yes', 'upd:no', 'rst:yes', 'rst:no'):
+        kind = 'update' if data.startswith('upd') else 'restart'
+        confirm = data.endswith(':yes')
+        if data in _cb_in_flight:
+            answer_callback(token, cq_id, "Sabar Bos, masih saya proses 😅")
+            return
+        _cb_in_flight.add(data)
+        try:
+            if not confirm:
+                answer_callback(token, cq_id, "Dibatalkan Bos 😌")
+                send_message(token, chat_id,
+                             "😌 *Sip Bos, dibatalkan.*\n"
+                             "Panel tetap jalan seperti biasa. "
+                             "Ketik /update atau /restart kalau mau mulai lagi ya Bos!")
+                return
+            if kind == 'update':
+                answer_callback(token, cq_id, "Siap Bos, saya mulai update-nya... 🔄")
+                ok, info, _d = _operator_post('/api/operator/update_panel', {}, timeout=30)
+                if ok:
+                    send_message(token, chat_id,
+                                 "🔄 *Update jalan, Bos* 😎\n\n"
+                                 "Panel sedang mengambil kode terbaru dari GitHub lalu restart sendiri. "
+                                 "Saya kabari lagi kalau sudah selesai — lengkap dengan versi barunya.")
+                else:
+                    send_message(token, chat_id,
+                                 f"⚠️ *Yah, update-nya belum bisa jalan Bos* 😅\n{_tg_escape(info)}")
+                return
+            # --- restart: pesan HARUS terkirim dulu, baru restart dieksekusi.
+            answer_callback(token, cq_id, "Siap Bos, saya restart... 🔄")
+            send_message(token, chat_id,
+                         "🔄 *Bot + panel sedang restart, Bos* 💪\n\n"
+                         "Saya kembali sebentar lagi (~10–30 detik) dan menyapa lagi kalau sudah hidup.")
+            ok, info, _d = _operator_post('/api/operator/restart_services', {}, timeout=10)
+            if not ok:
+                # Koneksi putus = kemungkinan besar restart SUDAH jalan
+                # (panel mati sebelum sempat membalas) — JANGAN kirim pesan
+                # gagal palsu; sapaan startup operator adalah konfirmasinya.
+                if info.startswith("Tidak bisa menghubungi panel"):
+                    print("⚠️ Restart: panel tidak menjawab setelah perintah (kemungkinan restart sedang jalan).", flush=True)
+                else:
+                    send_message(token, chat_id,
+                                 f"⚠️ *Yah, restart-nya gagal Bos* 😅\n{_tg_escape(info)}")
+            return
+        finally:
+            _cb_in_flight.discard(data)
     # --- BUAT VIDEO/PLAYLIST: konfirmasi ✅ / batal ❌ dari ringkasan
     # /buatshort & /buatlong & /buatplaylist ---
     if data in ('mkshort:yes', 'mkshort:no', 'mklong:yes', 'mklong:no',
@@ -3010,15 +3220,28 @@ def _make_ask_step(token, chat_id, draft):
                 lines = ["🖼️ *Langkah 7 dari 7: Background*\n\nGaleri channel ini masih kosong — nanti saya buatkan background gradien otomatis, Bos. 🎨\n\nBalas `lewati` untuk lanjut (atau upload gambar sendiri di panel bila mau yang lebih bagus)."]
                 send_message(token, chat_id, "\n".join(lines))
                 return
-            lines = ["🖼️ *Langkah 7 dari 7: Background*\n\nPilih gambar/video background dari galeri:\n"]
+            lines = ["🖼️ *Langkah 7 dari 7: Background*\n"]
             vids = d.get('bg_video_count') or 0
+            imgs = len(opts) - vids
+            counts = []
             if vids:
-                lines.append(f"🎬 Galeri ini punya {vids} klip video — balas `lewati` untuk pakai SEMUA klip disambung jadi background bergerak, atau pilih 1 file di bawah untuk pakai file itu saja.\n")
+                counts.append(f"{vids} video")
+            if imgs:
+                counts.append(f"{imgs} gambar")
+            lines.append(f"Galeri punya {' + '.join(counts)}. Mau pakai yang mana, Bos?")
+            lines.append("• Balas `lewati` → " + ("semua video dipakai berurutan" if vids else "pakai gambar acak"))
+            lines.append("• Balas angkanya → pakai 1 file itu saja (mis. balas `2`)\n")
+            vid_no = 0
             for i, f in enumerate(opts[:10], 1):
-                lines.append(f"{i}. `{_tg_escape(f)}`")
+                ext = os.path.splitext(f)[1].lower()
+                kind = 'video' if ext in ('.mp4', '.mov', '.webm') else 'image'
+                if kind == 'video':
+                    vid_no += 1
+                    lines.append(f"{i}. {_friendly_gallery_label(f, kind, vid_no)}")
+                else:
+                    lines.append(f"{i}. {_friendly_gallery_label(f, kind)}")
             if len(opts) > 10:
                 lines.append(f"_…dan {len(opts) - 10} file lainnya_")
-            lines.append("\nBalas angkanya untuk pakai 1 file itu saja. Ketik `lewati` untuk pakai semua klip video disambung (atau gambar acak bila tidak ada video).")
             send_message(token, chat_id, "\n".join(lines))
         elif step == 'bgm':
             opts = _gallery_files(d.get('yt_id', ''), 'audios', _AUDIO_EXTS)
@@ -3033,12 +3256,14 @@ def _make_ask_step(token, chat_id, draft):
                                  [{"text": "✅ Buat", "callback_data": "mkshort:yes"},
                                   {"text": "❌ Batal", "callback_data": "mkshort:no"}]]})
                 return
-            lines = ["🎵 *Terakhir: Musik latar*\n\nPilih musik dari galeri (atau `0` untuk musik bawaan):\n"]
+            lines = ["🎵 *Terakhir: Musik latar*\n"]
+            lines.append(f"Galeri punya {len(opts)} musik. Mau pakai yang mana, Bos?")
+            lines.append("• Balas `0` atau `lewati` → musik bawaan")
+            lines.append("• Balas angkanya → pakai 1 file itu saja (mis. balas `2`)\n")
             for i, f in enumerate(opts[:10], 1):
-                lines.append(f"{i}. `{_tg_escape(f)}`")
+                lines.append(f"{i}. {_friendly_gallery_label(f, 'audio')}")
             if len(opts) > 10:
                 lines.append(f"_…dan {len(opts) - 10} file lainnya_")
-            lines.append("\nBalas angkanya, `0` musik bawaan, atau `lewati` untuk musik bawaan.")
             send_message(token, chat_id, "\n".join(lines))
         elif step == 'confirm':
             send_message(token, chat_id, _make_short_summary(d),
@@ -5519,6 +5744,8 @@ _BOT_COMMANDS = [
     ('pixabaykeys', 'Daftar API key Pixabay (masked)', 'atur', ''),
     ('pixabaydel', 'Hapus API key Pixabay', 'atur', '<4-karakter-terakhir|nomor>'),
     ('backup', 'Backup sekarang + status backup terakhir', 'atur', ''),
+    ('update', 'Update panel dari GitHub + restart', 'atur', ''),
+    ('restart', 'Restart panel + bot Telegram', 'atur', ''),
 ]
 _BOT_COMMAND_SECTIONS = [
     ('pantau', '📊 Pantau:'),
@@ -5586,7 +5813,7 @@ def register_bot_commands(token):
         return False
 
 
-def handle_user_command(token, chat_id, text):
+def handle_user_command(token, chat_id, text, message_id=None):
     try:
         raw_cmd = text.strip()
         # Bersihkan emoji agar teks tombol tombol seperti "📊 Status Server" cocok ke "status server"
@@ -5773,6 +6000,35 @@ def handle_user_command(token, chat_id, text):
             else:
                 send_message(token, chat_id,
                              "💾 *Backup sedang dibuat, Bos* ⏳\n\nKetik /backup lagi sebentar lagi buat lihat hasilnya.")
+            return
+
+        # --- 🔄 UPDATE + RESTART LEWAT TELEGRAM (v1.2.17): /update & /restart ---
+        # Konfirmasi inline dulu (aksi restart/update); eksekusi di
+        # callback 'upd:yes' / 'rst:yes'. Panel yang menjalankan
+        # update/restart (endpoint operator di app.py) — operator hanya
+        # memanggil, supaya urutan restart tetap benar (v1.2.11).
+        if first_word in ("/update",):
+            send_message(token, chat_id,
+                         "🔄 *Update Panel* 😎\n\n"
+                         "Update mengambil kode terbaru dari GitHub lalu restart panel + bot Telegram.\n"
+                         "⚠️ Kalau ada video yang sedang dirender/di-upload, update ditolak dulu sampai render selesai.\n"
+                         "Setelah selesai saya kabari lagi dengan versi barunya.\n\n"
+                         "Lanjut update, Bos?",
+                         reply_markup={"inline_keyboard": [[
+                             {"text": "✅ Ya, Update", "callback_data": "upd:yes"},
+                             {"text": "❌ Batal", "callback_data": "upd:no"},
+                         ]]})
+            return
+        if first_word in ("/restart",):
+            send_message(token, chat_id,
+                         "🔄 *Restart Panel + Bot* 😎\n\n"
+                         "Panel dan bot Telegram akan mati sebentar lalu hidup lagi (~10–30 detik).\n"
+                         "⚠️ Kalau ada video yang sedang dirender/di-upload, restart ditolak dulu sampai render selesai.\n\n"
+                         "Lanjut restart, Bos?",
+                         reply_markup={"inline_keyboard": [[
+                             {"text": "✅ Ya, Restart", "callback_data": "rst:yes"},
+                             {"text": "❌ Batal", "callback_data": "rst:no"},
+                         ]]})
             return
 
         # --- 🔑 API KEY PIXABAY: /pixabaykey, /pixabaykeys, /pixabaydel ---
@@ -5980,6 +6236,9 @@ def handle_user_command(token, chat_id, text):
 
         # DEFAULT FALLBACK — did-you-mean (NLU sudah mencoba menerjemahkan
         # dan tidak mengenali maksudnya; sarankan perintah terdekat).
+        # 🔥 v1.2.17 JEMBATAN: chat bebas (bukan '/') diteruskan ke Muse —
+        # SATU ack singkat ini MENGGANTIKAN pesan "nggak ngerti" (bukan
+        # menambahnya). Perintah '/' tetap balasan did-you-mean lama.
         sug = _nlu_suggest(clean_cmd)
         if sug:
             sug_txt = "Mungkin maksud Bos: " + " atau ".join(sug) + "?"
@@ -5991,7 +6250,13 @@ def handle_user_command(token, chat_id, text):
             "Perintah cepat: /status /server /kuota /stok /statistik /monetisasi /judul /ideashorts /buatshort /buatlong /perpanjang /mode /jeda /lanjutkan\n"
             "Atau bicara bebas saja, mis. 'buatkan short tema anak untuk semua channel' — saya terjemahkan maksud Bos 😌"
         )
-        send_message(token, chat_id, msg)
+        if raw_cmd.startswith('/'):
+            send_message(token, chat_id, msg)
+        elif _bridge_forward(token, chat_id, message_id, raw_cmd):
+            send_message(token, chat_id,
+                         "📩 *Siap Bos, diteruskan ke Muse — saya balas sebentar lagi ya* 😌")
+        else:
+            send_message(token, chat_id, msg)
 
     except Exception as e:
         print(f"Error di handle_user_command: {e}", flush=True)
@@ -6062,6 +6327,12 @@ def watchdog_background_loop(token, chat_id):
                 _approval_reminder_check(token, chat_id)
             except Exception as e:
                 print(f"Watchdog approval-reminder exception: {e}", flush=True)
+            # 🔥 v1.2.17: fallback basi jembatan — chat yang diteruskan ke
+            # Muse tapi belum dibalas >10 menit → 1 pesan jujur + failed.
+            try:
+                _bridge_stale_check(token, chat_id)
+            except Exception as e:
+                print(f"Watchdog bridge-stale exception: {e}", flush=True)
         except Exception as e:
             print(f"Watchdog exception: {e}", flush=True)
             time.sleep(60)
@@ -6198,7 +6469,7 @@ def main():
 
                     if (sender_id == owner_chat_id or chat_id == owner_chat_id) and text:
                         print(f"📩 Perintah diterima dari Bos ({chat_id}): {_log_safe_text(text)}", flush=True)
-                        handle_user_command(token, chat_id, text)
+                        handle_user_command(token, chat_id, text, msg.get('message_id'))
                     elif text:
                         print(f"⚠️ Akses ditolak dari ID asing: {sender_id} / chat: {chat_id}", flush=True)
             time.sleep(0.3)

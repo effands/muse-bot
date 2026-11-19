@@ -1,4 +1,4 @@
-import os, sys, time, queue, threading, subprocess, random, json, shutil, math, re, hmac, wave
+import os, sys, time, queue, threading, subprocess, random, json, shutil, math, re, hmac, wave, zlib
 import unicodedata
 import html as _html
 import numpy as np
@@ -9892,7 +9892,7 @@ def _seo_duration_label(sec, lang):
     return f"{m} Menit" if lang == 'id' else f"{m} Minutes"
 
 
-def _seo_title_id(clean, year, kind, duration_sec):
+def _seo_title_id(clean, year, kind, duration_sec, channel_key=''):
     """Rumus Indonesia: KATA KUNCI + TAHUN (+ jenis) - ekor suasana."""
     words = clean.split()
     if year:
@@ -9923,14 +9923,20 @@ def _seo_title_id(clean, year, kind, duration_sec):
         tail.append(w)
     if tail:
         base = base + ' - ' + ' '.join(tail)
+    # v1.3.4: buang akhir menggantung ('... Cocok Untuk') + sudut per
+    # channel (satu referensi -> judul beda di tiap channel).
+    base = _seo_strip_dangling(base)
+    angle = _seo_channel_angle(channel_key, 'id')
+    if angle and angle.lower() not in base.lower() and len(base + ' ' + angle) <= 100:
+        base = base + ' ' + angle
     if len(base) < 60 and duration_sec:
         dur = _seo_duration_label(duration_sec, 'id')
         if dur and len(base + ' - ' + dur) <= 100:
             base = base + ' - ' + dur
-    return base[:100]
+    return _seo_strip_dangling(base[:100])
 
 
-def _seo_title_en(clean, year, kind, duration_sec):
+def _seo_title_en(clean, year, kind, duration_sec, channel_key=''):
     """Rumus Inggris: ANGKA + Romantic/Love Songs + situasi + durasi."""
     low = clean.lower()
     num = ''
@@ -9986,14 +9992,19 @@ def _seo_title_en(clean, year, kind, duration_sec):
         return ''
     if kind and kind.strip('()').lower() not in base.lower():
         base = base + ' ' + kind
+    # v1.3.4: buang akhir menggantung + sudut per channel.
+    base = _seo_strip_dangling(base)
+    angle = _seo_channel_angle(channel_key, 'en')
+    if angle and angle.lower() not in base.lower() and len(base + ' ' + angle) <= 100:
+        base = base + ' ' + angle
     if duration_sec:
         dur = _seo_duration_label(duration_sec, 'en')
         if dur and len(base + ' - ' + dur) <= 100:
             base = base + ' - ' + dur
-    return base[:100]
+    return _seo_strip_dangling(base[:100])
 
 
-def _seo_title_fallback(clean):
+def _seo_title_fallback(clean, channel_key=''):
     """Perilaku lama (pra-SEO): inti referensi sebelum pemisah, maks
     90 karakter."""
     core = clean
@@ -10003,7 +10014,12 @@ def _seo_title_fallback(clean):
             if len(head) >= 15:
                 core = head
                 break
-    return (core[:90] or 'Musik Pilihan')
+    # v1.3.4: buang akhir menggantung + sudut per channel.
+    core = _seo_strip_dangling(core[:90]) or 'Musik Pilihan'
+    angle = _seo_channel_angle(channel_key, _seo_detect_lang(core))
+    if angle and angle.lower() not in core.lower() and len(core + ' ' + angle) <= 100:
+        core = core + ' ' + angle
+    return core
 
 
 def _seo_ensure_different(new, clean):
@@ -10015,13 +10031,64 @@ def _seo_ensure_different(new, clean):
     return new
 
 
-def _playlist_rewrite_title(ref_title, duration_sec=None, ref_channel=''):
+# v1.3.4: sudut judul per channel (12 pilihan, indeks = crc32(yt_id) % 12
+# — ke-4 channel yang ada sekarang terpetakan ke sudut yang berbeda:
+# Aruya 'Paling Syahdu', Barang Unick 'Spesial', Cozy Sax 'Paling Enak',
+# Romantic 'Full Album'). Satu referensi yang sama tidak lagi
+# menghasilkan judul yang sama persis di semua channel.
+_SEO_ANGLE_ID = ('Terbaik', 'Paling Enak', 'Buat Santai', 'Romantis',
+                 'Paling Menyentuh', 'Full Album', 'Pilihan', 'Spesial',
+                 'Paling Hits', 'Enak Didengar', 'Paling Adem',
+                 'Paling Syahdu')
+_SEO_ANGLE_EN = ('Best', 'Most Relaxing', 'Romantic', 'Top Picks',
+                 'Beautiful', 'Full Album', 'Greatest Hits', 'Special',
+                 'Soothing', 'Dreamy', 'Peaceful', 'Timeless')
+# Kata yang tidak boleh menjadi kata terakhir judul: kata sifat yang
+# butuh kelanjutan ('Cocok', 'Paling') — "Cocok Untuk" dibuang
+# dua-duanya, bukan hanya 'Untuk'-nya.
+_SEO_INCOMPLETE_TAIL = frozenset({
+    'cocok', 'paling', 'sangat', 'lebih', 'kurang', 'agak', 'cukup',
+    'begitu', 'terlalu', 'amat', 'most', 'very', 'more', 'so', 'too',
+    'really'})
+
+
+def _seo_channel_angle(channel_key, lang='id'):
+    """Sudut judul untuk satu channel ('' = tanpa sudut). Deterministik
+    dari yt_id: satu channel selalu dapat sudut yang sama."""
+    key = (channel_key or '').strip()
+    if not key:
+        return ''
+    angles = _SEO_ANGLE_EN if lang == 'en' else _SEO_ANGLE_ID
+    return angles[zlib.crc32(key.encode('utf-8')) % len(angles)]
+
+
+def _seo_strip_dangling(title):
+    """Buang akhir judul yang menggantung: kata gantung di ujung
+    (_DANGLING_END_WORDS: 'untuk', 'dan', ...) + kata sifat yang butuh
+    kelanjutan (_SEO_INCOMPLETE_TAIL: 'cocok', 'paling', ...), berulang
+    sampai ujungnya kata utuh. Pemisah ' - ' yang tertinggal ikut
+    dibuang. Judul yang sudah utuh tidak berubah."""
+    s = (title or '').strip()
+    while s:
+        last = s.split()[-1].strip('.,!?:;()[]"\'').lower()
+        if last in _DANGLING_END_WORDS or last in _SEO_INCOMPLETE_TAIL:
+            s = s[:s.rfind(s.split()[-1])].rstrip()
+            continue
+        break
+    s = re.sub(r'\s*[-–—|]\s*$', '', s).strip()
+    return s
+
+
+def _playlist_rewrite_title(ref_title, duration_sec=None, ref_channel='', channel_key=''):
     """Judul baru — FORMULA SEO v1.2.24: kata kunci di DEPAN, lalu
     tahun, jenis, suasana; target 60-70 karakter, maks 100; tanpa
     nama channel (v1.2.23), tanpa emoji (v1.2.13). Bahasa mengikuti
     judul referensi (ID default; EN bila kata Inggris dominan —
     mis. Cozy Sax). Bila kata kunci tidak bisa diekstrak → perilaku
-    lama (inti referensi). Selalu berbeda dari judul referensi."""
+    lama (inti referensi). Selalu berbeda dari judul referensi.
+    v1.3.4: akhir menggantung dibuang ('... Cocok Untuk') + sudut per
+    channel (channel_key = yt_id) supaya satu referensi tidak
+    menghasilkan judul yang sama di semua channel."""
     try:
         clean = _seo_words(ref_title)
         if ref_channel:
@@ -10032,16 +10099,20 @@ def _playlist_rewrite_title(ref_title, duration_sec=None, ref_channel=''):
         year = _seo_extract_year(clean)
         kind = _seo_extract_kind(clean)
         if lang == 'en':
-            new = _seo_title_en(clean, year, kind, duration_sec)
+            new = _seo_title_en(clean, year, kind, duration_sec, channel_key)
         else:
-            new = _seo_title_id(clean, year, kind, duration_sec)
+            new = _seo_title_id(clean, year, kind, duration_sec, channel_key)
         if not new:
-            new = _seo_title_fallback(clean)
-        return _seo_ensure_different(new, clean)[:100]
+            new = _seo_title_fallback(clean, channel_key)
+        # Jaring pengaman terakhir: pemotongan [:100] bisa meninggalkan
+        # kata gantung di ujung — buang lagi setelah dipotong.
+        out = _seo_strip_dangling(_seo_ensure_different(new, clean)[:100])
+        return out or 'Musik Pilihan'
     except Exception:
         try:
             c2 = _seo_words(ref_title)
-            return _seo_ensure_different(_seo_title_fallback(c2), c2)[:100]
+            out = _seo_strip_dangling(_seo_ensure_different(_seo_title_fallback(c2, channel_key), c2)[:100])
+            return out or 'Musik Pilihan'
         except Exception:
             return 'Musik Pilihan'
 
@@ -10831,7 +10902,7 @@ def _playlist_build_thread(job_id):
         # judul referensi YouTube sering mengandung emoji/simbol yang
         # ditolak saat upload. Thumbnail memakai judul yang sudah bersih.
         _kw = _seo_main_keyword(job.get('ref_title', ''), ref_channel=job.get('ref_channel', ''))
-        _raw_title = _playlist_rewrite_title(job.get('ref_title', ''), duration_sec=audio_dur, ref_channel=job.get('ref_channel', ''))
+        _raw_title = _playlist_rewrite_title(job.get('ref_title', ''), duration_sec=audio_dur, ref_channel=job.get('ref_channel', ''), channel_key=yt_id)
         _date_s = _wib_now().strftime('%Y-%m-%d')
         new_title = _clean_upload_text(_raw_title, max_len=100,
                                        fallback=f"Playlist {_date_s}",

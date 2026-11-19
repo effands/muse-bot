@@ -4508,10 +4508,26 @@ function renderShortsMuse(items) {
   if (!items.length) { list.innerHTML = `<div style="text-align:center;padding:24px;color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada Shorts Muse.</div>`; return; }
   list.innerHTML = items.map(s => {
     const pend = s.approval === 'pending';
-    const link = s.video_url ? ` <a href="${escapeHtml(s.video_url)}" target="_blank" style="color:var(--accent)">[Lihat]</a>` : '';
+    const link = shortsVideoUrl(s) ? ` <a href="${escapeHtml(shortsVideoUrl(s))}" target="_blank" rel="noopener" style="color:var(--accent)">[Lihat]</a>` : '';
     const btns = pend ? `<button class="stop-btn" style="background:var(--green);color:#fff" title="Setujui & masuk antrean" onclick="approveTask(${Number(s.id)})">Setujui</button><button class="stop-btn" style="background:var(--accent2);color:#fff" title="Tolak (tidak dieksekusi)" onclick="rejectTask(${Number(s.id)})">Tolak</button>` : '';
-    return `<div class="task-row"><div class="task-icon"><svg class="nav-ic" style="width:20px;height:20px"><use href="#ic-shorts"/></svg></div><div class="task-info"><div class="task-name">${escapeHtml(s.title)}</div><div class="task-meta">${escapeHtml(s.channel || '')} · ${escapeHtml(s.publish_date || '')} · ${s.duration_sec || '?'} dtk · CTA: ${escapeHtml(s.cta || '')}${link}</div></div><span class="pill ${pend ? 'p-yellow' : 'p-cyan'}" style="flex-shrink:0;max-width:220px;white-space:normal;line-height:1.3">${escapeHtml(s.status || '—')}</span>${btns}</div>`;
+    const statusText = shortsStripLinks(s.status) || '—';
+    return `<div class="task-row"><div class="task-icon"><svg class="nav-ic" style="width:20px;height:20px"><use href="#ic-shorts"/></svg></div><div class="task-info"><div class="task-name">${escapeHtml(s.title)}</div><div class="task-meta">${escapeHtml(s.channel || '')} · ${escapeHtml(s.publish_date || '')} · ${s.duration_sec || '?'} dtk · CTA: ${escapeHtml(s.cta || '')}${link}</div></div><span class="pill ${pend ? 'p-yellow' : 'p-cyan'}" style="flex-shrink:0;max-width:220px;white-space:normal;line-height:1.3">${escapeHtml(statusText)}${link}</span>${btns}</div>`;
   }).join('');
+}
+
+// 🔥 v1.2.32: status riwayat lama bisa berisi anchor HTML mentah
+// ("Tayang! ✅ <a href='https://youtu.be/...'>[Lihat]</a>" — ditulis jalur
+// upload lama, sebelum status disimpan polos di app.py). Buang anchornya
+// sebelum di-escape — pola sama seperti histCleanStatus di Task Monitor —
+// supaya badge tidak menampilkan tag mentah. Link [Lihat] di-render ulang
+// dari video_url (fallback: href di anchor lama, bila video_url kosong).
+function shortsStripLinks(st) {
+  return String(st || '').replace(/<a\b[^>]*>[\s\S]*?<\/a>/gi, '').replace(/\s+/g, ' ').trim();
+}
+function shortsVideoUrl(s) {
+  if (s && s.video_url) return s.video_url;
+  const m = String((s && s.status) || '').match(/<a\b[^>]*href=['"]([^'"]+)['"]/i);
+  return m ? m[1] : '';
 }
 
 // ────────────────────────────────────────────────────────
@@ -5269,7 +5285,7 @@ function renderTasks() {
             const _pst = String(t.progress_stage || '');
             const _bar = (_pct !== null && (_pst === 'render' || _pst === 'upload'))
               ? `<div style="margin-top:4px;height:6px;border-radius:3px;background:var(--accent-dim);overflow:hidden"><div style="height:100%;width:${_pct}%;background:var(--accent);border-radius:3px"></div></div><div style="font-size:10px;color:var(--text2);margin-top:2px">${_pst === 'upload' ? '🚀 Mengunggah' : '⚙️ Merender'} ${_pct}%</div>` : '';
-            return `<div class="task-row${_qw ? ' q-waiting' : ''}"><div class="task-icon">${_qw ? '⏳' : '⚙️'}</div><div class="task-info"><div class="task-name">${escapeHtml(t.title || 'Task')}</div><div class="task-meta">${escapeHtml(t.time || '')}${t.thumb_status ? `<span style="color:var(--text2);font-size:10px"> · 🖼️ ${escapeHtml(t.thumb_status)}</span>` : ''}</div>${_bar}</div><span class="pill ${_qw ? 'p-yellow' : 'p-cyan'}" style="flex-shrink:0;max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(t.status || '—')}">${escapeHtml(t.status || '—')}</span><span class="task-actions">${_apprBtns}<button class="stop-btn" title="Hentikan" onclick="stopTask(${Number(t.id)})">Stop</button></span></div>`;
+            return `<div class="task-row${_qw ? ' q-waiting' : ''}"><div class="task-icon">${_qw ? '⏳' : '⚙️'}</div><div class="task-info"><div class="task-name">${escapeHtml(t.title || 'Task')}</div><div class="task-meta">${escapeHtml(t.time || '')}${t.thumb_status ? `<span style="color:var(--text2);font-size:10px"> · 🖼️ ${escapeHtml(t.thumb_status)}</span>` : ''}</div>${_bar}</div><span class="pill ${_qw ? 'p-yellow' : 'p-cyan'}" style="flex-shrink:0;max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(shortsStripLinks(t.status) || '—')}">${escapeHtml(shortsStripLinks(t.status) || '—')}</span><span class="task-actions">${_apprBtns}<button class="stop-btn" title="Hentikan" onclick="stopTask(${Number(t.id)})">Stop</button></span></div>`;
           }
         }).join('');
         html += `<div class="q-group-content">${rows}</div>`;

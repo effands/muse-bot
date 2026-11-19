@@ -895,6 +895,24 @@ body::before { display: none; }
 .monet-table { width:100%; border-collapse:collapse; font-size:12px; }
 .monet-table th { text-align:left; color:var(--muted); font-family:var(--font-m); font-size:10px; padding:4px 8px 6px 0; border-bottom:1px solid var(--border); }
 .monet-table td { padding:8px 8px 8px 0; border-bottom:1px solid var(--border); vertical-align:middle; }
+
+/* ════════ SETTINGS — kerapatan ala GitHub Primer + Tabler (v1.2.29) ════════ */
+/* Yang ditiru (bukan karangan): Primer Button — labelWrap=false (label
+   tombol TIDAK PERNAH melipat), satu primary per grup aksi, ukuran
+   medium default / small untuk ruang padat; Tabler .table-sm (sel tabel
+   padat) + form: label di atas input, caption di bawah, aksi di footer
+   satu baris. Hanya 3 kartu Settings ini (.card-tight) — tema global
+   tidak berubah. */
+.card-tight .card-head { padding: 10px 16px; }
+.card-tight .card-body { padding: 16px; }
+.card-tight .btn { white-space: nowrap; }
+.card-tight .btn-row { margin-top: 12px; }
+.card-tight .meta-line { margin-top: 8px; }
+.card-tight .monet-table th { padding: 2px 8px 4px 0; }
+.card-tight .monet-table td { padding: 5px 8px 5px 0; }
+.card-tight .monet-table td:first-child { white-space: nowrap; }
+.card-tight .monet-table .pill { padding: 2px 7px; }
+.card-tight .btn-inline { padding: 9px 16px; }
 .monet-table tr:last-child td { border-bottom:none; }
 .monet-bar { display:flex; align-items:center; gap:8px; min-width:130px; }
 .monet-bar .pb-bg { flex:1; min-width:56px; }
@@ -2045,12 +2063,12 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         <div><div class="sh-title">Settings</div><div class="sh-sub">API Google, channel & konfigurasi sistem</div></div>
       </div>
 
-      <div class="card" style="margin-bottom:16px">
+      <div class="card card-tight" style="margin-bottom:16px">
         <div class="card-head">
           <span class="card-title">📱 TELEGRAM NOTIFICATION</span>
         </div>
         <div class="card-body">
-          <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:14px">Bot akan mengirim pesan peringatan H-1 sebelum stok jadwal video di sebuah channel habis.</div>
+          <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:12px">Bot akan mengirim pesan peringatan H-1 sebelum stok jadwal video di sebuah channel habis.</div>
           <div class="g2">
             <div class="fg">
                 <label class="fl">Bot Token</label>
@@ -2065,8 +2083,6 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
           <div id="op-status" class="meta-line">Bot Telegram: memuat status…</div>
           <div class="btn-row">
             <button class="btn" id="op-restart-btn" onclick="openOpRestartConfirm()">🔄 Restart Bot Telegram</button>
-          </div>
-          <div class="btn-row">
             <button class="btn btn-p" onclick="saveTgConfig()">Simpan &amp; Test Pesan</button>
             <button class="btn btn-g" onclick="editTgConfig()">Edit</button>
             <button class="btn btn-danger" onclick="deleteTgConfig()">Hapus</button>
@@ -2100,43 +2116,41 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         </div>
       </div>
 
-      <div class="card" style="margin-bottom:16px">
+      <div class="card card-tight" style="margin-bottom:16px">
         <div class="card-head">
           <span class="card-title">🖼️ API KEY PIXABAY (Musik Playlist)</span>
         </div>
         <div class="card-body">
-          <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:14px">Dipakai untuk mengunduh ~15 footage gratis (tanpa watermark) untuk video Musik Playlist. Key GRATIS — daftar di <a href="https://pixabay.com/api" target="_blank" style="color:var(--accent)">pixabay.com/api</a>. Bisa simpan <b style="color:var(--text)">lebih dari 1 key</b>: bila satu key bermasalah (tidak valid / limit habis), sistem otomatis pindah ke key berikutnya. Key hanya ditampilkan dalam bentuk masked (****abcd) dan juga bisa dikelola lewat Telegram (<code>/pixabaykey</code>, <code>/pixabaykeys</code>, <code>/pixabaydel</code>).</div>
-          <div class="g2">
-            <div class="fg">
+          <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:12px">Dipakai untuk mengunduh ~15 footage gratis (tanpa watermark) untuk video Musik Playlist. Key GRATIS — daftar di <a href="https://pixabay.com/api" target="_blank" style="color:var(--accent)">pixabay.com/api</a>. Bisa simpan <b style="color:var(--text)">lebih dari 1 key</b>: bila satu key bermasalah (tidak valid / limit habis), sistem otomatis pindah ke key berikutnya. Key hanya ditampilkan dalam bentuk masked (****abcd) dan juga bisa dikelola lewat Telegram (<code>/pixabaykey</code>, <code>/pixabaykeys</code>, <code>/pixabaydel</code>).</div>
+          <div style="display:flex;gap:8px;align-items:flex-end">
+            <div class="fg" style="flex:1;min-width:0;margin-bottom:0">
               <label class="fl">API Key Baru</label>
               <input type="password" id="pixabay-key-new" placeholder="Tempel API key Pixabay di sini" autocomplete="off">
             </div>
-            <div class="fg" style="align-self:end">
-              <button class="btn btn-p" onclick="pixabayKeyAdd()">＋ Tambah Key</button>
-            </div>
+            <button class="btn btn-p btn-inline" style="flex:none" onclick="pixabayKeyAdd()">＋ Tambah Key</button>
           </div>
-          <div id="pixabay-keys-list" style="margin-top:10px;font-size:13px"></div>
+          <div id="pixabay-keys-list" style="margin-top:8px;font-size:13px"></div>
         </div>
       </div>
 
-      <div class="card" style="margin-bottom:16px">
+      <div class="card card-tight" style="margin-bottom:16px">
         <div class="card-head">
           <span class="card-title">🔑 GOOGLE OAUTH 2.0 API</span>
           <span id="api-badge" class="pill p-muted">Mengecek...</span>
         </div>
         <div class="card-body">
-          <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:14px">Upload <b style="color:var(--text)">client_secret.json</b> (Tipe: TVs and Limited Input Devices) untuk menghubungkan channel. Bisa simpan <b style="color:var(--text)">lebih dari 1 client</b> (satu per project Google) — bila kuota satu project habis, sistem otomatis pindah ke project cadangan yang channel-nya sudah dihubungkan. Secret tidak pernah ditampilkan di mana pun.</div>
-          <form id="api-form" style="display:flex;gap:10px;flex-wrap:wrap">
+          <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:12px">Upload <b style="color:var(--text)">client_secret.json</b> (Tipe: TVs and Limited Input Devices) untuk menghubungkan channel. Bisa simpan <b style="color:var(--text)">lebih dari 1 client</b> (satu per project Google) — bila kuota satu project habis, sistem otomatis pindah ke project cadangan yang channel-nya sudah dihubungkan. Secret tidak pernah ditampilkan di mana pun.</div>
+          <form id="api-form" style="display:flex;gap:8px;flex-wrap:wrap">
             <input type="file" id="secret-file-input" name="secret_file" accept=".json" required style="flex:1;min-width:200px">
             <input type="text" id="secret-name-input" name="client_name" placeholder="Nama client (opsional, mis. Ziqva Musik 2)" style="flex:1;min-width:200px">
             <button type="button" class="btn btn-p" onclick="uploadSecret()">Upload API Key</button>
           </form>
           <div id="secret-info" class="meta-line">Memeriksa client OAuth…</div>
-          <div style="font-size:12px;font-weight:700;margin:14px 0 2px">Client OAuth</div>
+          <div style="font-size:12px;font-weight:700;margin:12px 0 2px">Client OAuth</div>
           <div id="oauth-clients-list" style="font-size:13px"></div>
-          <div style="font-size:12px;font-weight:700;margin:14px 0 6px">Pemetaan Channel → Client</div>
+          <div style="font-size:12px;font-weight:700;margin:12px 0 4px">Pemetaan Channel → Client</div>
           <div id="oauth-mapping-list" style="font-size:13px;color:var(--muted)">Memuat channel…</div>
-          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid var(--border);align-items:center">
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px solid var(--border);align-items:center">
             <span style="font-size:12px;color:var(--muted)">Device login pakai client:</span>
             <select id="tv-client-select" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;min-width:220px"></select>
           </div>
@@ -4399,7 +4413,7 @@ function renderPixabayKeys(keys) {
   if (!box) return;
   if (!keys.length) { box.innerHTML = '<div style="color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada key — tambah satu di atas (atau lewat Telegram: /pixabaykey &lt;key&gt;).</div>'; return; }
   box.innerHTML = keys.map(k =>
-    `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--border)">
+    `<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-top:1px solid var(--border)">
       <span style="font-family:var(--font-m)">${k.index}. <b>${escapeHtml(k.masked)}</b>${k.disabled ? ' <span class="pill p-red">nonaktif</span>' : ''}</span>
       <button type="button" class="btn btn-g btn-sm" style="margin-left:auto" onclick="pixabayKeyDel('${escapeHtml(k.last4 || String(k.index))}')">Hapus</button>
     </div>`).join('');
@@ -5664,7 +5678,7 @@ function renderOAuthClients() {
   if (!list) return;
   if (!_oauthClients.length) { list.innerHTML = ''; return; }
   list.innerHTML = _oauthClients.map(c => `
-    <div style="display:flex;gap:12px;align-items:center;padding:9px 0;border-bottom:1px solid var(--border)">
+    <div style="display:flex;gap:12px;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
       <div style="min-width:0">
         <div style="font-weight:700">${escapeHtml(c.name || c.project_id || '—')} ${c.primary ? '<span class="pill p-green">UTAMA</span>' : ''}</div>
         <div style="color:var(--muted);font-size:11px;margin-top:2px">project ${escapeHtml(c.project_id || '—')} · ${escapeHtml(c.type || '—')} · ${c.uploaded_at ? new Date(c.uploaded_at).toLocaleString('id-ID') : '—'}</div>

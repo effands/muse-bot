@@ -333,6 +333,9 @@ body[class*="studio-"] :focus-visible {
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   gap: .875rem;
+  /* 🔥 v1.2.34: kartu tidak lagi dipaksa setinggi kartu tetangga — tinggi
+     mengikuti isi (kartu CHANNEL TERHUBUNG yang ringkas jadi pendek). */
+  align-items: start;
 }
 @media (max-width: 1050px) {
   .dashboard-overview { grid-template-columns: minmax(0, 1fr); gap: 0; }

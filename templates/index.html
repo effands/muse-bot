@@ -2808,13 +2808,18 @@ function renderChannelsGrid() {
 // `channels` yang sama dengan Settings (diisi loadChannels() dari
 // /api/get_channels, tanpa panggilan API baru). Semua nama/status lewat
 // escapeHtml(): nama channel berasal dari YouTube dan dianggap tidak tepercaya.
-function channelRowHtml(c, withMode) {
-  return `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border);flex-wrap:wrap">`
-    + `<span style="font-weight:700;font-size:13px;color:var(--text)">${escapeHtml(c.name)}</span>`
-    + `<span class="pill p-green">${escapeHtml(c.status || 'Connected')}</span>`
-    + (c.paused ? `<span class="pill p-yellow">⏸️ Dijeda</span>` : '')
-    + (c.monetized ? `<span class="pill p-green">💰 Monetisasi Aktif</span>` : '')
-    + (withMode ? (c.autopilot === 'auto' ? `<span class="pill p-cyan">🤖 Full-Auto</span>` : `<span class="pill p-muted">👀 Approval</span>`) : '')
+// 🔥 v1.2.34: mode compact khusus kartu CHANNEL TERHUBUNG di Dashboard —
+// satu baris per channel (nama + Connected + Full-Auto), tanpa wrap, gap
+// rapat; pill dikecilkan via inline style lokal (bukan .pill global).
+// Task Monitor tetap memakai tampilan lama (compact tidak aktif).
+function channelRowHtml(c, withMode, compact) {
+  const pillS = compact ? ' style="font-size:9px;padding:2px 6px;flex-shrink:0"' : '';
+  return `<div style="display:flex;align-items:center;gap:${compact ? 6 : 8}px;padding:${compact ? 5 : 7}px 0;border-bottom:1px solid var(--border);flex-wrap:${compact ? 'nowrap' : 'wrap'}${compact ? ';overflow:hidden' : ''}">`
+    + `<span title="${escapeHtml(c.name)}" style="font-weight:700;font-size:${compact ? 12 : 13}px;color:var(--text)${compact ? ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0' : ''}">${escapeHtml(c.name)}</span>`
+    + `<span class="pill p-green"${pillS}>${escapeHtml(c.status || 'Connected')}</span>`
+    + (c.paused ? `<span class="pill p-yellow"${pillS}>⏸️ Dijeda</span>` : '')
+    + (c.monetized ? `<span class="pill p-green"${pillS}>💰 Monetisasi Aktif</span>` : '')
+    + (withMode ? (c.autopilot === 'auto' ? `<span class="pill p-cyan"${pillS}>🤖 Full-Auto</span>` : `<span class="pill p-muted"${pillS}>👀 Approval</span>`) : '')
     + `</div>`;
 }
 function renderTaskChannels() {
@@ -2828,7 +2833,7 @@ function renderDashboardChannels() {
   const el = document.getElementById('dash-channels'); if (!el) return;
   const cnt = document.getElementById('dash-ch-count'); if (cnt) cnt.textContent = channels.length + ' channel';
   el.innerHTML = channels.length
-    ? channels.map(c => channelRowHtml(c, true)).join('')
+    ? channels.map(c => channelRowHtml(c, true, true)).join('')   // 🔥 v1.2.34: compact — satu baris per channel
     : `<div style="padding:10px 0;color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada channel tertaut — tautkan dari Settings.</div>`;
   renderChannelTable();
 }

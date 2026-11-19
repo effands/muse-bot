@@ -17,6 +17,13 @@ from google.auth.transport.requests import Request
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
 from core.resource_gate import acquire_resource, release_resource
+try:
+    import zumo_core as _zumo_core
+    _ZUMO_CORE_OK = True
+except Exception:
+    # Panel harus tetap jalan bila zumo_core.py belum ikut ter-deploy.
+    _zumo_core = None
+    _ZUMO_CORE_OK = False
 
 # ==========================================
 # 🛡️ SETUP & MONITORING
@@ -340,7 +347,10 @@ _OPERATOR_ENDPOINTS = {'operator_retry_task', 'operator_approve_task',
                       'operator_backup_status', 'operator_playlist_research',
                       'operator_playlist_create', 'operator_update_panel',
                       'operator_restart_services', 'operator_set_channel_auto_shorts',
-                      'operator_set_channel_publish_time'}
+                      'operator_set_channel_publish_time', 'operator_kie_key_add',
+                      'operator_kie_key_list', 'operator_kie_key_del',
+                      'operator_zumo_create', 'operator_zumo_status',
+                      'operator_zumo_model'}
 _CSRF_EXEMPT_ENDPOINTS = {'login', 'setup', 'static'} | _OPERATOR_ENDPOINTS
 
 @app.before_request
@@ -1460,6 +1470,18 @@ SHORTS_MUSE_KIND = 'shorts_muse'      # penanda task di blueprint & antrean akti
 PLAYLIST_KIND = 'playlist'            # penanda task di blueprint & antrean aktif
 PLAYLIST_TMP_DIR = os.path.join(BASE_UPLOAD, 'playlist_tmp')
 PLAYLIST_JOBS_FILE = os.path.join(BASE_DIR, 'playlist_jobs.json')
+# 🎵 ZUMO / Kie.ai (v1.3.0): generate lagu orisinal -> render visual statis
+# + spectrum + salju/sakura -> upload. Task kind 'zumo_playlist' memakai
+# worker + gates yang SAMA dengan playlist (disk, pause, kuota, approval, QC).
+ZUMO_KIND = 'zumo_playlist'
+ZUMO_TMP_DIR = os.path.join(BASE_UPLOAD, 'zumo_tmp')
+ZUMO_JOBS_FILE = os.path.join(BASE_DIR, 'zumo_jobs.json')
+ZUMO_ASSETS_DIR = os.path.join(BASE_UPLOAD, 'zumo_assets')
+# Bank audio (user 20:58 WIB): uploads/zumo_bank/<nama-channel>/ —
+# 1 folder per nama channel (disanitasi zumo_core.zumo_bank_dirname),
+# file mentah hasil download + bank_index.json (metadata). Sudah di
+# bawah uploads/ -> ikut ter-backup otomatis (backup mencakup uploads/).
+ZUMO_BANK_DIR = os.path.join(BASE_UPLOAD, 'zumo_bank')
 PLAYLIST_MAX_CLIPS = 15               # klip footage Pixabay per video
 PLAYLIST_MIN_CLIPS = 5                # minimal klip agar render jalan
 PLAYLIST_RESEARCH_CACHE_SEC = 3600    # cache riset 1 jam (hemat kuota)
@@ -3852,6 +3874,13 @@ def background_worker():
                         if d['id'] == task_id: d['status'] = "Merender Musik Playlist... 🎵"
                 save_tasks_db()
                 final_video = _playlist_render(task_id, task, yt_id)
+            elif task.get('kind') == ZUMO_KIND:
+                # 🎵 ZUMO: gambar statis + spectrum tipis + salju/sakura ikut beat.
+                with db_lock:
+                    for d in active_tasks:
+                        if d['id'] == task_id: d['status'] = "Merender Zumo Playlist... 🎵"
+                save_tasks_db()
+                final_video = _zumo_render(task_id, task, yt_id)
             else:
                 # ============== AWAL BLOK SUMBER KONTEN (UPDATE) ==============
                 source_mode = task.get('source_mode', 'mix')
@@ -4369,6 +4398,11 @@ def background_worker():
                             if task.get('kind') == PLAYLIST_KIND:
                                 _pl_note = (f"\n🎵 Musik Playlist"
                                             f" (referensi: {(task.get('playlist_ref_title') or '')[:50]})")
+                            if task.get('kind') == ZUMO_KIND:
+                                _zt = task.get('zumo_tracks') or []
+                                _zc = task.get('zumo_credits') or 0
+                                _pl_note = (f"\n🎵 Playlist Zumo ({len(_zt)} lagu"
+                                            + (f", kredit Kie {_zc}" if _zc else "") + ")")
                             # 🧹 v1.2.13: bila judul/deskripsi dibersihkan dan
                             # belum disebut di preview approval (mode Full-Auto
                             # tidak ada preview), sebutkan sekali di sini.
@@ -4389,6 +4423,8 @@ def background_worker():
                             # video final + folder kerja job (audio + thumbnail).
                             if task.get('kind') == PLAYLIST_KIND:
                                 _playlist_cleanup_after_upload(task)
+                            elif task.get('kind') == ZUMO_KIND:
+                                _zumo_cleanup_after_upload(task)
                             # 🔥 v1.2.20: batas 100 upload/hari/channel → cooldown sampai tengah malam WIB,
                             # besok lanjut otomatis. Task antre tetap aman menunggu.
                             try:
@@ -4520,6 +4556,9 @@ def background_worker():
             if task.get('kind') == PLAYLIST_KIND:
                 _playlist_job_update(task.get('playlist_job_id'), status='failed',
                                      error=f"QC: {reason[:200]}")
+            if task.get('kind') == ZUMO_KIND:
+                _zumo_job_update(task.get('zumo_job_id'), status='failed',
+                                 error=f"QC: {reason[:200]}")
             if not stop_flags.get(task_id):
                 if _qc_paused:
                     # 🔥 v1.2.17: channel dijeda → SATU pesan gabungan (tanpa
@@ -4574,6 +4613,9 @@ def background_worker():
                 if task.get('kind') == PLAYLIST_KIND:
                     _playlist_job_update(task.get('playlist_job_id'), status='failed',
                                          error=err_msg[:200])
+                if task.get('kind') == ZUMO_KIND:
+                    _zumo_job_update(task.get('zumo_job_id'), status='failed',
+                                     error=err_msg[:200])
                 # 🔥 FASE 5: catat kegagalan beruntun untuk auto-pause channel.
                 # Pembatalan manual (stop flag / "Dibatalkan") BUKAN kegagalan
                 # channel — jangan dihitung.
@@ -10850,6 +10892,1266 @@ def _playlist_build_thread(job_id):
                      f"Gagal membangun playlist: {str(e)[:150]}")
 
 
+# ============================================================
+# 🎵 ZUMO / Kie.ai — generate lagu orisinal -> render visual ->
+# upload (v1.3.0; desain ZUMO_DESIGN.md)
+#
+# Alur: order Telegram (/zumo) -> lirik (tempel format Suno ATAU
+# generate jalur B, fallback jalur A) -> generate musik custom mode
+# (2 varian/judul) -> download MP3 -> shuffle anti-berdampingan ->
+# EQ PIANO per lagu + crossfade + limiter -> render gambar statis +
+# spectrum tipis bawah + salju/sakura ikut beat -> task
+# kind='zumo_playlist' masuk worker yang sama (disk, pause, kuota,
+# approval, QC). Tanpa key Kie, job gagal jujur (bukan diam-diam).
+# ============================================================
+
+# Key Kie yang ditolak (401/402) nonaktif SEMENTARA — aktif lagi
+# otomatis setelah 24 jam (penegasan user 21:15 WIB). 429 tidak
+# menonaktifkan (hanya pindah ke key berikut).
+KIE_DISABLE_REACTIVATE_HOURS = 24
+
+
+def _kie_key_entries():
+    """Daftar key Kie dari config.json — pola PERSIS Pixabay
+    (_pixabay_key_entries): [{'key', 'disabled', 'disabled_at'}].
+    'disabled_at' = 'YYYY-MM-DD HH:MM' WIB saat key ditolak (None bila
+    tidak pernah ditolak)."""
+    cfg = load_bot_config()
+    raw = cfg.get('kie_api_keys')
+    entries = []
+    if isinstance(raw, list):
+        for e in raw:
+            if isinstance(e, dict) and isinstance(e.get('key'), str) and e['key'].strip():
+                entries.append({'key': e['key'].strip(), 'disabled': bool(e.get('disabled')),
+                                'disabled_at': (e.get('disabled_at') or None)})
+            elif isinstance(e, str) and e.strip():
+                entries.append({'key': e.strip(), 'disabled': False, 'disabled_at': None})
+    legacy = cfg.get('kie_api_key')
+    if isinstance(legacy, str) and legacy.strip():
+        if all(e['key'] != legacy.strip() for e in entries):
+            entries.append({'key': legacy.strip(), 'disabled': False, 'disabled_at': None})
+        cfg['kie_api_keys'] = entries
+        cfg.pop('kie_api_key', None)
+        _save_bot_config(cfg)
+    return entries
+
+
+def _kie_save_entries(entries):
+    cfg = load_bot_config()
+    cfg['kie_api_keys'] = [{'key': e['key'], 'disabled': bool(e.get('disabled')),
+                            'disabled_at': (e.get('disabled_at') or None)} for e in entries]
+    cfg.pop('kie_api_key', None)
+    _save_bot_config(cfg)
+
+
+def _kie_masked_list():
+    return [{'index': i + 1, 'masked': _mask_token(e['key']),
+             'last4': e['key'][-4:],
+             'disabled': bool(e.get('disabled')),
+             'disabled_at': (e.get('disabled_at') or None)}
+            for i, e in enumerate(_kie_key_entries())]
+
+
+def _kie_active_keys():
+    """Key aktif = tidak disabled, ATAU disabled-nya sudah lewat 24 jam
+    (auto aktif lagi — 'nonaktif sementara', penegasan user 21:15 WIB).
+    Key yang diaktifkan ulang dibersihkan flag + stempelnya, lalu
+    disimpan. Disabled tanpa stempel (data lama) tetap nonaktif."""
+    entries = _kie_key_entries()
+    now = _wib_now().replace(tzinfo=None)
+    changed = False
+    active = []
+    for e in entries:
+        if not e.get('disabled'):
+            active.append(e['key'])
+            continue
+        dt_s = (e.get('disabled_at') or '').strip()
+        try:
+            dt = datetime.strptime(dt_s, '%Y-%m-%d %H:%M')
+        except Exception:
+            continue
+        if (now - dt).total_seconds() >= KIE_DISABLE_REACTIVATE_HOURS * 3600:
+            e['disabled'] = False
+            e['disabled_at'] = None
+            changed = True
+            active.append(e['key'])
+    if changed:
+        _kie_save_entries(entries)
+    return active
+
+
+def _kie_add_key(key):
+    key = (key or '').strip()
+    if not key:
+        return False, '', 'API key tidak boleh kosong.'
+    if len(key) < 8 or len(key) > 100 or any(ch.isspace() for ch in key):
+        return False, '', 'API key tidak valid (8–100 karakter, tanpa spasi).'
+    entries = _kie_key_entries()
+    if any(e['key'] == key for e in entries):
+        return False, _mask_token(key), 'Key itu sudah ada di daftar.'
+    entries.append({'key': key, 'disabled': False})
+    _kie_save_entries(entries)
+    return True, _mask_token(key), f"Key {_mask_token(key)} ditambahkan."
+
+
+def _kie_delete_key(ident):
+    ident = str(ident or '').strip()
+    entries = _kie_key_entries()
+    if not entries:
+        return False, '', 'Belum ada API key Kie.'
+    target = None
+    if ident.isdigit():
+        idx = int(ident) - 1
+        if 0 <= idx < len(entries):
+            target = entries[idx]
+    if target is None and len(ident) >= 4:
+        matches = [e for e in entries if e['key'][-4:] == ident[-4:]]
+        if len(matches) == 1:
+            target = matches[0]
+        elif len(matches) > 1:
+            return False, '', 'Ada beberapa key dengan 4 karakter terakhir yang sama — hapus pakai nomor urut.'
+    if target is None:
+        return False, '', 'Key tidak ditemukan (pakai 4 karakter terakhir atau nomor urut).'
+    entries.remove(target)
+    _kie_save_entries(entries)
+    return True, _mask_token(target['key']), f"Key {_mask_token(target['key'])} dihapus."
+
+
+def _kie_disable_key(key):
+    """Tandai key nonaktif SEMENTARA (401/402) + stempel waktu penolakan —
+    aktif lagi otomatis setelah 24 jam (lihat _kie_active_keys).
+    429 TIDAK memanggil ini (hanya pindah key, tanpa menonaktifkan)."""
+    entries = _kie_key_entries()
+    changed = False
+    for e in entries:
+        if e['key'] == key and not e.get('disabled'):
+            e['disabled'] = True
+            e['disabled_at'] = _wib_now().strftime('%Y-%m-%d %H:%M')
+            changed = True
+    if changed:
+        _kie_save_entries(entries)
+
+
+def _kie_balances():
+    """Saldo per key aktif (penegasan user 21:15 WIB): [{index, masked,
+    last4, disabled, disabled_at, balance}]. Balance dibaca dari Kie
+    per key (1 panggilan/key); key yang gagal dibaca -> balance None
+    (jujur 'tidak terbaca', bukan angka karangan). Key nonaktif
+    balance-nya None (tidak dicek)."""
+    out = []
+    for i, e in enumerate(_kie_key_entries()):
+        bal = None
+        if not e.get('disabled') and _ZUMO_CORE_OK:
+            try:
+                bal = _zumo_core.kie_get_balance(e['key'])
+            except Exception:
+                bal = None
+        out.append({'index': i + 1, 'masked': _mask_token(e['key']),
+                    'last4': e['key'][-4:],
+                    'disabled': bool(e.get('disabled')),
+                    'disabled_at': (e.get('disabled_at') or None),
+                    'balance': bal})
+    return out
+
+
+def _zumo_profile_get(yt_id):
+    """Profil racik channel: default Cozy Sax -> overlay profil tersimpan
+    per channel (config['zumo_profiles'][yt_id]) -> overlay model global
+    (config['zumo_model'], dari /zumomodel). Profil BUKAN konstanta:
+    tiap channel/order bisa beda genre/bahasa/vokal (mis. reggae
+    Indonesia bariton vs sax Inggris) — lihat ZUMO_DEFAULT_PROFILE dan
+    ZUMO_REGGAE_PROFILE di zumo_core.py."""
+    base = dict(_zumo_core.ZUMO_DEFAULT_PROFILE) if _ZUMO_CORE_OK else {
+        'style': 'smooth jazz saxophone, warm, relaxing, romantic',
+        'lyrics_language': 'en', 'vocal_gender': 'f',
+        'model': 'V5.5', 'duration_min': 240, 'duration_max': 360,
+        'particle': 'snow', 'spectrum_color': 'white',
+        'song_titles': 3, 'songs_keep': 5}
+    try:
+        cfg = load_bot_config()
+        profs = cfg.get('zumo_profiles') or {}
+        if isinstance(profs, dict) and isinstance(profs.get(yt_id), dict):
+            for k, v in profs[yt_id].items():
+                if k in base and v not in (None, ''):
+                    base[k] = v
+        gm = (cfg.get('zumo_model') or '').strip()
+        if gm in (_zumo_core.ZUMO_MODELS if _ZUMO_CORE_OK else ['V5.5', 'V6', 'V6_MINI', 'V6_WILD']):
+            base['model'] = gm
+    except Exception:
+        pass
+    return base
+
+
+def _zumo_profile_set(yt_id, fields):
+    """Simpan field profil untuk channel (hanya key yang dikenal)."""
+    allowed = {'style', 'lyrics_language', 'vocal_gender', 'model',
+               'duration_min', 'duration_max', 'particle',
+               'spectrum_color', 'song_titles', 'songs_keep'}
+    cfg = load_bot_config()
+    profs = cfg.get('zumo_profiles') or {}
+    if not isinstance(profs, dict):
+        profs = {}
+    cur = dict(profs.get(yt_id) or {})
+    for k, v in (fields or {}).items():
+        if k in allowed and v not in (None, ''):
+            cur[k] = v
+    profs[yt_id] = cur
+    cfg['zumo_profiles'] = profs
+    _save_bot_config(cfg)
+    return cur
+
+
+def _zumo_jobs_load():
+    try:
+        with open(ZUMO_JOBS_FILE, 'r', encoding='utf-8') as f:
+            d = json.load(f)
+        if isinstance(d, dict) and isinstance(d.get('jobs'), list):
+            return d
+    except Exception:
+        pass
+    return {'jobs': []}
+
+
+def _zumo_jobs_save(data):
+    try:
+        tmp = ZUMO_JOBS_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, ZUMO_JOBS_FILE)
+    except Exception:
+        pass
+
+
+def _zumo_job_add(job):
+    with db_lock:
+        data = _zumo_jobs_load()
+        data['jobs'].insert(0, job)
+        data['jobs'] = data['jobs'][:50]
+        _zumo_jobs_save(data)
+    return job
+
+
+def _zumo_job_get(job_id):
+    for j in _zumo_jobs_load().get('jobs', []):
+        if j.get('job_id') == job_id:
+            return j
+    return None
+
+
+def _zumo_job_update(job_id, **fields):
+    with db_lock:
+        data = _zumo_jobs_load()
+        for j in data.get('jobs', []):
+            if j.get('job_id') == job_id:
+                j.update(fields)
+                j['updated_at'] = _wib_now().strftime('%Y-%m-%d %H:%M')
+                _zumo_jobs_save(data)
+                return j
+    return None
+
+
+def _zumo_background_path(yt_id):
+    """Gambar latar statis default channel (1920x1080, buatan Muse).
+    Urutan: 1) galeri uploads/<yt_id>/backgrounds/zumo_cozy_sax_bg.jpg
+    (file dikirim ke VPS saat deploy/persiapan); 2) salinan bundel
+    zumo_assets/zumo_cozy_sax_bg.jpg di folder repo; 3) gambar apa pun
+    di galeri backgrounds/ channel itu; 4) None -> fallback Pixabay.
+    Gambar di-resize ke 1920x1080 saat render (crop tengah)."""
+    try:
+        bg_dir = _safe_join_under(BASE_UPLOAD, yt_id, 'backgrounds')
+    except Exception:
+        return None
+    for cand in (os.path.join(bg_dir, _zumo_core.ZUMO_BG_FILENAME) if _ZUMO_CORE_OK else None,
+                 os.path.join(BASE_DIR, 'zumo_assets', 'zumo_cozy_sax_bg.jpg')):
+        if cand and os.path.isfile(cand):
+            return cand
+    try:
+        for f in sorted(os.listdir(bg_dir)):
+            if f.lower().endswith(('.jpg', '.jpeg', '.png')):
+                return os.path.join(bg_dir, f)
+    except Exception:
+        pass
+    return None
+
+
+def _zumo_bank_save_track(yt_id, channel_name, src_path, meta):
+    """Simpan 1 lagu mentah ke bank (uploads/zumo_bank/<nama-channel>/).
+    Kegagalan bank TIDAK PERNAH menggagalkan job upload — dicatat ke
+    log saja, job lanjut. Kembalikan entri bank atau None."""
+    if not _ZUMO_CORE_OK:
+        return None
+    try:
+        entry = _zumo_core.zumo_bank_add(ZUMO_BANK_DIR, channel_name, src_path, meta)
+        if entry is None:
+            print(f"[zumo] bank: gagal menyimpan '{meta.get('title')}' (channel {channel_name})", flush=True)
+        return entry
+    except Exception as e:
+        print(f"[zumo] bank error: {e}", flush=True)
+        return None
+
+
+def _zumo_ensure_particle_loop(kind):
+    """Loop partikel 8 dtk (snow/sakura) di uploads/zumo_assets/ — dibuat
+    sekali via zumo_core.make_particle_loop, dipakai ulang semua playlist.
+    Kembalikan path atau None bila gagal (render tetap jalan tanpa salju)."""
+    kind = 'sakura' if kind == 'sakura' else 'snow'
+    try:
+        os.makedirs(ZUMO_ASSETS_DIR, exist_ok=True)
+        path = os.path.join(ZUMO_ASSETS_DIR, f'{kind}.mp4')
+        if os.path.isfile(path) and os.path.getsize(path) > 0:
+            return path
+        if not _ZUMO_CORE_OK:
+            return None
+        return _zumo_core.make_particle_loop(
+            kind, path, duration=8.0, fps=30, width=1920, height=1080,
+            ffmpeg_path=get_ffmpeg_path())
+    except Exception as e:
+        print(f"[zumo] loop partikel {kind} gagal dibuat: {e}", flush=True)
+        return None
+
+
+def _zumo_make_thumbnail(image_path, new_title, channel_name, out_path,
+                         badge=None):
+    """Thumbnail Zumo 1280x720 — varian _playlist_make_thumbnail yang
+    menerima PATH GAMBAR LOKAL (bukan URL ytimg). Layout SAMA (split:
+    kiri gradien + badge + judul + channel; kanan foto). Bila image_path
+    kosong/tidak ada -> gradien lokal saja (tanpa foto). Gagal total
+    (PIL rusak) -> raise, JANGAN pakai thumbnail acak."""
+    title = _clean_upload_text(new_title, max_len=100) or 'Zumo Playlist'
+    ch = _clean_upload_text(channel_name or '') or 'ZIMUSE'
+    badge = (badge or 'ZUMO').strip()[:20].upper()
+    photo = None
+    if image_path and os.path.isfile(image_path):
+        try:
+            from PIL import Image
+            photo = Image.open(image_path).convert('RGB')
+        except Exception as e:
+            print(f"[zumo] thumbnail: gambar lokal tidak bisa dibuka ({e}) — pakai gradien.", flush=True)
+            photo = None
+    from PIL import Image, ImageDraw
+    if photo is not None:
+        c1, c2, accent = _playlist_thumb_palette(photo)
+    else:
+        c1, c2, accent = (24, 24, 34), (8, 8, 14), (255, 212, 0)
+    img = _playlist_thumb_gradient(1280, 720, c1, c2)
+    draw = ImageDraw.Draw(img, 'RGBA')
+    photo_w = 520
+    if photo is not None:
+        w, h = photo.size
+        target = photo_w / 720
+        if w / h > target:
+            nw = int(h * target)
+            x = (w - nw) // 2
+            photo = photo.crop((x, 0, x + nw, h))
+        else:
+            nh = int(w / target)
+            y = (h - nh) // 2
+            photo = photo.crop((0, y, w, y + nh))
+        photo = photo.resize((photo_w, 720), Image.LANCZOS)
+        img.paste(photo, (1280 - photo_w, 0))
+        draw.rectangle([1280 - photo_w - 6, 0, 1280 - photo_w, 720],
+                       fill=accent + (255,))
+        max_w = 1280 - photo_w - 6 - 56 - 40
+    else:
+        max_w = 1280 - 56 - 40
+    font_badge = _playlist_thumb_font(30)
+    tw = draw.textlength(badge, font=font_badge)
+    bx, by = 56, 52
+    draw.rounded_rectangle([bx, by, bx + tw + 40, by + 52], radius=26,
+                           fill=accent + (255,))
+    draw.text((bx + 20, by + 9), badge, font=font_badge, fill=(0, 0, 0))
+    font = _playlist_thumb_font(64)
+    lines = _playlist_wrap_text(title, font, max_w, draw)
+    for size in (64, 56, 48, 40, 36):
+        font = _playlist_thumb_font(size)
+        lines = _playlist_wrap_text(title, font, max_w, draw)
+        if len(lines) <= 5:
+            break
+    if len(lines) > 5:
+        lines = lines[:5]
+        while draw.textlength(lines[4] + '…', font=font) > max_w and len(lines[4]) > 3:
+            lines[4] = lines[4][:-1]
+        lines[4] = lines[4].rstrip() + '…'
+    line_h = int(font.size * 1.18)
+    block_h = line_h * len(lines)
+    y = 170 + max(0, (430 - block_h) // 2)
+    for ln in lines:
+        draw.text((58, y + 3), ln, font=font, fill=(0, 0, 0, 200))
+        draw.text((56, y), ln, font=font, fill=(255, 255, 255))
+        y += line_h
+    font_small = _playlist_thumb_font(30)
+    draw.text((56, 648), ch[:60], font=font_small, fill=accent)
+    q = 88
+    while True:
+        img.save(out_path, 'JPEG', quality=q, optimize=True)
+        if os.path.getsize(out_path) <= 2_000_000 or q <= 50:
+            break
+        q -= 8
+    return out_path
+
+
+def _zumo_rewrite_title(track_titles, theme, channel_name):
+    """Judul video dari judul lagu hasil generate + tema. Nama channel
+    TIDAK ditempel ke judul (v1.2.23 — _strip_channel_title_suffix juga
+    berjaga di _clean_upload_text). Maks 100 karakter, bersih emoji."""
+    first = (track_titles or [''])[0].strip() if track_titles else ''
+    th = (theme or '').strip()
+    if first and th and first.lower() not in th.lower():
+        raw = f"{first} — {th}"
+    elif first:
+        raw = first
+    elif th:
+        raw = th
+    else:
+        raw = 'Lagu Zumo'
+    n = len([t for t in (track_titles or []) if t])
+    if n > 1:
+        raw = f"{raw} ({n} Lagu)"
+    return _clean_upload_text(raw, max_len=100, fallback='Lagu Zumo',
+                              strip_channel=channel_name)
+
+
+def _zumo_build_description(theme, tracks, channel_name, title):
+    """Deskripsi SEO: pembuka + daftar lagu + timestamp (dari offset
+    gabungan, SETELAH crossfade) + ajakan subscribe + nama channel.
+    tracks = [{title, duration, offset}]."""
+    lines = []
+    lines.append(f"{title}")
+    lines.append('')
+    th = (theme or '').strip()
+    if th:
+        lines.append(f"Nikmati {th} — lagu orisinal yang dibuat khusus untuk menemani harimu.")
+    lines.append('')
+    lines.append('Daftar lagu:')
+    for tr in tracks:
+        off = float(tr.get('offset') or 0)
+        mm, ss = int(off // 60), int(off % 60)
+        lines.append(f"{mm:02d}:{ss:02d} {tr.get('title') or 'Lagu'}")
+    lines.append('')
+    lines.append('Jangan lupa subscribe dan nyalakan loncengnya supaya tidak ketinggalan lagu baru.')
+    if channel_name:
+        lines.append(f"Channel: {channel_name}")
+    return _clean_upload_text('\n'.join(lines), max_len=5000, fallback=title)
+
+
+def _zumo_build_tags(style, track_titles, channel_name):
+    """Tag dari style/genre + judul lagu + kata kunci kanal. Total
+    <=400 karakter, tanpa '#', tanpa duplikat (pola playlist)."""
+    words = []
+    for part in ((style or '').replace(',', ' ').split()):
+        words.append(part)
+    for t in (track_titles or []):
+        for w in (t or '').replace(',', ' ').split():
+            words.append(w)
+    for w in ('musik santai', 'relaxing', 'cozy'):
+        words.append(w)
+    if channel_name:
+        words.append(channel_name)
+    seen, tags = set(), []
+    for w in words:
+        lw = w.lower().strip()
+        if len(lw) < 2 or lw in seen:
+            continue
+        seen.add(lw)
+        tags.append(w)
+    return ', '.join(_clean_upload_tags(tags)) or 'musik, playlist'
+
+
+def _zumo_render(task_id, task, yt_id):
+    """Render video Zumo: gambar latar STATIS (tanpa zoompan) + spectrum
+    TIPIS di bawah (1920x140, y=940) + loop salju/sakura ikut beat
+    (denyut eq per segmen lagu). 1 pass FFmpeg, H.264 1080p30 + AAC.
+    Spectrum sudah ikut beat secara bawaan (showspectrum dari frame
+    audio) — tidak perlu modulasi tambahan. Partikel ikut beat lewat
+    denyut brightness eq per-frame pada BPM tiap lagu (Opsi D desain
+    §5.3 — BUKAN geq per-frame, BUKAN render frame-by-frame Python).
+    Reuse-final seperti playlist (retry setelah upload gagal)."""
+    if stop_flags.get(task_id):
+        raise Exception('Dibatalkan')
+    final_video = os.path.join(BASE_DIR, f"static/final_{task_id}.mp4")
+    if os.path.exists(final_video) and os.path.getsize(final_video) > 0:
+        try:
+            _pv = _probe_video(final_video)
+            _pdur = float((_pv.get('format') or {}).get('duration') or 0) if _pv else 0
+        except Exception:
+            _pdur = 0
+        if _pdur > 0:
+            task['zumo_render_method'] = task.get('zumo_render_method') or 'reuse-final'
+            try:
+                _zumo_job_update(task.get('zumo_job_id'), render_method='reuse-final')
+            except Exception:
+                pass
+            return final_video
+    audio = (task.get('zumo_audio') or '').strip()
+    bg = (task.get('zumo_bg_image') or '').strip()
+    if not audio or not os.path.exists(audio):
+        raise Exception('File audio Zumo tidak ditemukan.')
+    if not bg or not os.path.exists(bg):
+        raise Exception('Gambar latar Zumo tidak ditemukan.')
+    audio_dur = _playlist_media_duration(audio)
+    if audio_dur <= 0:
+        raise Exception('Durasi audio tidak terbaca.')
+    color = (task.get('zumo_spectrum_color') or 'white').strip().lower()
+    if color not in ('white', 'cyan', 'viridis'):
+        color = 'white'
+    # showspectrum `color` HANYA menerima enum preset (0-14: channel,
+    # intensity, rainbow, viridis, ...) — nama warna polos ('white'/'cyan')
+    # DITOLAK FFmpeg 8.1.2 ("Undefined constant ... in 'white'").
+    # Jadi putih/cyan dibuat dari `color=intensity` -> `format=gray`
+    # (batang abu-abu netral, latar tetap hitam) -> `lutrgb` KALI 2.2
+    # (bukan `eq=brightness`, yang ikut mengangkat latar jadi abu-abu).
+    # Cyan: `colorchannelmixer` mematikan kanal merah sebelum lutrgb.
+    # Terverifikasi empiris di harness v1.3.0 (piksel terang putih
+    # 217,217,217 / cyan 5,250,244, latar tetap hitam).
+    # OPACITY spectrum 65% (user 21:21 WIB: 60-70%, semi-transparan
+    # supaya gambar latar tetap tembus di balik spectrum — jangan 100%
+    # solid): ujung rantai `format=yuva420p,colorchannelmixer=aa=0.65`
+    # memberi alpha 0.65 ke SELURUH strip (batang + latar hitamnya),
+    # lalu `overlay` memadukan alpha itu di atas gambar. Nilai tengah
+    # 0.65 dari rentang 0.60-0.70 yang diminta user.
+    _SPEC_FILTERS = {
+        'white': ("showspectrum=s=1920x140:mode=separate:scale=log:color=intensity:slide=scroll,"
+                  "format=gray,lutrgb=r='min(255,val*2.2)':g='min(255,val*2.2)':b='min(255,val*2.2)',"
+                  "format=yuva420p,colorchannelmixer=aa=0.65"),
+        'cyan': ("showspectrum=s=1920x140:mode=separate:scale=log:color=intensity:slide=scroll,"
+                 "format=gray,colorchannelmixer=rr=0:gg=1:bb=1,"
+                 "lutrgb=r='min(255,val*2.2)':g='min(255,val*2.2)':b='min(255,val*2.2)',"
+                 "format=yuva420p,colorchannelmixer=aa=0.65"),
+        'viridis': ("showspectrum=s=1920x140:mode=separate:scale=log:color=viridis:slide=scroll,"
+                    "format=yuva420p,colorchannelmixer=aa=0.65"),
+    }
+    ff = get_ffmpeg_path()
+    # Denyut partikel per segmen lagu (eq brightness, amplitudo 0.06 —
+    # halus, bukan berkedip kasar).
+    eq_chain = []
+    for seg in (task.get('zumo_segments') or []):
+        try:
+            t0 = float(seg.get('t0') or 0)
+            t1 = float(seg.get('t1') or 0)
+            bpm = float(seg.get('bpm') or 60)
+        except Exception:
+            continue
+        if t1 <= t0 or bpm <= 0:
+            continue
+        eq_chain.append(
+            f"eq=brightness='0.06*sin(2*PI*(t-{t0:.2f})*{bpm:.1f}/60)':eval=frame:enable='between(t,{t0:.2f},{t1:.2f})'")
+    if not eq_chain:
+        eq_chain.append("eq=brightness='0.05*sin(2*PI*t*60/60)':eval=frame")
+    loop = (task.get('zumo_particle_loop') or '').strip()
+    filt = (
+        "[0:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,format=yuv420p[bg];"
+        "[1:a]asplit=2[aud][specin];"
+        f"[specin]{_SPEC_FILTERS[color]}[spec];"
+        "[bg][spec]overlay=0:940[bg2]"
+    )
+    inputs = [ff, '-y', '-loop', '1', '-i', bg, '-i', audio]
+    if loop and os.path.exists(loop):
+        inputs += ['-stream_loop', '-1', '-i', loop]
+        # Screen blend HARUS di ruang RGB (gbrp), bukan YUV: blend
+        # all_mode=screen di YUV menerapkan rumus screen ke plane U/V
+        # juga, dan chroma netral (128) di-screen jadi ~191 — seluruh
+        # frame berubah magenta (ditemukan harness B9c: bg hangat
+        # (200,163,110) jadi (255,98,254)). Di gbrp, partikel hitam
+        # (0) = tidak berubah, putih (255) = putih — benar. Round-trip
+        # yuv->gbrp->yuv menggeser ~1 level, diabaikan.
+        filt += (";[2:v]scale=1920:1080,format=yuv420p," + ','.join(eq_chain) +
+                 "[pt];[bg2]format=gbrp[bg3];[pt]format=gbrp[pt3];"
+                 "[bg3][pt3]blend=all_mode=screen,format=yuv420p[vout]")
+    else:
+        filt += ",format=yuv420p[vout]"
+    cmd = inputs + ['-filter_complex', filt,
+                    '-map', '[vout]', '-map', '[aud]',
+                    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+                    '-r', '30', '-c:a', 'aac', '-b:a', '192k',
+                    '-t', f"{audio_dur:.3f}", '-movflags', '+faststart',
+                    final_video]
+    _run_ffmpeg_zoom(task_id, cmd, "FFmpeg Zumo Render Error",
+                     total_sec=audio_dur, pct_base=0.0, pct_span=100.0)
+    if not os.path.exists(final_video) or os.path.getsize(final_video) == 0:
+        raise Exception('Render Zumo gagal (file final kosong).')
+    task['zumo_render_method'] = 'static+spectrum+particle' if loop else 'static+spectrum'
+    try:
+        _zumo_job_update(task.get('zumo_job_id'), render_method=task['zumo_render_method'])
+    except Exception:
+        pass
+    return final_video
+
+
+def _zumo_cleanup_after_upload(task):
+    """Setelah upload sukses: hapus video final + folder kerja job Zumo.
+    Gagal hapus tidak boleh menggagalkan status Tayang."""
+    try:
+        task_id = task.get('id')
+        if task_id:
+            try:
+                os.remove(os.path.join(BASE_DIR, f"static/final_{task_id}.mp4"))
+            except Exception:
+                pass
+        job_dir = (task.get('zumo_job_dir') or '').strip()
+        base = os.path.abspath(ZUMO_TMP_DIR)
+        if job_dir and os.path.abspath(job_dir).startswith(base + os.sep):
+            shutil.rmtree(job_dir, ignore_errors=True)
+        _zumo_job_update(task.get('zumo_job_id'), status='done',
+                         video_id=task.get('video_id'),
+                         video_url=task.get('video_url'),
+                         cleaned_at=_wib_now().strftime('%Y-%m-%d %H:%M'))
+    except Exception:
+        pass
+
+
+def _zumo_create_task(data):
+    """Inti pembuatan SATU task Zumo — cermin _playlist_create_task:
+    stagger jam, autopilot auto vs approval, dijeda -> ditahan, lalu
+    worker yang sama (disk -> render Zumo -> QC -> upload -> kuota)."""
+    yt_id = (data.get('yt_id') or '').strip()
+    title = (data.get('title') or '').strip()
+    if not yt_id or not title:
+        return {"ok": False, "message": "Channel dan judul wajib diisi.", "http": 400}
+    channel_rec = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+    if channel_rec is None:
+        return {"ok": False, "message": "Channel tidak ditemukan.", "http": 404}
+    title = _shorts_dedup_title(yt_id, title, channel_rec)
+    _raw_title = title
+    _date_s = _wib_now().strftime('%Y-%m-%d')
+    title = _clean_upload_text(title, max_len=100,
+                               fallback=f"Zumo {_date_s}",
+                               strip_channel=channel_rec.get('name', ''))
+    title_cleaned = bool(data.get('title_cleaned')) or (title != _raw_title)
+    if title != _raw_title:
+        title = _shorts_dedup_title(yt_id, title, channel_rec)
+    _raw_desc = (data.get('description') or '').strip() or title
+    _description = _clean_upload_text(_raw_desc, max_len=5000, fallback=title)
+    _raw_tags = (data.get('tags') or '').strip()
+    _tags = ', '.join(_clean_upload_tags(_raw_tags)) or 'musik, playlist'
+    title_cleaned = title_cleaned or (_description != _raw_desc) or (_tags != _raw_tags)
+    try:
+        pub_dt = datetime.strptime(data.get('publish_date', ''), '%Y-%m-%dT%H:%M')
+    except Exception:
+        try:
+            pub_dt = datetime.strptime(data.get('publish_date', ''), '%Y-%m-%d %H:%M')
+        except Exception:
+            return {"ok": False, "message": "Format tanggal salah (pakai YYYY-MM-DD HH:MM).", "http": 400}
+    v_date_str = _stagger_publish_date(pub_dt.strftime('%Y-%m-%d %H:%M'), yt_id)
+    try:
+        audio_dur = float(data.get('audio_duration') or 0)
+    except Exception:
+        audio_dur = 0.0
+    if audio_dur <= 0:
+        return {"ok": False, "message": "Durasi audio tidak valid.", "http": 400}
+    if not (data.get('audio_path') or '').strip() or not os.path.exists(data.get('audio_path') or ''):
+        return {"ok": False, "message": "File audio Zumo tidak ditemukan.", "http": 400}
+    t_id = _next_task_id()
+    batch_id = f"zm{t_id}"
+    channel_name = channel_rec.get('name', yt_id)
+    auto_mode = _autopilot_of(channel_rec) == 'auto'
+    channel_paused = _channel_paused(yt_id)
+    blueprint = {
+        "id": t_id, "yt_id": yt_id, "title": title,
+        "publish_date": v_date_str,
+        "kind": ZUMO_KIND,
+        "target_duration_hours": audio_dur / 3600.0,
+        "description": _description,
+        "tags": _tags,
+        "privacy": (data.get('privacy') or 'public').strip() or 'public',
+        "zumo_audio": data.get('audio_path'),
+        "zumo_bg_image": (data.get('bg_image') or '').strip(),
+        "zumo_particle_loop": (data.get('particle_loop') or '').strip(),
+        "zumo_spectrum_color": (data.get('spectrum_color') or 'white').strip(),
+        "zumo_segments": list(data.get('segments') or []),
+        "zumo_tracks": list(data.get('tracks') or []),
+        "zumo_credits": data.get('credits') or 0,
+        "playlist_thumb": (data.get('thumb_path') or '').strip(),
+        "zumo_job_id": (data.get('job_id') or '').strip(),
+        "zumo_job_dir": (data.get('job_dir') or '').strip(),
+        "render_preset": "ultrafast",
+        "source_mode": "mix",
+        "batch_id": batch_id,
+        "title_cleaned": title_cleaned,
+    }
+    if auto_mode and not channel_paused and render_queue.qsize() >= QUEUE_MAX_SIZE:
+        return {"ok": False,
+                "message": f"Antrean render penuh (maks {QUEUE_MAX_SIZE} task). "
+                           "Tunggu antrean berkurang lalu coba lagi.", "http": 429}
+    with db_lock:
+        active_tasks.append({
+            "id": t_id, "yt_id": yt_id, "title": title,
+            "time": v_date_str,
+            "status": (CHANNEL_PAUSED_STATUS if channel_paused else "Menunggu Giliran (Queue) ⏳") if auto_mode else APPROVAL_PENDING_STATUS,
+            "approval": "approved" if auto_mode else "pending",
+            "batch_id": batch_id,
+            "kind": ZUMO_KIND,
+            "type": "🎵 Zumo Playlist",
+            "title_cleaned": title_cleaned,
+            "blueprint": blueprint,
+        })
+        for c in database_channel:
+            if c['yt_id'] == yt_id:
+                c['last_scheduled_date'] = v_date_str
+                c['reminder_sent'] = False
+                break
+        save_channels(database_channel)
+    save_tasks_db()
+    if auto_mode:
+        if not channel_paused:
+            try:
+                queue_put(blueprint)
+            except Exception as e:
+                print(f"Gagal queue zumo {t_id}: {e}", flush=True)
+                with db_lock:
+                    for t in list(active_tasks):
+                        if t.get('id') == t_id:
+                            active_tasks.remove(t)
+                            t['status'] = "Gagal ❌ (Stuck — antrean penuh saat dibuat)"
+                            t['updated_at'] = time.time()
+                            history_tasks.insert(0, t)
+                            break
+                    save_tasks_db()
+                return {"ok": False,
+                        "message": "Gagal masuk antrean render (antrean penuh). "
+                                   "Task ada di Riwayat dan bisa dipulihkan lewat 'Pulihkan Task Gagal'.", "http": 500}
+        return {"ok": True, "message": "Playlist Zumo dibuat dan langsung masuk antrean (mode Full-Auto)!",
+                "http": 200, "task_id": t_id, "auto_mode": True, "batch_id": batch_id,
+                "preview": None, "channel_name": channel_name, "publish_date": v_date_str,
+                "title": title, "title_cleaned": title_cleaned}
+    preview = {"id": t_id, "title": title, "publish_date": v_date_str,
+               "duration_label": f"{int(audio_dur // 60)} menit (Zumo Playlist)",
+               "description": blueprint["description"], "privacy": blueprint["privacy"],
+               "title_cleaned": title_cleaned, "tags": _tags,
+               "thumb_path": (data.get('thumb_path') or '').strip()}
+    return {"ok": True, "message": "Playlist Zumo dibuat dan menunggu approval di Telegram!",
+            "http": 200, "task_id": t_id, "auto_mode": False, "batch_id": batch_id,
+            "preview": preview, "channel_name": channel_name, "publish_date": v_date_str,
+            "title": title, "title_cleaned": title_cleaned}
+
+
+def _zumo_gen_music(keys, model, title, lyrics, style, duration, vocal_gender,
+                    instrumental=False):
+    """Generate musik 1 judul dengan fallback model: coba model yang
+    diminta dulu; bila endpoint menolak (422 — V5.5 Discontinued),
+    coba sekali lagi dengan V6 dan laporkan fallback. Kembalikan
+    (task_id, key_index, model_dipakai, model_fallback_bool).
+    `lyrics` = None -> jalur A (non-custom, prompt = tema).
+    `instrumental` = True -> kie_create_music(instrumental=True), tanpa
+    lyrics/prompt/vocal_gender (user 20:58 WIB)."""
+    last_err = None
+    for attempt_model in ([model] if model == 'V6' else [model, 'V6']):
+        try:
+            if instrumental:
+                task_id, kidx = _zumo_core.kie_call_with_failover(
+                    keys,
+                    lambda k: _zumo_core.kie_create_music(
+                        k, attempt_model, title, None, style,
+                        duration=duration, instrumental=True),
+                    disable_cb=_kie_disable_key)
+            elif lyrics:
+                task_id, kidx = _zumo_core.kie_call_with_failover(
+                    keys,
+                    lambda k: _zumo_core.kie_create_music(
+                        k, attempt_model, title, lyrics, style,
+                        duration=duration, vocal_gender=vocal_gender),
+                    disable_cb=_kie_disable_key)
+            else:
+                task_id, kidx = _zumo_core.kie_call_with_failover(
+                    keys,
+                    lambda k: _zumo_core.kie_create_music_prompt(
+                        k, attempt_model, title, title),
+                    disable_cb=_kie_disable_key)
+            return task_id, kidx, attempt_model, (attempt_model != model)
+        except _zumo_core.KieError as e:
+            last_err = e
+            if (e.code or '') == '422' and attempt_model != 'V6':
+                continue
+            raise
+    if last_err is not None:
+        raise last_err
+    raise _zumo_core.KieError('Generate musik gagal tanpa pesan', code='fail')
+
+
+def _zumo_poll_retry(api_key, task_id):
+    """Poll dengan retry jaringan: _kie_get yang gagal jaringan dicoba
+    lagi 2x (interval poll tetap 15 dtk di dalam kie_poll)."""
+    last = None
+    for _try in range(3):
+        try:
+            return _zumo_core.kie_poll(api_key, task_id)
+        except _zumo_core.KieError as e:
+            last = e
+            if (e.code or '') == 'network':
+                time.sleep(15)
+                continue
+            raise
+    raise last
+
+
+def _zumo_do_create(data):
+    """Validasi order Zumo (panel + operator Telegram memakai helper yang
+    SAMA) -> buat job -> jalankan build thread. Kembalikan
+    (ok, message, http, job_id)."""
+    if not _ZUMO_CORE_OK:
+        return False, 'zumo_core.py belum ter-deploy di VPS.', 500, ''
+    yt_id = ((data.get('yt_id') or '').strip()
+             or _zumo_core.ZUMO_COZY_YT_ID)
+    if not _valid_yt_id(yt_id):
+        return False, 'Channel tidak valid.', 400, ''
+    channel = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+    if not channel:
+        return False, 'Channel tidak ditemukan.', 404, ''
+    # Mode order (user 20:58 WIB): 'upload' (generate -> upload, default),
+    # 'bank' (generate massal -> bank, tanpa upload), 'assemble' (rakit
+    # video dari bank, tanpa generate). Alias to_bank/from_bank diterima.
+    mode = (str(data.get('mode') or 'upload')).strip().lower()
+    mode = {'to_bank': 'bank', 'from_bank': 'assemble'}.get(mode, mode)
+    if mode not in ('upload', 'bank', 'assemble'):
+        return False, "Mode tidak dikenal (upload/bank/assemble).", 400, ''
+    instrumental = bool(data.get('instrumental'))
+    try:
+        bank_count = int(data.get('bank_count') or 8)
+    except Exception:
+        bank_count = 8
+    bank_count = max(1, min(30, bank_count))
+    theme = (data.get('theme') or '').strip()
+    if not theme and mode == 'assemble':
+        theme = 'Bank'
+    if not theme:
+        return False, 'Isi tema dulu.', 400, ''
+    profile = _zumo_profile_get(yt_id)
+    # Field order menimpa profil + disimpan sebagai profil channel itu.
+    prof_fields = {}
+    for k in ('style', 'lyrics_language', 'vocal_gender', 'model',
+              'particle', 'spectrum_color'):
+        if (data.get(k) or '').strip() if isinstance(data.get(k), str) else data.get(k):
+            prof_fields[k] = data[k]
+    if prof_fields.get('model') and prof_fields['model'] not in _zumo_core.ZUMO_MODELS:
+        return False, 'Model tidak dikenal (V5.5/V6/V6_MINI/V6_WILD).', 400, ''
+    if prof_fields.get('particle') and prof_fields['particle'] not in ('snow', 'sakura'):
+        return False, "Partikel tidak dikenal (snow/sakura).", 400, ''
+    if prof_fields.get('spectrum_color') and prof_fields['spectrum_color'] not in ('white', 'cyan', 'viridis'):
+        return False, 'Warna spectrum tidak dikenal (white/cyan/viridis).', 400, ''
+    if prof_fields.get('vocal_gender') and prof_fields['vocal_gender'] not in ('m', 'f'):
+        return False, 'Gender vokal tidak dikenal (m/f).', 400, ''
+    if prof_fields:
+        _zumo_profile_set(yt_id, prof_fields)
+        profile.update(prof_fields)
+    try:
+        # Operator Telegram mengirim `song_count`; panel memakai
+        # `song_titles` — terima keduanya (alias) supaya jumlah lagu
+        # dari /zumo tidak diam-diam diabaikan.
+        n_titles = int(data.get('song_titles') or data.get('song_count')
+                       or profile.get('song_titles') or 3)
+    except Exception:
+        n_titles = 3
+    # Bank massal boleh 1-30 judul (contoh user: 30 lagu jazz instrumental);
+    # order upload tetap 1-3 judul (3 judul -> 6 varian -> pakai 4-5).
+    n_titles = max(1, min(30 if mode == 'bank' else 3, n_titles))
+    titles = []
+    raw_titles = data.get('titles') or []
+    if isinstance(raw_titles, list):
+        for t in raw_titles[:(30 if mode == 'bank' else 3)]:
+            if not isinstance(t, dict):
+                continue
+            tt = (t.get('title') or '').strip()[:80]
+            ll = (t.get('lyrics') or '').strip()
+            if ll and not instrumental:
+                ll = _zumo_core.zumo_normalize_lyrics(ll)
+            if instrumental:
+                ll = ''
+            if tt or ll:
+                titles.append({'title': tt, 'lyrics': ll})
+    if mode == 'assemble':
+        # Rakit butuh bank berisi — ditolak jujur bila kosong.
+        if not _zumo_core.zumo_bank_list(ZUMO_BANK_DIR, channel.get('name', '')):
+            return False, 'Bank audio channel ini masih kosong — generate ke bank dulu (/zumobank).', 400, ''
+    pub = (data.get('publish_date') or '').strip()
+    if pub:
+        try:
+            pub_dt = datetime.strptime(pub, '%Y-%m-%dT%H:%M')
+            pub = pub_dt.strftime('%Y-%m-%d %H:%M')
+        except Exception:
+            try:
+                pub_dt = datetime.strptime(pub, '%Y-%m-%d %H:%M')
+            except Exception:
+                return False, 'Format tanggal salah (pakai YYYY-MM-DD HH:MM).', 400, ''
+    else:
+        # Default (SAMA seperti Playlist): besok 19:00 WIB. Tanpa ini,
+        # _zumo_create_task menolak publish_date kosong (400) dan SEMUA
+        # order tanpa jadwal eksplisit gagal di akhir build (ditemukan
+        # harness D6 — order assemble tanpa jadwal).
+        pub = (_wib_now() + timedelta(days=1)).strftime('%Y-%m-%d') + ' 19:00'
+    job_id = f"zm{int(time.time() * 1000)}-{secrets.token_hex(3)}"
+    _zumo_job_add({
+        'job_id': job_id, 'yt_id': yt_id,
+        'channel_name': channel.get('name', ''), 'theme': theme,
+        'style': profile.get('style', ''),
+        'lyrics_language': profile.get('lyrics_language', 'en'),
+        'vocal_gender': profile.get('vocal_gender', 'f'),
+        'model': profile.get('model', 'V5.5'),
+        'particle': profile.get('particle', 'snow'),
+        'spectrum_color': profile.get('spectrum_color', 'white'),
+        'song_titles': n_titles, 'titles': titles,
+        'mode': mode, 'instrumental': instrumental, 'bank_count': bank_count,
+        'publish_date': pub, 'privacy': (data.get('privacy') or 'public').strip() or 'public',
+        'status': 'queued', 'created_at': _wib_now().strftime('%Y-%m-%d %H:%M'),
+        'progress': 'Job dibuat — menunggu build thread.',
+    })
+    threading.Thread(target=_zumo_build_thread, args=(job_id,), daemon=True).start()
+    _msg = {'upload': 'Job Zumo dibuat — generate lirik + musik dimulai.',
+            'bank': f'Job Zumo dibuat — generate {n_titles} lagu ke bank dimulai (tanpa upload).',
+            'assemble': f'Job Zumo dibuat — rakit video dari {bank_count} lagu bank dimulai.'}[mode]
+    return True, _msg, 200, job_id
+
+
+def _zumo_finish_video(job_id, job, job_dir, kept, profile, total_credits,
+                       model, model_used, model_fallback, failed_titles):
+    """Ekor bersama jalur generate DAN jalur rakit-bank: EQ PIANO per lagu
+    + gabung (MASTERING WAJIB — selalu lewat zumo_build_audio, tidak ada
+    jalur yang melewatkannya) -> thumbnail -> buat task upload
+    (kind='zumo_playlist') -> preview approval -> notify. `kept` =
+    [{title, path, duration, bpm?, bpm_conf?, bpm_how?}]."""
+    yt_id = job.get('yt_id')
+    theme = job.get('theme') or ''
+    style = profile.get('style') or ''
+    audio_final = os.path.join(job_dir, 'audio_final.mp3')
+    _zumo_core.zumo_build_audio(
+        [k['path'] for k in kept], audio_final,
+        ffmpeg_path=get_ffmpeg_path())
+    audio_dur = _playlist_media_duration(audio_final)
+    if audio_dur <= 0:
+        raise RuntimeError('Durasi audio gabungan tidak terbaca.')
+    # BPM per lagu (untuk denyut partikel) + offset timestamp.
+    offsets = []
+    acc = 0.0
+    for i, k in enumerate(kept):
+        offsets.append(round(acc, 2))
+        acc += float(k['duration']) - (_zumo_core.ZUMO_CROSSFADE_SEC if i < len(kept) - 1 else 0.0)
+    segments = []
+    track_rows = []
+    for i, k in enumerate(kept):
+        bpm = k.get('bpm')
+        if bpm:
+            # BPM sudah dideteksi saat download / tersimpan di bank.
+            conf, how = float(k.get('bpm_conf') or 0.0), k.get('bpm_how') or 'stored'
+        else:
+            bpm, conf, how = _zumo_core.zumo_detect_bpm(
+                k['path'], ffmpeg_path=get_ffmpeg_path())
+        if how == 'fallback-60':
+            # Deteksi lemah -> seed dari BPM di teks style ('... 82 BPM').
+            hint = _zumo_core.zumo_bpm_hint_from_style(style)
+            if hint:
+                bpm, conf, how = hint, 0.5, 'style-hint'
+        segments.append({'t0': offsets[i],
+                         't1': round(offsets[i] + float(k['duration']), 2),
+                         'bpm': bpm, 'bpm_conf': conf, 'bpm_how': how})
+        track_rows.append({'title': k['title'], 'duration': float(k['duration']),
+                           'offset': offsets[i], 'bpm': bpm})
+    channel = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+    ch_name = (channel or {}).get('name', yt_id)
+    track_titles = [k['title'] for k in kept]
+    _raw_title = _zumo_rewrite_title(track_titles, theme, ch_name)
+    new_title = _clean_upload_text(_raw_title, max_len=100,
+                                   fallback=f"Zumo {_wib_now().strftime('%Y-%m-%d')}",
+                                   strip_channel=ch_name)
+    new_desc = _zumo_build_description(theme, track_rows, ch_name, new_title)
+    new_tags = _zumo_build_tags(style, track_titles, ch_name)
+    _title_cleaned = (new_title != _raw_title)
+    bg = _zumo_background_path(yt_id)
+    thumb_path = ''
+    try:
+        thumb_path = _zumo_make_thumbnail(
+            bg, new_title, ch_name, os.path.join(job_dir, 'thumb.jpg'),
+            badge='ZUMO')
+    except Exception as e:
+        raise RuntimeError(f'Thumbnail Zumo gagal dibuat: {e}')
+    if bg:
+        loop = _zumo_ensure_particle_loop(profile.get('particle') or 'snow')
+        _zumo_job_update(job_id, status='preparing',
+                         progress='Membuat task upload...',
+                         new_title=new_title, new_description=new_desc,
+                         new_tags=new_tags, thumb_path=thumb_path,
+                         title_cleaned=_title_cleaned,
+                         audio_path=audio_final, audio_duration=audio_dur,
+                         tracks=track_rows, segments=segments)
+        res = _zumo_create_task({
+            'yt_id': yt_id, 'title': new_title, 'description': new_desc,
+            'tags': new_tags, 'publish_date': job.get('publish_date') or '',
+            'privacy': job.get('privacy') or 'public',
+            'audio_path': audio_final, 'bg_image': bg,
+            'particle_loop': loop or '',
+            'spectrum_color': profile.get('spectrum_color') or 'white',
+            'segments': segments, 'tracks': track_rows,
+            'credits': total_credits, 'thumb_path': thumb_path,
+            'job_dir': job_dir, 'job_id': job_id,
+            'audio_duration': audio_dur, 'title_cleaned': _title_cleaned})
+    else:
+        # Fallback: gambar belum ada -> footage Pixabay (jalur playlist).
+        _zumo_job_update(job_id, status='preparing',
+                         progress='Gambar latar belum ada — fallback footage Pixabay...',
+                         new_title=new_title, new_description=new_desc,
+                         new_tags=new_tags, thumb_path=thumb_path,
+                         title_cleaned=_title_cleaned,
+                         audio_path=audio_final, audio_duration=audio_dur,
+                         tracks=track_rows, segments=segments)
+        clips, masks = _pixabay_search_clips(theme, count=PLAYLIST_MAX_CLIPS, job_id=job_id)
+        clip_paths = []
+        for i, c in enumerate(clips):
+            dest = os.path.join(job_dir, f"clip_{i + 1:02d}.mp4")
+            _pixabay_download_clip(c['url'], dest)
+            clip_paths.append(dest)
+        res = _playlist_create_task({
+            'yt_id': yt_id, 'title': new_title, 'description': new_desc,
+            'tags': new_tags, 'publish_date': job.get('publish_date') or '',
+            'privacy': job.get('privacy') or 'public',
+            'audio_path': audio_final, 'clip_paths': clip_paths,
+            'thumb_path': thumb_path, 'job_dir': job_dir, 'job_id': job_id,
+            'ref_video_id': '', 'ref_title': theme,
+            'audio_duration': audio_dur, 'title_cleaned': _title_cleaned})
+        _zumo_job_update(job_id, render_method='pixabay-fallback')
+    if not res.get('ok'):
+        raise RuntimeError(res.get('message') or 'Gagal membuat task.')
+    if res.get('preview'):
+        threading.Thread(target=_send_approval_previews,
+                         args=(res['batch_id'], res['channel_name'], [res['preview']]),
+                         daemon=True).start()
+    _prog_done = 'Task dibuat — menunggu approval/antrean.'
+    if not bg:
+        _prog_done += ' (Visual: fallback footage Pixabay — gambar latar belum ada.)'
+    if failed_titles:
+        _prog_done += f" (Judul gagal: {', '.join(failed_titles)}.)"
+    if model_fallback:
+        _prog_done += f" (Model {model} ditolak Kie — dipakai {model_used}.)"
+    _zumo_job_update(job_id, status='queued', progress=_prog_done,
+                     task_id=res.get('task_id'),
+                     approval='approved' if res.get('auto_mode') else 'pending')
+    notify_event("🎵", new_title,
+                 f"Playlist Zumo siap — task dibuat untuk {ch_name} "
+                 f"({len(kept)} lagu, {int(audio_dur // 60)} menit, "
+                 f"kredit Kie {total_credits}).")
+
+
+def _zumo_build_assemble(job_id, job, job_dir):
+    """Rakit video dari BANK (mode 'assemble'): pilih acak N lagu dari
+    bank channel -> EQ PIANO per lagu saat perakitan (mastering wajib;
+    file bank disimpan mentah) -> _zumo_finish_video (thumbnail + task
+    kind='zumo_playlist'). Tanpa panggil Kie sama sekali (kredit 0).
+    Dipanggil dari _zumo_build_thread di dalam try-nya."""
+    yt_id = job.get('yt_id')
+    ch_name = job.get('channel_name') or yt_id
+    try:
+        n = max(1, min(30, int(job.get('bank_count') or 8)))
+    except Exception:
+        n = 8
+    _zumo_job_update(job_id, status='preparing',
+                     progress=f"Memilih {n} lagu acak dari bank {ch_name}...")
+    entries = _zumo_core.zumo_bank_pick(ZUMO_BANK_DIR, ch_name, n)
+    if not entries:
+        raise RuntimeError('Bank audio channel ini masih kosong — generate ke bank dulu (/zumobank).')
+    folder = os.path.dirname(_zumo_core.zumo_bank_index_path(ZUMO_BANK_DIR, ch_name))
+    kept = []
+    for e in entries:
+        p = os.path.join(folder, e.get('filename') or '')
+        d = _playlist_media_duration(p) if os.path.isfile(p) else 0
+        if d <= 0:
+            continue
+        bpm_e = e.get('bpm')
+        kept.append({'title': e.get('title') or 'Tanpa Judul', 'path': p,
+                     'duration': d,
+                     'bpm': bpm_e,
+                     'bpm_conf': 0.5 if bpm_e else 0.0,
+                     'bpm_how': 'bank' if bpm_e else 'fallback-60'})
+    if not kept:
+        raise RuntimeError('Lagu bank tidak bisa dibaca (file hilang/rusak).')
+    profile = _zumo_profile_get(yt_id)
+    for k in ('style', 'lyrics_language', 'vocal_gender', 'model',
+              'particle', 'spectrum_color'):
+        if job.get(k):
+            profile[k] = job[k]
+    model = profile.get('model') or 'V5.5'
+    _zumo_job_update(job_id, status='preparing',
+                     progress=(f"{len(kept)} lagu dari bank terpilih"
+                               + (f" (minta {n}, bank berisi {len(entries)})." if len(kept) < n else ".")
+                               + " Gabung audio (EQ PIANO per lagu)..."),
+                     kie_credits=0, model_used=model, model_fallback=False,
+                     failed_titles=[])
+    _zumo_finish_video(job_id, job, job_dir, kept, profile,
+                       0, model, model, False, [])
+
+
+def _zumo_build_thread(job_id):
+    """Latar: lirik (tempel/generate) -> musik Kie -> download -> bank ->
+    shuffle -> EQ+gabung -> thumbnail -> buat task. Gagal di langkah
+    mana pun -> job 'failed' + file dipertahankan untuk debug (lokasi
+    ada di job). Mode 'assemble' langsung ke _zumo_build_assemble;
+    mode 'bank' berhenti setelah semua lagu masuk bank (tanpa upload)."""
+    job = _zumo_job_get(job_id)
+    if not job:
+        return
+    yt_id = job.get('yt_id')
+    job_dir = os.path.join(ZUMO_TMP_DIR, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    try:
+        if not _ZUMO_CORE_OK:
+            raise RuntimeError('zumo_core.py belum ter-deploy di VPS.')
+        mode = (job.get('mode') or 'upload').strip().lower()
+        if mode == 'assemble':
+            _zumo_build_assemble(job_id, job, job_dir)
+            return
+        instrumental = bool(job.get('instrumental'))
+        keys = _kie_active_keys()
+        if not keys:
+            raise RuntimeError('Belum ada API key Kie — tambah di Settings atau /kiekey.')
+        channel = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+        ch_name = (channel or {}).get('name', yt_id)
+        profile = _zumo_profile_get(yt_id)
+        for k in ('style', 'lyrics_language', 'vocal_gender', 'model',
+                  'particle', 'spectrum_color'):
+            if job.get(k):
+                profile[k] = job[k]
+        model = profile.get('model') or 'V5.5'
+        style = profile.get('style') or ''
+        theme = job.get('theme') or ''
+        n_titles = int(job.get('song_titles') or 3)
+        titles_in = list(job.get('titles') or [])
+        duration_target = int(profile.get('duration_max') or 360)
+        total_credits = 0
+        model_fallback = False
+        model_used = model
+        variants = []  # {title, path, duration}
+        failed_titles = []
+        for idx in range(n_titles):
+            slot = titles_in[idx] if idx < len(titles_in) else {}
+            title_i = (slot.get('title') or '').strip()
+            lyrics_i = (slot.get('lyrics') or '').strip()
+            _zumo_job_update(job_id, status='generating',
+                             progress=f"Judul {idx + 1}/{n_titles}: menyiapkan lirik...")
+            lyrics_from_kie = False
+            if not lyrics_i and not instrumental:
+                # Jalur B: generate lirik format Suno (tag [Bagian: arahan]).
+                # Instrumental: lirik DILEWATI total (tanpa lyrics endpoint).
+                try:
+                    ltask, lidx = _zumo_core.kie_call_with_failover(
+                        keys,
+                        lambda k: _zumo_core.kie_create_lyrics(
+                            k, _zumo_core.zumo_lyrics_prompt(theme, profile)),
+                        disable_cb=_kie_disable_key)
+                    lrec = _zumo_poll_retry(keys[lidx], ltask)
+                    total_credits += int((lrec.get('creditsConsumed') or 0) or 0)
+                    opts = _zumo_core.parse_kie_lyrics(lrec)
+                    if opts:
+                        lyrics_i = _zumo_core.zumo_normalize_lyrics(opts[0]['text'])
+                        lyrics_from_kie = True
+                        if not title_i and opts[0].get('title'):
+                            title_i = opts[0]['title'][:80]
+                except Exception as e:
+                    print(f"[zumo] lyrics jalur B gagal ({e}) — fallback jalur A.", flush=True)
+            if not title_i:
+                title_i = f"{theme} {idx + 1}"[:80]
+            # Generate musik (custom bila ada lirik, non-custom bila tidak,
+            # instrumental=true bila order instrumental).
+            _zumo_job_update(job_id, status='generating',
+                             progress=f"Judul {idx + 1}/{n_titles}: generate musik '{title_i[:30]}'...")
+            got = []
+            try:
+                mtask, mkidx, mused, mfb = _zumo_gen_music(
+                    keys, model, title_i,
+                    lyrics_i if lyrics_i else None,
+                    style, duration_target, profile.get('vocal_gender') or 'f',
+                    instrumental=instrumental)
+                if mfb:
+                    model_fallback = True
+                    model_used = mused
+                mrec = _zumo_poll_retry(keys[mkidx], mtask)
+                m_credits = int((mrec.get('creditsConsumed') or 0) or 0)
+                total_credits += m_credits
+                tracks = _zumo_core.parse_kie_tracks(mrec)
+                if not tracks:
+                    raise RuntimeError('Kie tidak mengembalikan audio (bentuk hasil tidak dikenali).')
+                for vi, tr in enumerate(tracks[:2]):
+                    dest = os.path.join(job_dir, f"t{idx + 1}_v{vi + 1}.mp3")
+                    _zumo_core.kie_download(tr['audio_url'], dest)
+                    d = _playlist_media_duration(dest)
+                    if d > 0:
+                        # BPM dideteksi SEKALI di sini (dipakai ulang di
+                        # segmen + metadata bank); lagu mentah masuk bank.
+                        bpm_v, conf_v, how_v = _zumo_core.zumo_detect_bpm(
+                            dest, ffmpeg_path=get_ffmpeg_path())
+                        got.append({'title': title_i, 'path': dest, 'duration': d,
+                                    'bpm': bpm_v, 'bpm_conf': conf_v, 'bpm_how': how_v})
+                        _zumo_bank_save_track(yt_id, ch_name, dest, {
+                            'title': title_i, 'style': style, 'bpm': bpm_v,
+                            'duration': d, 'credits': m_credits,
+                            'job_id': job_id, 'instrumental': instrumental,
+                            'model': model_used})
+                if not got:
+                    raise RuntimeError('Audio hasil generate tidak bisa diunduh/dibaca.')
+            except Exception as e:
+                # Retry 1x per judul (task gagal Kie tidak dipotong kredit).
+                try:
+                    mtask, mkidx, mused, mfb = _zumo_gen_music(
+                        keys, model, title_i,
+                        lyrics_i if lyrics_i else None,
+                        style, duration_target, profile.get('vocal_gender') or 'f',
+                        instrumental=instrumental)
+                    if mfb:
+                        model_fallback = True
+                        model_used = mused
+                    mrec = _zumo_poll_retry(keys[mkidx], mtask)
+                    m_credits = int((mrec.get('creditsConsumed') or 0) or 0)
+                    total_credits += m_credits
+                    tracks = _zumo_core.parse_kie_tracks(mrec)
+                    for vi, tr in enumerate(tracks[:2]):
+                        dest = os.path.join(job_dir, f"t{idx + 1}_v{vi + 1}_r.mp3")
+                        _zumo_core.kie_download(tr['audio_url'], dest)
+                        d = _playlist_media_duration(dest)
+                        if d > 0:
+                            bpm_v, conf_v, how_v = _zumo_core.zumo_detect_bpm(
+                                dest, ffmpeg_path=get_ffmpeg_path())
+                            got.append({'title': title_i, 'path': dest, 'duration': d,
+                                        'bpm': bpm_v, 'bpm_conf': conf_v, 'bpm_how': how_v})
+                            _zumo_bank_save_track(yt_id, ch_name, dest, {
+                                'title': title_i, 'style': style, 'bpm': bpm_v,
+                                'duration': d, 'credits': m_credits,
+                                'job_id': job_id, 'instrumental': instrumental,
+                                'model': model_used})
+                    if not got:
+                        raise RuntimeError('Retry: audio hasil generate tidak bisa diunduh/dibaca.')
+                except Exception as e2:
+                    failed_titles.append(title_i)
+                    print(f"[zumo] judul '{title_i}' gagal setelah retry: {e2}", flush=True)
+                    continue
+            variants.extend(got)
+        min_needed = 1 if mode == 'bank' else 2
+        if len(variants) < min_needed:
+            raise RuntimeError(
+                f"Varian lagu terlalu sedikit ({len(variants)}) — gagal: {', '.join(failed_titles) or 'generate Kie gagal'}.")
+        if mode == 'bank':
+            # Generate massal selesai: lagu sudah di bank (mentah, belum
+            # EQ) — TANPA upload. job_dir dibersihkan (bank punya salinan).
+            _zumo_job_update(job_id, status='banked',
+                             progress=(f"{len(variants)} lagu masuk bank {ch_name} "
+                                       "(mentah, belum EQ) — siap dirakit (/zumorakit)."),
+                             kie_credits=total_credits, model_used=model_used,
+                             model_fallback=model_fallback,
+                             failed_titles=failed_titles)
+            notify_event("🎵", f"Bank Zumo — {theme}",
+                         f"{len(variants)} lagu masuk bank {ch_name} "
+                         f"(kredit Kie {total_credits}). Rakit video dengan /zumorakit.")
+            shutil.rmtree(job_dir, ignore_errors=True)
+            return
+        keep_n = int(profile.get('songs_keep') or 5)
+        kept = _zumo_core.shuffle_zumo_tracks(variants, keep=keep_n)
+        _zumo_job_update(job_id, status='preparing',
+                         progress=f"{len(kept)} lagu terpilih (dari {len(variants)} varian) — gabung audio...",
+                         kie_credits=total_credits, model_used=model_used,
+                         model_fallback=model_fallback,
+                         failed_titles=failed_titles)
+        _zumo_finish_video(job_id, job, job_dir, kept, profile,
+                           total_credits, model, model_used, model_fallback,
+                           failed_titles)
+    except Exception as e:
+        _zumo_job_update(job_id, status='failed', error=str(e)[:300])
+        notify_event("❌", job.get('theme') or 'Playlist Zumo',
+                     f"Gagal membangun playlist Zumo: {str(e)[:150]}")
+
+
 # --- Inti riset & buat playlist (dipakai endpoint panel DAN operator
 # Telegram — SATU logika, tanpa duplikasi; cache riset 1 jam yang sama). ---
 def _playlist_duration_sec_param(v):
@@ -11110,6 +12412,176 @@ def operator_pixabay_key_del():
     ok, masked, msg = _pixabay_delete_key(str(data.get('ident') or '').strip())
     return jsonify({"status": "success" if ok else "error",
                     "message": msg, "masked": masked}), (200 if ok else 400)
+
+
+# --- Endpoint operator + panel: Zumo / Kie.ai (v1.3.0) ---
+def _zumo_status_payload():
+    """Status Zumo untuk panel/Telegram: saldo Kie + model aktif + job.
+    Saldo dicek PER KEY AKTIF (penegasan user 21:15 WIB): 'kie_keys'
+    membawa balance tiap key; 'balance' = saldo key aktif pertama yang
+    menjawab (dicoba berurutan). Gagal baca semua -> None (jujur
+    'tidak terbaca', bukan angka karangan)."""
+    keys = _kie_active_keys()
+    balances = _kie_balances() if _ZUMO_CORE_OK else []
+    balance = None
+    balance_key = None
+    for b in balances:
+        if not b.get('disabled') and b.get('balance') is not None:
+            balance = b['balance']
+            balance_key = b['masked']
+            break
+    profile = _zumo_profile_get(_zumo_core.ZUMO_COZY_YT_ID if _ZUMO_CORE_OK else 'UCg8be5L4_CieGjXA8ejB1_Q')
+    jobs = []
+    for j in _zumo_jobs_load().get('jobs', [])[:5]:
+        jobs.append({k: j.get(k) for k in (
+            'job_id', 'yt_id', 'channel_name', 'theme', 'status', 'progress',
+            'error', 'created_at', 'updated_at', 'task_id', 'approval',
+            'new_title', 'audio_duration', 'render_method', 'kie_credits',
+            'model_used', 'model_fallback', 'failed_titles')})
+    # Ringkasan bank audio per channel (untuk /zumo status): [{channel, count}].
+    bank = []
+    if _ZUMO_CORE_OK:
+        try:
+            if os.path.isdir(ZUMO_BANK_DIR):
+                for folder in sorted(os.listdir(ZUMO_BANK_DIR)):
+                    idx_path = os.path.join(ZUMO_BANK_DIR, folder, 'bank_index.json')
+                    if os.path.isfile(idx_path):
+                        with open(idx_path, 'r', encoding='utf-8') as fh:
+                            idx = json.load(fh)
+                        bank.append({'channel': idx.get('channel') or folder,
+                                     'count': len(idx.get('tracks') or [])})
+        except Exception:
+            bank = []
+    return {"status": "success", "balance": balance,
+            "balance_note": (f"Saldo Kie: {balance:g} kredit (key {balance_key})."
+                             if balance is not None else
+                             ("Belum ada API key Kie — tambah di Settings atau /kiekey."
+                              if not keys else
+                              "Saldo Kie tidak terbaca (cek key / jaringan).")),
+            "model": profile.get('model', 'V5.5'),
+            "models": list(_zumo_core.ZUMO_MODELS) if _ZUMO_CORE_OK else ['V5.5', 'V6', 'V6_MINI', 'V6_WILD'],
+            "kie_keys": balances, "jobs": jobs, "bank": bank}
+
+
+@app.route('/api/operator/zumo_create', methods=['POST'])
+def operator_zumo_create():
+    """Buat playlist Zumo dari Telegram — auth HMAC operator_key.
+    Body: {key, yt_id?, theme, style?, lyrics_language?, vocal_gender?,
+    model?, particle?, spectrum_color?, song_titles? (alias: song_count),
+    titles?, publish_date?, privacy?, mode? ('upload'|'bank'|'assemble'),
+    instrumental?, bank_count?}. Route ini masuk _OPERATOR_ENDPOINTS."""
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    ok, message, http, job_id = _zumo_do_create(data)
+    return jsonify({"status": "success" if ok else "error",
+                    "message": message, "job_id": job_id}), http
+
+
+@app.route('/api/operator/zumo_status', methods=['POST'])
+def operator_zumo_status():
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    return jsonify(_zumo_status_payload())
+
+
+@app.route('/api/operator/zumo_model', methods=['POST'])
+def operator_zumo_model():
+    """Ganti model Zumo aktif (/zumomodel). Body: {key, model}."""
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    model = (data.get('model') or '').strip()
+    models = list(_zumo_core.ZUMO_MODELS) if _ZUMO_CORE_OK else ['V5.5', 'V6', 'V6_MINI', 'V6_WILD']
+    if model not in models:
+        return jsonify({"status": "error",
+                        "message": "Model tidak dikenal (V5.5/V6/V6_MINI/V6_WILD)."}), 400
+    cfg = load_bot_config()
+    cfg['zumo_model'] = model
+    _save_bot_config(cfg)
+    _zumo_profile_set(_zumo_core.ZUMO_COZY_YT_ID if _ZUMO_CORE_OK else 'UCg8be5L4_CieGjXA8ejB1_Q',
+                      {'model': model})
+    return jsonify({"status": "success", "model": model,
+                    "message": f"Model Zumo aktif: {model}."})
+
+
+@app.route('/api/operator/kie_key_add', methods=['POST'])
+def operator_kie_key_add():
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    ok, masked, msg = _kie_add_key((data.get('kie_key') or '').strip())
+    return jsonify({"status": "success" if ok else "error",
+                    "message": msg, "masked": masked}), (200 if ok else 400)
+
+
+@app.route('/api/operator/kie_key_list', methods=['POST'])
+def operator_kie_key_list():
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    return jsonify({"status": "success", "keys": _kie_balances()})
+
+
+@app.route('/api/operator/kie_key_del', methods=['POST'])
+def operator_kie_key_del():
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    ok, masked, msg = _kie_delete_key(str(data.get('ident') or '').strip())
+    return jsonify({"status": "success" if ok else "error",
+                    "message": msg, "masked": masked}), (200 if ok else 400)
+
+
+# --- Endpoint panel: Kie keys + status Zumo (butuh login; CSRF via check_security) ---
+@app.route('/api/zumo_kie_keys')
+def zumo_kie_keys():
+    return jsonify({"status": "success", "keys": _kie_masked_list()})
+
+
+@app.route('/api/zumo_kie_key_add', methods=['POST'])
+def zumo_kie_key_add():
+    data = request.get_json(silent=True) or {}
+    ok, masked, msg = _kie_add_key((data.get('key') or '').strip())
+    return jsonify({"status": "success" if ok else "error",
+                    "message": msg, "masked": masked}), (200 if ok else 400)
+
+
+@app.route('/api/zumo_kie_key_del', methods=['POST'])
+def zumo_kie_key_del():
+    data = request.get_json(silent=True) or {}
+    ok, masked, msg = _kie_delete_key(str(data.get('ident') or '').strip())
+    return jsonify({"status": "success" if ok else "error",
+                    "message": msg, "masked": masked}), (200 if ok else 400)
+
+
+@app.route('/api/zumo_status')
+def zumo_status():
+    return jsonify(_zumo_status_payload())
+
+
+@app.route('/api/zumo_model', methods=['POST'])
+def zumo_model():
+    data = request.get_json(silent=True) or {}
+    model = (data.get('model') or '').strip()
+    models = list(_zumo_core.ZUMO_MODELS) if _ZUMO_CORE_OK else ['V5.5', 'V6', 'V6_MINI', 'V6_WILD']
+    if model not in models:
+        return jsonify({"status": "error",
+                        "message": "Model tidak dikenal (V5.5/V6/V6_MINI/V6_WILD)."}), 400
+    cfg = load_bot_config()
+    cfg['zumo_model'] = model
+    _save_bot_config(cfg)
+    _zumo_profile_set(_zumo_core.ZUMO_COZY_YT_ID if _ZUMO_CORE_OK else 'UCg8be5L4_CieGjXA8ejB1_Q',
+                      {'model': model})
+    return jsonify({"status": "success", "model": model,
+                    "message": f"Model Zumo aktif: {model}."})
 
 
 @app.route('/api/operator/create_shorts', methods=['POST'])

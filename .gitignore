@@ -14,6 +14,8 @@ telegram_inbox.jsonl
 telegram_inbox_state.json
 playlist_jobs.json
 playlist_jobs.json.tmp
+zumo_jobs.json
+zumo_jobs.json.tmp
 backups/
 backup_key.txt
 

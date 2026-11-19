@@ -2541,10 +2541,13 @@ def _tg_escape(text):
 
 def _log_safe_text(text):
     """Teks aman untuk log stdout: API key Pixabay yang diketik user
-    (perintah /pixabaykey) TIDAK PERNAH tercatat utuh di log."""
+    (perintah /pixabaykey) dan API key Kie.ai (perintah /kiekey) TIDAK
+    PERNAH tercatat utuh di log."""
     text = str(text or '')
     if text.strip().lower().startswith('/pixabaykey'):
         return '/pixabaykey ****'
+    if text.strip().lower().startswith('/kiekey'):
+        return '/kiekey ****'
     return text
 
 
@@ -2948,14 +2951,24 @@ def handle_callback_query(token, chat_id, callback_query):
             return
         finally:
             _cb_in_flight.discard(data)
-    # --- BUAT VIDEO/PLAYLIST: konfirmasi ✅ / batal ❌ dari ringkasan
-    # /buatshort & /buatlong & /buatplaylist ---
+    # --- BUAT VIDEO/PLAYLIST/ZUMO: konfirmasi ✅ / batal ❌ dari ringkasan
+    # /buatshort & /buatlong & /buatplaylist & /zumo ---
     if data in ('mkshort:yes', 'mkshort:no', 'mklong:yes', 'mklong:no',
-                'mkplaylist:yes', 'mkplaylist:no'):
-        kind = ('playlist' if data.startswith('mkplaylist')
+                'mkplaylist:yes', 'mkplaylist:no',
+                'mkzumo:yes', 'mkzumo:no',
+                'mkzumbank:yes', 'mkzumbank:no',
+                'mkzumrakit:yes', 'mkzumrakit:no'):
+        # 'mkzumbank'/'mkzumrakit' dicek DULU — keduanya berawalan
+        # 'mkzumo', jadi urutan startswith di bawah penting.
+        kind = ('zumobank' if data.startswith('mkzumbank')
+                else 'zumorakit' if data.startswith('mkzumrakit')
+                else 'zumo' if data.startswith('mkzumo')
+                else 'playlist' if data.startswith('mkplaylist')
                 else 'short' if data.startswith('mkshort') else 'long')
         retry_cmd = {'short': '/buatshort', 'long': '/buatlong',
-                     'playlist': '/playlist'}[kind]
+                     'playlist': '/playlist', 'zumo': '/zumo',
+                     'zumobank': '/zumobank',
+                     'zumorakit': '/zumorakit'}[kind]
         confirm = data.endswith(':yes')
         if data in _cb_in_flight:
             answer_callback(token, cq_id, "Sabar Bos, masih saya proses 😅")
@@ -2973,8 +2986,11 @@ def handle_callback_query(token, chat_id, callback_query):
             if not confirm:
                 _clear_make_draft(chat_id)
                 answer_callback(token, cq_id, "Dibatalkan Bos 😌")
+                cancel_msg = {'zumobank': "Tidak ada lagu bank yang dibuat.",
+                              'zumorakit': "Tidak ada video rakitan yang dibuat."}.get(
+                    kind, "Tidak ada video yang dibuat.")
                 send_message(token, chat_id,
-                             "😌 *Sip Bos, dibatalkan.*\nTidak ada video yang dibuat. "
+                             f"😌 *Sip Bos, dibatalkan.*\n{cancel_msg} "
                              f"Ketik {retry_cmd} kalau mau mulai lagi ya Bos!")
                 return
             answer_callback(token, cq_id, "Siap Bos, saya buatkan... 🎬")
@@ -2997,6 +3013,10 @@ def handle_callback_query(token, chat_id, callback_query):
                     "pixabay_theme": d.get('pixabay_theme') or '',
                 })
                 resp = resp or {}
+            elif kind in ('zumo', 'zumobank', 'zumorakit'):
+                ok, info, resp = _operator_post('/api/operator/zumo_create',
+                                                _zumo_create_payload(d))
+                resp = resp or {}
             else:
                 ok, info, resp = request_create_long({
                     "yt_id": d.get('yt_id'), "count": d.get('count', 1),
@@ -3010,12 +3030,36 @@ def handle_callback_query(token, chat_id, callback_query):
                              f"⚠️ *Yah Bos, gagal dibuat* 😅\n{info}\n"
                              f"Coba lagi dengan {retry_cmd} ya Bos!")
                 return
-            if kind == 'playlist':
+            if kind == 'zumo':
+                _send_zumo_created_message(token, chat_id, d, resp)
+            elif kind == 'zumobank':
+                _send_zumo_bank_created_message(token, chat_id, d, resp)
+            elif kind == 'zumorakit':
+                _send_zumo_assemble_created_message(token, chat_id, d, resp)
+            elif kind == 'playlist':
                 _send_playlist_created_message(token, chat_id, d, resp)
             else:
                 _send_make_created_message(token, chat_id, kind, d, resp)
         finally:
             _cb_in_flight.discard(data)
+        return
+    # --- 🎵 ZUMO: menu /zumo + ganti model ---
+    if data in ('zm:new', 'zm:jobs'):
+        if data == 'zm:new':
+            answer_callback(token, cq_id, "Siap, kita buat Playlist Zumo baru!")
+            _start_make_zumo(token, chat_id, '')
+            return
+        answer_callback(token, cq_id, "Siap, ini status Zumo-nya.")
+        _send_zumo_jobs_message(token, chat_id)
+        return
+    if data.startswith('zmmodel:'):
+        model = data.split(':', 1)[1].upper()
+        if model not in _ZUMO_MODELS:
+            answer_callback(token, cq_id, "Model tidak dikenal.")
+            return
+        ok, msg, _dd = _operator_post('/api/operator/zumo_model', {'model': model})
+        answer_callback(token, cq_id, "Siap, model diganti." if ok else "Gagal ganti model.")
+        send_message(token, chat_id, "Zumo — Model\n" + _tg_escape(msg))
         return
     # --- 🎵 MUSIK PLAYLIST: menu /playlist + pilih kandidat ---
     if data in ('pl:new', 'pl:jobs'):
@@ -3776,9 +3820,95 @@ def _make_ask_step(token, chat_id, draft):
     step = draft.get('step')
     kind = draft.get('kind')
     if step == 'channel':
+        if kind in ('zumo', 'zumobank', 'zumorakit'):
+            channels = load_channels()
+            if kind == 'zumobank':
+                head = "Bank Audio Zumo — langkah 1 dari 5: Channel\n\nLagu bank mau disimpan untuk channel mana Bos?"
+            elif kind == 'zumorakit':
+                head = "Rakit Video dari Bank — langkah 1 dari 3: Channel\n\nVideo rakitan mau di-upload ke channel mana Bos?"
+            else:
+                head = "Buat Playlist Zumo — langkah 1 dari 8: Channel\n\nLagu mau di-upload ke channel mana Bos?"
+            lines = [head]
+            for i, c in enumerate(channels, 1):
+                lines.append(f"{i}. {_tg_escape(_channel_display_name(c))}")
+            lines.append("\nBalas angkanya atau ketik namanya. Ketik `lewati` untuk pakai Cozy Sax Relaxing (default).")
+            send_message(token, chat_id, "\n".join(lines))
+            return
         _ch, msg = _make_pick_channel(load_channels())
         if msg:
             send_message(token, chat_id, msg)
+        return
+    if kind == 'zumo':
+        if step == 'theme':
+            send_message(token, chat_id,
+                         "Buat Playlist Zumo — langkah 2 dari 8: Tema lagu\n\nTema lagunya apa Bos? (mis. `saxophone romantis untuk dinner`, `reggae santai`)")
+        elif step == 'mode':
+            send_message(token, chat_id, _zumo_mode_ask_text("Langkah 3 dari 8"))
+        elif step == 'style':
+            default_note = (" (Cozy Sax: smooth jazz saxophone, warm, relaxing, romantic, cozy cafe)"
+                            if d.get('yt_id') == _ZUMO_YT_ID else "")
+            send_message(token, chat_id,
+                         _zumo_style_ask_text("Langkah 4 dari 8", default_note))
+        elif step == 'lyrics':
+            send_message(token, chat_id,
+                         "Langkah 5 dari 8: Lirik\n\nTempel lirik lengkap gaya Suno — tiap bagian diawali [Bagian: arahan], mis. [Verse 1: ...], [Chorus: ...]. Tag [..] itu instruksi cara menyanyi/memainkan, bukan dinyanyikan, dan saya kirim utuh apa adanya.\n\nAtau ketik `auto` supaya lirik dibuatkan otomatis (bahasa & vokal ikut profil channel).")
+        elif step == 'count':
+            if d.get('lyrics_mode') == 'pasted':
+                send_message(token, chat_id,
+                             "Langkah 6 dari 8: Jumlah judul lagu\n\nSudah ada 1 judul + lirik tempel. Mau total berapa judul Bos? Balas `1` (hanya lagu itu), `2`, atau `3` — judul sisanya dibuatkan otomatis oleh server (judul + lirik).\nKetik `lewati` untuk 1 judul.")
+            else:
+                send_message(token, chat_id,
+                             "Langkah 6 dari 8: Jumlah judul lagu\n\nMau berapa judul lagu Bos? Balas `2` atau `3` (tiap judul jadi 2 varian, jadi total 4 atau 6 lagu).\nKetik `lewati` untuk 3 judul.")
+        elif step == 'particle':
+            send_message(token, chat_id,
+                         "Langkah 7 dari 8: Partikel\n\nPartikelnya salju atau sakura Bos? Balas `salju` atau `sakura`.\nBoleh tambah warna spectrum: `putih` (default), `cyan`, atau `viridis` — mis. `sakura cyan`.\nKetik `lewati` untuk salju + spectrum putih.")
+        elif step == 'publish':
+            nxt = _next_slot_for_channel(next((c for c in load_channels()
+                                              if c.get('yt_id') == d.get('yt_id')), None))
+            send_message(token, chat_id,
+                         "Langkah 8 dari 8: Jadwal tayang\n\nTulis jamnya — mis. `hari ini jam 9`, `besok jam 7 malam`, atau `2026-11-20 19:00`.\n"
+                         f"Ketik `lewati` untuk jadwal berikutnya (`{nxt}`, server yang atur) atau `publish` untuk langsung tayang setelah render.")
+        elif step == 'confirm':
+            send_message(token, chat_id, _make_zumo_summary(d),
+                         reply_markup={"inline_keyboard": [
+                             [{"text": "✅ Buat", "callback_data": "mkzumo:yes"},
+                              {"text": "❌ Batal", "callback_data": "mkzumo:no"}]]})
+        return
+    if kind == 'zumobank':
+        if step == 'theme':
+            send_message(token, chat_id,
+                         "Bank Audio Zumo — langkah 2 dari 5: Tema lagu\n\nTema lagunya apa Bos? (mis. `jazz instrumental santai`, `reggae akustik`)")
+        elif step == 'mode':
+            send_message(token, chat_id, _zumo_mode_ask_text("Langkah 3 dari 5"))
+        elif step == 'style':
+            default_note = (" (Cozy Sax: smooth jazz saxophone, warm, relaxing, romantic, cozy cafe)"
+                            if d.get('yt_id') == _ZUMO_YT_ID else "")
+            send_message(token, chat_id,
+                         _zumo_style_ask_text("Langkah 4 dari 5", default_note))
+        elif step == 'bank_count':
+            send_message(token, chat_id,
+                         "Langkah 5 dari 5: Jumlah lagu\n\nMau berapa lagu disimpan ke bank Bos? Balas angkanya `1`-`30` (mis. `30`).\nKetik `lewati` untuk 10 lagu.")
+        elif step == 'confirm':
+            send_message(token, chat_id, _make_zumo_bank_summary(d),
+                         reply_markup={"inline_keyboard": [
+                             [{"text": "✅ Buat", "callback_data": "mkzumbank:yes"},
+                              {"text": "❌ Batal", "callback_data": "mkzumbank:no"}]]})
+        return
+    if kind == 'zumorakit':
+        if step == 'bank_count':
+            send_message(token, chat_id,
+                         "Rakit Video dari Bank — langkah 2 dari 3: Jumlah lagu\n\nMau berapa lagu dari bank dipakai Bos? Balas angkanya `1`-`30`.\nKetik `lewati` untuk 8 lagu.")
+        elif step == 'publish':
+            nxt = _next_slot_for_channel(next((c for c in load_channels()
+                                              if c.get('yt_id') == d.get('yt_id')), None))
+            send_message(token, chat_id,
+                         "Langkah 3 dari 3: Jadwal tayang\n\nTulis jamnya — mis. `hari ini jam 9`, `besok jam 7 malam`, atau `2026-11-20 19:00`.\n"
+                         f"Ketik `lewati` untuk jadwal berikutnya (`{nxt}`, server yang atur) atau `publish` untuk langsung tayang setelah render.")
+        elif step == 'confirm':
+            send_message(token, chat_id, _make_zumo_assemble_summary(d),
+                         reply_markup={"inline_keyboard": [
+                             [{"text": "✅ Buat", "callback_data": "mkzumrakit:yes"},
+                              {"text": "❌ Batal", "callback_data": "mkzumrakit:no"}]]})
         return
     if kind == 'playlist':
         if step == 'theme':
@@ -4439,6 +4569,756 @@ def _send_playlist_jobs_message(token, chat_id):
     send_message(token, chat_id, "\n".join(lines))
 
 
+# 🎵 ZUMO / KIE.AI — PLAYLIST LAGU ORISINAL LEWAT TELEGRAM
+# ==========================================
+# /zumo polos → menu (Buat Baru / Lihat Job). "Buat Baru" atau
+# /zumo <teks bebas> atau one-shot '/zumo tema | jumlah | jadwal' →
+# bot bertanya satu per satu: channel (lewati = Cozy Sax Relaxing) →
+# tema → mode vokal/instrumental (lewati = vokal; instrumental =
+# lirik dilewati total) → style/genre bebas (lewati = profil channel;
+# boleh sebut bahasa & vokal, mis. 'reggae Indonesia, vokal pria') →
+# lirik (tempel lirik lengkap gaya Suno ATAU 'auto'; dilewati bila
+# instrumental) → jumlah judul 2/3 (1 bila sudah ada lirik tempel;
+# judul sisa dibuatkan otomatis server) → partikel salju/sakura +
+# warna spectrum → jadwal (lewati = slot berikutnya, server yang
+# atur; 'publish' = langsung tayang) → ringkasan + ✅ Buat / ❌ Batal.
+# Draft per-chat sama seperti /buatshort & /playlist
+# (monitor_state.json "make_drafts", tahan restart, hangus >30 menit,
+# batal via /batal). Profil (style/bahasa/vokal) tersimpan PER CHANNEL
+# di server; field yang dikirim di order disimpan sebagai profil
+# channel itu — jadi JANGAN hardcode sax/Inggris/f di sini. Lirik tempel
+# dikirim UTUH apa adanya (tag [Bagian: arahan] adalah instruksi, bukan
+# dinyanyikan; jangan dipotong, jangan dibersihkan tag-nya).
+# Channel default Cozy Sax Relaxing — yt_id dikirim eksplisit di order
+# (kontrak /api/operator/zumo_create diperbarui 20:44 WIB).
+# /zumobank & /zumorakit (v1.3.0): alur terpandu yang sama polanya,
+# kind 'zumobank'/'zumorakit' — bank: channel → tema → mode → style →
+# jumlah lagu 1-30 → konfirmasi (POST mode='bank', tanpa upload);
+# rakit: channel → jumlah lagu 1-30 → jadwal → konfirmasi (POST
+# mode='assemble', lagu dipilih acak dari bank).
+_ZUMO_YT_ID = 'UCg8be5L4_CieGjXA8ejB1_Q'
+_ZUMO_CHANNEL_NAME = 'Cozy Sax Relaxing'
+_ZUMO_DEFAULT_STYLE = ("smooth jazz saxophone, warm, relaxing, romantic, "
+                       "cozy cafe dinner late night")
+_ZUMO_DEFAULT_MODEL = 'V5.5'
+_ZUMO_MODELS = ('V5.5', 'V6', 'V6_MINI', 'V6_WILD')
+_ZUMO_PARTICLE_LABEL = {'snow': 'salju', 'sakura': 'sakura'}
+_ZUMO_SPECTRUM_LABEL = {'white': 'putih', 'cyan': 'cyan', 'viridis': 'viridis'}
+# Contoh BENTUK penulisan style (v1.3.0, koreksi user 21:00 WIB):
+# HANYA teks referensi di pesan langkah style — BUKAN preset, BUKAN
+# tombol pilihan, BUKAN daftar tetap. User mengetik style bebas apa
+# pun; bila mengetik salah satu contoh ini utuh, diterima sebagai
+# style biasa. Pola: daftar instrumen + mood + BPM di akhir (BPM
+# dipakai server sebagai hint, tidak diparse operator).
+_ZUMO_STYLE_EXAMPLES = (
+    "Indonesian Roots Reggae, Tropical Archipelago Groove, Acoustic & Clean Electric Skank Guitar, Traditional Kendang & Ketipung Percussion, Bamboo Suling Flute, Warm Dub Bassline, Melodica, Laid-Back Soulful Indonesian Male Vocals, Warung Kopi Beach Vibe, 82 BPM",
+    "Indonesian Acoustic Roots Reggae, Islamic Nusantara Fusion, Warm Nylon Guitar Skank, Rebana & Marawis Percussion, Oud Melody, Deep Warm Dub Bassline, Bamboo Suling, Soulful Humble Indonesian Male Vocals, Peaceful Ramadan Atmosphere, 80 BPM",
+    "Indonesian Pop Religi, Warm Acoustic Ballad, Fingerpicked Acoustic Guitar, Emotional Grand Piano, Lush Cello & String Section, Subtle Oud & Darbuka Percussion, Soulful Heartfelt Indonesian Male Vocals, Peaceful Spiritual Ramadan Vibe, 76 BPM",
+)
+_ZUMO_MODE_VOCAL_WORDS = ('vokal', 'vocal', 'dengan vokal', 'bervokal',
+                          'pakai vokal', 'ada vokal', 'penyanyi', 'bernyanyi',
+                          'nyanyi')
+_ZUMO_MODE_INSTR_WORDS = ('instrumental', 'instrument', 'piano',
+                          'tanpa vokal', 'tanpa lirik', 'tanpa penyanyi',
+                          'tanpa suara', 'musik saja', 'instrumental saja',
+                          'no vocal', 'tanpa nyanyi')
+
+
+def _zumo_next_step(d):
+    """Langkah pertama yang masih kosong untuk Zumo: channel → tema →
+    mode → style → lirik → jumlah → partikel → jadwal → konfirmasi.
+    Bila instrumental, langkah lirik dilewati total."""
+    if not d.get('yt_id'):
+        return 'channel'
+    if not d.get('theme'):
+        return 'theme'
+    if 'mode' not in d:
+        return 'mode'
+    if 'style' not in d:
+        return 'style'
+    if d.get('mode') != 'instrumental' and 'lyrics_mode' not in d:
+        return 'lyrics'
+    if 'song_count' not in d:
+        return 'count'
+    if 'particle' not in d:
+        return 'particle'
+    if 'publish_date' not in d:
+        return 'publish'
+    return 'confirm'
+
+
+def _zumobank_next_step(d):
+    """Langkah pertama yang masih kosong untuk /zumobank: channel →
+    tema → mode → style → jumlah lagu → konfirmasi. Bank TIDAK
+    menanyakan lirik (lirik dibuatkan server bila vokal) dan TIDAK
+    menanyakan partikel/jadwal (tanpa upload)."""
+    if not d.get('yt_id'):
+        return 'channel'
+    if not d.get('theme'):
+        return 'theme'
+    if 'mode' not in d:
+        return 'mode'
+    if 'style' not in d:
+        return 'style'
+    if 'bank_count' not in d:
+        return 'bank_count'
+    return 'confirm'
+
+
+def _zumorakit_next_step(d):
+    """Langkah pertama yang masih kosong untuk /zumorakit: channel →
+    jumlah lagu → jadwal → konfirmasi. Tema tidak ditanyakan
+    (payload memakai 'Bank' sebagai judul fallback)."""
+    if not d.get('yt_id'):
+        return 'channel'
+    if 'bank_count' not in d:
+        return 'bank_count'
+    if 'publish_date' not in d:
+        return 'publish'
+    return 'confirm'
+
+
+def _zumo_parse_mode(text):
+    """Jawaban langkah mode → 'vokal' / 'instrumental' / None.
+    Hanya jawaban PENDEK yang dikenali ('vokal', 'vokal pria',
+    'instrumental', 'instrumental piano', 'piano', 'tanpa vokal',
+    ...). Deskripsi style yang panjang / ber koma ('reggae Indonesia,
+    vokal pria') → None — pemanggil memakainya sebagai style +
+    mode vokal, supaya jawaban style lama tetap jalan."""
+    t = (text or '').strip().lower()
+    if t in _ZUMO_MODE_VOCAL_WORDS:
+        return 'vokal'
+    if t in _ZUMO_MODE_INSTR_WORDS:
+        return 'instrumental'
+    words = t.split()
+    if len(words) <= 2 and ',' not in t and words:
+        if words[0] in ('vokal', 'vocal'):
+            return 'vokal'
+        if words[0] in ('instrumental', 'instrument', 'piano'):
+            return 'instrumental'
+    return None
+
+
+def _zumo_parse_bank_count(text):
+    """Parse jawaban jumlah lagu bank/rakit → 1–30, atau None.
+    '30' / '30 lagu' → 30; angka di luar 1–30 / tanpa angka → None
+    (pemanggil bertanya ulang)."""
+    m = re.search(r'(\d+)', str(text or ''))
+    if not m:
+        return None
+    n = int(m.group(1))
+    return n if 1 <= n <= 30 else None
+
+
+def _zumo_looks_like_lyrics(text):
+    """Lirik tempel gaya Suno yang nyasar ke langkah lain: mengandung
+    tag [Verse / [Chorus, atau >=3 tag [..] dalam teks multi-baris."""
+    t = text or ''
+    tl = t.lower()
+    if '[verse' in tl or '[chorus' in tl:
+        return True
+    return t.count('[') >= 3 and '\n' in t
+
+
+def _zumo_set_style(d, ans):
+    """Terapkan jawaban style (bebas, apa pun isinya). Bila jawabannya
+    ternyata lirik tempel (tag [Verse]/[Chorus]) — disimpan sebagai
+    lirik, BUKAN style (style jadi '' = profil channel). Bila
+    instrumental, petunjuk bahasa/vokal TIDAK diparse (style hanya
+    mendeskripsikan musik). Kembalikan True bila dipakai sebagai
+    lirik tempel."""
+    if d.get('mode') != 'instrumental' and _zumo_looks_like_lyrics(ans):
+        title = (_zumo_title_from_lyrics(ans)
+                 or (d.get('theme') or 'Lagu Zumo')[:80])
+        d['lyrics_mode'] = 'pasted'
+        d['titles'] = [{'title': title, 'lyrics': ans}]
+        d['style'] = ''
+        return True
+    d['style'] = ans[:500]
+    if d.get('mode') != 'instrumental':
+        lang, vocal = _zumo_parse_style_hints(ans)
+        if lang:
+            d['lyrics_language'] = lang
+        if vocal:
+            d['vocal_gender'] = vocal
+    return False
+
+
+def _zumo_apply_mode_answer(d, ans):
+    """Terapkan jawaban langkah mode (dipakai /zumo & /zumobank).
+    'lewati' = vokal. Jawaban mode dikenali → mode itu; bila
+    instrumental, lirik ditandai 'none' (dilewati total). Jawaban
+    berupa deskripsi style / lirik tempel → dipakai sebagai style /
+    lirik + mode vokal (kompatibilitas jawaban lama)."""
+    low = (ans or '').strip().lower()
+    if low in ('lewati', '-', 'skip', 'default'):
+        d['mode'] = 'vokal'
+        return
+    mode = _zumo_parse_mode(ans)
+    if mode is None:
+        d['mode'] = 'vokal'
+        _zumo_set_style(d, ans)
+        return
+    d['mode'] = mode
+    if mode == 'instrumental':
+        d['lyrics_mode'] = 'none'
+        d.pop('titles', None)
+
+
+def _zumo_apply_publish_answer(d, ans):
+    """Terapkan jawaban jadwal (dipakai /zumo & /zumorakit).
+    Kembalikan None bila OK, atau teks pesan ulang bila jawaban
+    tidak dipahami."""
+    low = (ans or '').strip().lower()
+    lown = ' '.join(low.split())
+    if lown in _PLAYLIST_PUBLISH_NOW_WORDS:
+        d['publish_date'] = _playlist_publish_now_date()
+        d['publish_now'] = True
+        d.pop('publish_note', None)
+        return None
+    if low in ('lewati', '-', 'skip', 'default'):
+        d['publish_date'] = ''
+        d.pop('publish_now', None)
+        d.pop('publish_note', None)
+        return None
+    parsed, note = _parse_natural_datetime(ans)
+    if not parsed:
+        return ("Waktu tayangnya belum saya pahami Bos — coba `hari ini jam 9`, `besok jam 7 malam`, "
+                "`2026-11-20 19:00`, ketik `publish` untuk langsung tayang, atau `lewati`.")
+    d['publish_date'] = parsed
+    if note:
+        d['publish_note'] = note
+    else:
+        d.pop('publish_note', None)
+    d.pop('publish_now', None)
+    return None
+
+
+def _zumo_confirm_answer(token, chat_id, draft, low):
+    """Jawaban teks di langkah konfirmasi Zumo/bank/rakit ('ya' /
+    'batal' / lain). Selalu ditangani — pemanggil return True."""
+    kind = draft.get('kind')
+    if low in ('ya', 'buat', 'ok', 'oke', 'lanjut'):
+        _confirm_make_create(token, chat_id, draft)
+        return True
+    if low in ('batal', 'tidak', 'cancel'):
+        _clear_make_draft(chat_id)
+        msg = {'zumobank': "Sip Bos, dibatalkan. Tidak ada lagu bank yang dibuat.",
+               'zumorakit': "Sip Bos, dibatalkan. Tidak ada video rakitan yang dibuat."}.get(
+            kind, "Sip Bos, dibatalkan. Tidak ada playlist Zumo yang dibuat.")
+        send_message(token, chat_id, msg)
+        return True
+    send_message(token, chat_id,
+                 "Tinggal pencet tombol di atas ya Bos — Buat atau Batal. Atau balas `ya` / `batal`.")
+    return True
+
+
+def _zumo_style_ask_text(step_label, default_note=''):
+    """Pesan langkah style (dipakai /zumo & /zumobank): style bebas +
+    3 contoh HANYA sebagai referensi BENTUK penulisan (bukan preset,
+    bukan tombol pilihan)."""
+    ex = _ZUMO_STYLE_EXAMPLES
+    return (
+        f"{step_label}: Style / genre\n\n"
+        "Style musiknya bagaimana Bos? Tulis bebas saja — sebut daftar instrumen, mood, dan BPM di akhir "
+        "(mis. `..., 82 BPM`).\n\n"
+        "Contoh bentuk penulisan (bukan pilihan tetap, boleh tulis sendiri):\n"
+        f"1. {ex[0]}\n"
+        f"2. {ex[1]}\n"
+        f"3. {ex[2]}\n\n"
+        f"Ketik `lewati` untuk pakai style profil channel ini{default_note}.")
+
+
+def _zumo_mode_ask_text(step_label):
+    """Pesan langkah mode (dipakai /zumo & /zumobank)."""
+    return (
+        f"{step_label}: Vokal atau instrumental?\n\n"
+        "Lagunya pakai vokal atau instrumental saja Bos? Balas `vokal` atau `instrumental` "
+        "(mis. `piano` untuk instrumental piano).\n"
+        "Ketik `lewati` untuk vokal.")
+
+
+def _zumo_active_model():
+    """Model Zumo aktif menurut server (best effort; gagal → default)."""
+    try:
+        ok, _msg, data = _operator_post('/api/operator/zumo_status', {}, timeout=10)
+        if ok and isinstance(data, dict) and (data.get('model') or '') in _ZUMO_MODELS:
+            return data['model']
+    except Exception:
+        pass
+    return _ZUMO_DEFAULT_MODEL
+
+
+def _zumo_schedule_text(d):
+    """Teks jadwal untuk ringkasan/pesan sukses Zumo."""
+    if d.get('publish_now'):
+        return "Langsung tayang setelah render (tanpa jadwal)"
+    pd = d.get('publish_date') or ''
+    if not pd:
+        return "Slot berikutnya (diatur server)"
+    note = d.get('publish_note')
+    if note:
+        return f"{pd} ({note})"
+    return pd
+
+
+def _zumo_parse_count(text, allow_one=False):
+    """Parse jawaban jumlah judul Zumo → 2 atau 3 (atau 1 bila allow_one —
+    hanya bila sudah ada lirik tempel), atau None. '2' / '3 judul' /
+    '3 lagu' → angka itu; angka lain / tanpa angka → None (pemanggil
+    bertanya ulang — 1 playlist hanya 1–3 judul)."""
+    m = re.search(r'(\d+)', str(text or ''))
+    if not m:
+        return None
+    n = int(m.group(1))
+    return n if n in ((1, 2, 3) if allow_one else (2, 3)) else None
+
+
+def _zumo_parse_style_hints(text):
+    """Bahasa lirik + gender vokal dari jawaban style (opsional — TIDAK
+    wajib disebut). 'indonesia' → 'id', 'inggris'/'english' → 'en';
+    'pria'/'cowok'/'bariton'/'male' → 'm', 'wanita'/'cewek'/'perempuan'/
+    'female' → 'f'. Tidak disebut → (None, None) = ikut profil channel
+    di server (tidak dikirim di order)."""
+    t = (text or '').lower()
+    lang = None
+    if 'indonesia' in t:
+        lang = 'id'
+    elif 'inggris' in t or 'english' in t:
+        lang = 'en'
+    vocal = None
+    if re.search(r'\b(pria|cowok|bariton|male)\b', t):
+        vocal = 'm'
+    elif re.search(r'\b(wanita|cewek|perempuan|female)\b', t):
+        vocal = 'f'
+    return lang, vocal
+
+
+def _zumo_title_from_lyrics(text):
+    """Judul untuk lirik tempel: baris 'Judul: ...' / 'Title: ...' di
+    awal teks bila ada, sonst None (pemanggil memakai tema sebagai judul).
+    Liriknya sendiri TIDAK diubah — hanya dibaca baris judulnya."""
+    for ln in (text or '').split('\n')[:5]:
+        m = re.match(r'\s*(judul|title)\s*[:\-–]\s*(.+)', ln, flags=re.I)
+        if m and m.group(2).strip():
+            return m.group(2).strip()[:80]
+    return None
+
+
+def _zumo_parse_particle(text):
+    """Parse jawaban partikel Zumo → (particle, spectrum_color) atau
+    (None, None). 'salju'/'snow' → snow; 'sakura' → sakura; warna spectrum
+    'putih'/'white'/'cyan'/'viridis' boleh digabung (mis. 'sakura cyan').
+    'lewati'/'default' → ('snow', 'white'). Tidak dikenali → (None, None)."""
+    t = (text or '').strip().lower()
+    if not t or t in ('lewati', '-', 'skip', 'default'):
+        return ('snow', 'white')
+    particle = None
+    if 'sakura' in t:
+        particle = 'sakura'
+    elif 'salju' in t or 'snow' in t:
+        particle = 'snow'
+    color = None
+    if 'cyan' in t:
+        color = 'cyan'
+    elif 'viridis' in t:
+        color = 'viridis'
+    elif 'putih' in t or 'white' in t:
+        color = 'white'
+    if particle is None and color is None:
+        return (None, None)
+    return (particle or 'snow', color or 'white')
+
+
+def _make_zumo_summary(d):
+    """Ringkasan konfirmasi Zumo (teks biasa, tanpa emoji/ikon). Bila
+    song_count > jumlah titles tempel, disebut eksplisit: judul sisanya
+    dibuatkan otomatis oleh server."""
+    n = d.get('song_count') or 3
+    titles = d.get('titles') or []
+    lang_label = {'id': 'Indonesia', 'en': 'Inggris'}.get(d.get('lyrics_language') or '')
+    vocal_label = {'m': 'pria', 'f': 'wanita'}.get(d.get('vocal_gender') or '')
+    instrumental = d.get('mode') == 'instrumental'
+    mode_label = 'Instrumental (tanpa lirik)' if instrumental else 'Vokal'
+    lines = [
+        "Cek dulu ya Bos, ini playlist Zumo yang mau dibuat:",
+        f"Channel: {_tg_escape(d.get('channel_name') or _ZUMO_CHANNEL_NAME)}",
+        f"Tema: {_tg_escape(d.get('theme', ''))}",
+        f"Mode: {mode_label}",
+        f"Style: {_tg_escape(d.get('style') or 'ikut profil channel')}",
+        f"Jumlah judul: {n} (jadi {n * 2} varian lagu)",
+        f"Model: {d.get('model') or _ZUMO_DEFAULT_MODEL}",
+        f"Partikel: {_ZUMO_PARTICLE_LABEL.get(d.get('particle') or 'snow', 'salju')} | Spectrum: {_ZUMO_SPECTRUM_LABEL.get(d.get('spectrum_color') or 'white', 'putih')}",
+        f"Jadwal: {_tg_escape(_zumo_schedule_text(d))}",
+    ]
+    if instrumental:
+        lines.append(f"Biaya musik kira-kira: {n * 12} kredit ({n} generate x 12 kredit; tanpa biaya lirik).")
+    else:
+        lines.append(f"Biaya musik kira-kira: {n * 12} kredit ({n} generate x 12 kredit; biaya lirik ikut tagihan Kie).")
+    if instrumental:
+        lines.append("Lirik: tanpa lirik (instrumental).")
+    elif d.get('lyrics_mode') == 'pasted' and titles:
+        t0 = titles[0]
+        lines.append(f"Lirik: tempel 1 judul ({_tg_escape((t0.get('title') or '')[:60])}) — dikirim utuh apa adanya.")
+        if n > len(titles):
+            lines.append(f"Judul lain ({n - len(titles)}) dibuatkan otomatis oleh server (judul + lirik).")
+    else:
+        lines.append("Lirik: otomatis (dibuatkan server).")
+    if instrumental:
+        pass  # bahasa & vokal tidak dipakai (instrumental)
+    elif lang_label or vocal_label:
+        prof = "Bahasa lirik: " + (lang_label or "ikut profil")
+        prof += " | Vokal: " + (vocal_label or "ikut profil")
+        lines.append(prof)
+        lines.append("Bahasa & vokal ini disimpan sebagai profil channel ini.")
+    else:
+        lines.append("Bahasa & vokal lirik: ikut profil channel.")
+    lines += [
+        "",
+        "Kalau sudah oke, pencet Buat. Kalau mau ubah, pencet Batal lalu mulai lagi dari /zumo ya Bos!",
+    ]
+    return "\n".join(lines)
+
+
+def _make_zumo_bank_summary(d):
+    """Ringkasan konfirmasi /zumobank (teks biasa, tanpa emoji/ikon).
+    Biaya lirik disebut apa adanya bila vokal — tanpa angka pasti
+    (biaya lirik ikut tagihan Kie)."""
+    n = d.get('bank_count') or 10
+    instrumental = d.get('mode') == 'instrumental'
+    mode_label = 'Instrumental (tanpa lirik)' if instrumental else 'Vokal'
+    lines = [
+        "Cek dulu ya Bos, ini order Bank Audio Zumo yang mau dibuat:",
+        f"Channel: {_tg_escape(d.get('channel_name') or _ZUMO_CHANNEL_NAME)}",
+        f"Tema: {_tg_escape(d.get('theme', ''))}",
+        f"Mode: {mode_label}",
+        f"Style: {_tg_escape(d.get('style') or 'ikut profil channel')}",
+        f"Jumlah lagu: {n} (disimpan di bank audio, tanpa upload)",
+        f"Model: {d.get('model') or _ZUMO_DEFAULT_MODEL}",
+    ]
+    if instrumental:
+        lines.append(f"Biaya musik kira-kira: {n * 12} kredit ({n} generate x 12 kredit; tanpa biaya lirik).")
+    else:
+        lines.append(f"Biaya musik kira-kira: {n * 12} kredit ({n} generate x 12 kredit; biaya lirik ikut tagihan Kie).")
+    lines += [
+        "",
+        "Kalau sudah oke, pencet Buat. Kalau mau ubah, pencet Batal lalu mulai lagi dari /zumobank ya Bos!",
+    ]
+    return "\n".join(lines)
+
+
+def _make_zumo_assemble_summary(d):
+    """Ringkasan konfirmasi /zumorakit (teks biasa, tanpa emoji/ikon)."""
+    n = d.get('bank_count') or 8
+    lines = [
+        "Cek dulu ya Bos, ini video rakitan dari Bank Audio yang mau dibuat:",
+        f"Channel: {_tg_escape(d.get('channel_name') or _ZUMO_CHANNEL_NAME)}",
+        f"Jumlah lagu: {n} (dipilih acak dari bank audio channel ini)",
+        f"Jadwal: {_tg_escape(_zumo_schedule_text(d))}",
+        "",
+        "Kalau sudah oke, pencet Buat. Kalau mau ubah, pencet Batal lalu mulai lagi dari /zumorakit ya Bos!",
+    ]
+    return "\n".join(lines)
+
+
+def _zumo_create_payload(d):
+    """Payload /api/operator/zumo_create dari draft (kontrak diperbarui
+    21:01 WIB: mode 'upload'|'bank'|'assemble', instrumental bool,
+    bank_count untuk assemble). yt_id selalu dikirim (pilihan user,
+    default Cozy Sax); style/bahasa/vokal hanya dikirim bila user
+    menyebutnya — kosong = pakai profil channel yang tersimpan di
+    server (dan field yang dikirim disimpan server sebagai profil
+    channel itu). titles hanya bila ada lirik tempel (1 entri, lirik
+    utuh apa adanya). Untuk mode='assemble' hanya bank_count + yt_id
+    + publish_date (+ theme 'Bank' sebagai judul fallback)."""
+    mode = d.get('zumo_mode') or 'upload'
+    if mode == 'assemble':
+        return {
+            "yt_id": d.get('yt_id') or _ZUMO_YT_ID,
+            "theme": d.get('theme') or 'Bank',
+            "mode": "assemble",
+            "bank_count": d.get('bank_count') or 8,
+            "publish_date": d.get('publish_date') or '',
+            "privacy": "public",
+        }
+    if mode == 'bank':
+        payload = {
+            "yt_id": d.get('yt_id') or _ZUMO_YT_ID,
+            "theme": d.get('theme', ''),
+            "mode": "bank",
+            "song_count": d.get('bank_count') or 10,
+            "instrumental": d.get('mode') == 'instrumental',
+            "model": d.get('model') or _ZUMO_DEFAULT_MODEL,
+        }
+        if d.get('style'):
+            payload["style"] = d['style']
+        if d.get('mode') != 'instrumental':
+            if d.get('lyrics_language'):
+                payload["lyrics_language"] = d['lyrics_language']
+            if d.get('vocal_gender'):
+                payload["vocal_gender"] = d['vocal_gender']
+        return payload
+    payload = {
+        "yt_id": d.get('yt_id') or _ZUMO_YT_ID,
+        "theme": d.get('theme', ''),
+        "mode": "upload",
+        "instrumental": d.get('mode') == 'instrumental',
+        "song_count": d.get('song_count') or 3,
+        "publish_date": d.get('publish_date') or '',
+        "privacy": "public",
+        "model": d.get('model') or _ZUMO_DEFAULT_MODEL,
+        "spectrum_color": d.get('spectrum_color') or 'white',
+        "particle": d.get('particle') or 'snow',
+    }
+    if d.get('style'):
+        payload["style"] = d['style']
+    if d.get('lyrics_language'):
+        payload["lyrics_language"] = d['lyrics_language']
+    if d.get('vocal_gender'):
+        payload["vocal_gender"] = d['vocal_gender']
+    if d.get('titles'):
+        payload["titles"] = d['titles']
+    return payload
+
+
+def _start_make_zumo(token, chat_id, raw_cmd):
+    """Mulai alur /zumo. Dukung sekali kirim:
+    /zumo <tema> | <jumlah judul 2/3> | <jadwal> — slot yang sudah diisi
+    tidak ditanya lagi; slot yang kurang ditanyakan satu per satu (alur
+    yang sama seperti /zumo polos). Segmen jadwal 'lewati' = slot
+    berikutnya (server yang atur); 'publish' = langsung tayang."""
+    pre = {}
+    rest = raw_cmd[len('/zumo'):].strip() if raw_cmd.strip().lower().startswith('/zumo') else ''
+    if rest:
+        # Buang awalan perintah alami bila ada ("buatkan playlist zumo ...").
+        rest = re.sub(r'^(buatkan|bikin|buat)\s+(playlist\s+)?(lagu\s+)?(zumo\s*)?',
+                      '', rest, flags=re.I).strip()
+    if rest:
+        parts = [p.strip() for p in rest.split('|')]
+        if len(parts) > 0 and parts[0]:
+            pre['theme'] = parts[0][:100]
+        if len(parts) > 1 and parts[1]:
+            n = _zumo_parse_count(parts[1])
+            if n:
+                pre['song_count'] = n
+        if len(parts) > 2 and parts[2]:
+            low2 = parts[2].strip().lower()
+            if low2 in ('lewati', '-', 'skip', 'default'):
+                pre['publish_date'] = ''
+            elif low2 in ('publish', 'langsung', 'tayang sekarang'):
+                pre['publish_date'] = _playlist_publish_now_date()
+                pre['publish_now'] = True
+            else:
+                parsed, note = _parse_natural_datetime(parts[2])
+                if parsed:
+                    pre['publish_date'] = parsed
+                    if note:
+                        pre['publish_note'] = note
+    pre['model'] = _zumo_active_model()
+    draft = {"kind": "zumo", "step": _zumo_next_step(pre), "data": dict(pre)}
+    _save_make_draft(chat_id, draft)
+    send_message(token, chat_id,
+                 "Siap Bos, kita buat Playlist Zumo bareng-bareng ya!\n"
+                 "Lagu orisinal (Kie.ai) — jawab tiap langkah satu per satu, ketik /batal kapan saja untuk berhenti.")
+    _make_ask_step(token, chat_id, draft)
+
+
+def _start_make_zumobank(token, chat_id, raw_cmd):
+    """Mulai alur /zumobank. Dukung sekali kirim:
+    /zumobank <tema> | <jumlah lagu 1-30> — slot yang sudah diisi
+    tidak ditanya lagi. Generate massal ke bank audio (tanpa upload):
+    channel → tema → mode → style → jumlah → konfirmasi."""
+    pre = {'zumo_mode': 'bank'}
+    rest = raw_cmd[len('/zumobank'):].strip() if raw_cmd.strip().lower().startswith('/zumobank') else ''
+    if rest:
+        parts = [p.strip() for p in rest.split('|')]
+        if parts and parts[0]:
+            # Segmen pertama berupa angka saja (mis. '/zumobank 30')
+            # dibaca sebagai jumlah, bukan tema.
+            n0 = _zumo_parse_bank_count(parts[0])
+            if n0 and len(parts) == 1 and not re.search(r'[A-Za-z]', parts[0]):
+                pre['bank_count'] = n0
+            else:
+                pre['theme'] = parts[0][:100]
+        if len(parts) > 1 and parts[1]:
+            n = _zumo_parse_bank_count(parts[1])
+            if n:
+                pre['bank_count'] = n
+    pre['model'] = _zumo_active_model()
+    draft = {"kind": "zumobank", "step": _zumobank_next_step(pre), "data": dict(pre)}
+    _save_make_draft(chat_id, draft)
+    send_message(token, chat_id,
+                 "Siap Bos, kita isi Bank Audio Zumo bareng-bareng ya!\n"
+                 "Lagu di-generate massal dan disimpan di bank (tanpa upload) — jawab tiap langkah satu per satu, ketik /batal kapan saja untuk berhenti.")
+    _make_ask_step(token, chat_id, draft)
+
+
+def _start_make_zumorakit(token, chat_id, raw_cmd):
+    """Mulai alur /zumorakit. Dukung sekali kirim:
+    /zumorakit <jumlah lagu 1-30> | <jadwal> — slot yang sudah diisi
+    tidak ditanya lagi. Rakit video dari bank audio: channel →
+    jumlah lagu → jadwal → konfirmasi. Lagu dipilih acak dari bank
+    oleh server; bila bank kosong server menolak dengan pesan jelas."""
+    pre = {'zumo_mode': 'assemble', 'theme': 'Bank'}
+    rest = raw_cmd[len('/zumorakit'):].strip() if raw_cmd.strip().lower().startswith('/zumorakit') else ''
+    if rest:
+        parts = [p.strip() for p in rest.split('|')]
+        if parts and parts[0]:
+            n = _zumo_parse_bank_count(parts[0])
+            if n:
+                pre['bank_count'] = n
+        if len(parts) > 1 and parts[1]:
+            low2 = parts[1].strip().lower()
+            if low2 in ('lewati', '-', 'skip', 'default'):
+                pre['publish_date'] = ''
+            elif low2 in ('publish', 'langsung', 'tayang sekarang'):
+                pre['publish_date'] = _playlist_publish_now_date()
+                pre['publish_now'] = True
+            else:
+                parsed, note = _parse_natural_datetime(parts[1])
+                if parsed:
+                    pre['publish_date'] = parsed
+                    if note:
+                        pre['publish_note'] = note
+    pre['model'] = _zumo_active_model()
+    draft = {"kind": "zumorakit", "step": _zumorakit_next_step(pre), "data": dict(pre)}
+    _save_make_draft(chat_id, draft)
+    send_message(token, chat_id,
+                 "Siap Bos, kita rakit video dari Bank Audio Zumo ya!\n"
+                 "Lagu dipilih acak dari bank channel ini — jawab tiap langkah satu per satu, ketik /batal kapan saja untuk berhenti.")
+    _make_ask_step(token, chat_id, draft)
+
+
+def _send_zumo_jobs_message(token, chat_id):
+    """Status Zumo: saldo Kie + model aktif + 5 job terakhir
+    (dipakai /zumo status dan tombol Lihat Job Zumo)."""
+    ok, msg, data = _operator_post('/api/operator/zumo_status', {})
+    if not ok or not isinstance(data, dict):
+        send_message(token, chat_id, "Zumo — Status\n" + _tg_escape(msg))
+        return
+    lines = ["Zumo — Status", "━━━━━━━━━━━━━━━━━━━━━━"]
+    bal = data.get('balance')
+    bal_txt = f"{bal} kredit" if bal is not None else "tidak diketahui"
+    if data.get('balance_note'):
+        bal_txt += f" ({data['balance_note']})"
+    lines.append(f"Saldo Kie: {bal_txt}")
+    lines.append(f"Model aktif: {_tg_escape(data.get('model') or _ZUMO_DEFAULT_MODEL)}")
+    models = data.get('models') or list(_ZUMO_MODELS)
+    lines.append("Pilihan model: " + ", ".join(str(m) for m in models))
+    bank = data.get('bank') or []
+    if bank:
+        parts = []
+        for b in bank:
+            if isinstance(b, dict):
+                parts.append(f"{b.get('channel') or '?'} ({b.get('count') or 0} lagu)")
+        if parts:
+            lines.append("Bank: " + ", ".join(parts))
+    jobs = data.get('jobs') or []
+    if not jobs:
+        lines.append("Belum ada job Zumo.")
+    else:
+        for j in jobs[:5]:
+            title = (j.get('new_title') or j.get('theme') or '?')[:45]
+            lines.append(f"• {_tg_escape(title)}")
+            ch_txt = j.get('channel_name') or j.get('channel') or ''
+            st = f"  Status: {_tg_escape(j.get('status') or '?')}"
+            if ch_txt:
+                st += f" • {_tg_escape(str(ch_txt)[:40])}"
+            if j.get('progress'):
+                st += f" • {_tg_escape(j['progress'][:90])}"
+            lines.append(st)
+            if j.get('error'):
+                lines.append(f"  Alasan: {_tg_escape(j['error'][:90])}")
+            if j.get('created_at'):
+                lines.append(f"  Dibuat: {_tg_escape(str(j['created_at'])[:16])}")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("Buat playlist baru: /zumo (bot akan bertanya) atau /zumo tema | jumlah | jadwal.")
+    lines.append("Isi bank audio: /zumobank (bot akan bertanya) atau /zumobank tema | jumlah.")
+    lines.append("Rakit video dari bank: /zumorakit (bot akan bertanya) atau /zumorakit jumlah | jadwal.")
+    lines.append("Ganti model: /zumomodel V6")
+    send_message(token, chat_id, "\n".join(lines))
+
+
+def _send_zumo_created_message(token, chat_id, d, resp):
+    """Pesan sukses setelah job Zumo dibuat — jelaskan apa yang terjadi
+    selanjutnya (generate → render → preview approval)."""
+    n = d.get('song_count') or 3
+    titles = d.get('titles') or []
+    lines = [
+        "Sip Bos, playlist Zumo-nya udah saya buatkan!",
+        f"Tema: {_tg_escape(d.get('theme', ''))}",
+        f"Channel: {_tg_escape(d.get('channel_name') or _ZUMO_CHANNEL_NAME)}",
+        f"Jumlah judul: {n} (jadi {n * 2} varian lagu)",
+        f"Mode: {'Instrumental (tanpa lirik)' if d.get('mode') == 'instrumental' else 'Vokal'}",
+        f"Jadwal: {_tg_escape(_zumo_schedule_text(d))}",
+    ]
+    if d.get('mode') == 'instrumental':
+        lines.append("Lirik: tanpa lirik (instrumental).")
+    elif d.get('lyrics_mode') == 'pasted' and titles:
+        lines.append(f"Lirik: tempel 1 judul ({_tg_escape((titles[0].get('title') or '')[:60])}) — dikirim utuh apa adanya.")
+        if n > len(titles):
+            lines.append(f"Judul lain ({n - len(titles)}) dibuatkan otomatis oleh server (judul + lirik).")
+    else:
+        lines.append("Lirik: otomatis (dibuatkan server).")
+    lines += [
+        "",
+        "Lagu sedang di-generate (Kie.ai), lalu di-render dan masuk antrean. "
+        "Setelah render selesai, preview-nya masuk ke chat ini untuk persetujuan Bos.",
+        "",
+        "Pantau progresnya dengan `/zumo status` ya Bos!",
+    ]
+    send_message(token, chat_id, "\n".join(lines))
+
+
+def _send_zumo_bank_created_message(token, chat_id, d, resp):
+    """Pesan sukses setelah order bank audio dibuat — lagu di-generate
+    lalu disimpan di bank, tanpa upload."""
+    n = d.get('bank_count') or 10
+    instrumental = d.get('mode') == 'instrumental'
+    lines = [
+        "Sip Bos, order Bank Audio Zumo-nya udah saya buatkan!",
+        f"Tema: {_tg_escape(d.get('theme', ''))}",
+        f"Channel: {_tg_escape(d.get('channel_name') or _ZUMO_CHANNEL_NAME)}",
+        f"Jumlah lagu: {n}",
+        f"Mode: {'Instrumental (tanpa lirik)' if instrumental else 'Vokal'}",
+    ]
+    if instrumental:
+        lines.append(f"Biaya musik kira-kira: {n * 12} kredit ({n} generate x 12 kredit; tanpa biaya lirik).")
+    else:
+        lines.append(f"Biaya musik kira-kira: {n * 12} kredit ({n} generate x 12 kredit; biaya lirik ikut tagihan Kie).")
+    lines += [
+        "",
+        "Lagu sedang di-generate (Kie.ai) lalu disimpan di bank audio channel ini, tanpa upload.",
+        "",
+        "Cek isi bank dengan `/zumo status` ya Bos!",
+    ]
+    send_message(token, chat_id, "\n".join(lines))
+
+
+def _send_zumo_assemble_created_message(token, chat_id, d, resp):
+    """Pesan sukses setelah video rakitan dari bank dibuat — judul
+    video diambil dari respons job bila ada."""
+    n = d.get('bank_count') or 8
+    resp = resp or {}
+    title = (resp.get('new_title') or resp.get('title') or '')[:80]
+    lines = [
+        "Sip Bos, video rakitan dari Bank Audio-nya udah saya buatkan!",
+        f"Channel: {_tg_escape(d.get('channel_name') or _ZUMO_CHANNEL_NAME)}",
+        f"Jumlah lagu: {n} (dipilih acak dari bank audio channel ini)",
+    ]
+    if title:
+        lines.append(f"Judul video: {_tg_escape(title)}")
+    lines += [
+        f"Jadwal: {_tg_escape(_zumo_schedule_text(d))}",
+        "",
+        "Video sedang dirakit lalu masuk antrean. "
+        "Setelah render selesai, preview-nya masuk ke chat ini untuk persetujuan Bos.",
+        "",
+        "Pantau progresnya dengan `/zumo status` ya Bos!",
+    ]
+    send_message(token, chat_id, "\n".join(lines))
+
+
 def _handle_make_answer(token, chat_id, draft, raw_cmd):
     """Proses SATU jawaban dalam alur terpandu. Kembalikan True bila
     pesan ditangani sebagai jawaban (bukan perintah lain)."""
@@ -4448,18 +5328,39 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
     ans = (raw_cmd or '').strip()
     low = ans.lower()
     if step == 'channel':
+        if kind in ('zumo', 'zumobank', 'zumorakit') and low in ('lewati', '-', 'skip', 'default'):
+            # Zumo/bank/rakit: 'lewati' = channel default Cozy Sax Relaxing.
+            d['yt_id'] = _ZUMO_YT_ID
+            d['channel_name'] = _ZUMO_CHANNEL_NAME
+            draft['data'] = d
+            draft['step'] = (_zumo_next_step(d) if kind == 'zumo'
+                             else _zumobank_next_step(d) if kind == 'zumobank'
+                             else _zumorakit_next_step(d))
+            _save_make_draft(chat_id, draft)
+            _make_ask_step(token, chat_id, draft)
+            return True
         channels = load_channels()
         try:
             idx = int(ans) - 1
             ch = channels[idx] if 0 <= idx < len(channels) else None
         except Exception:
             ch = None
-        if ch is None and kind == 'playlist':
-            # Playlist: jawaban bebas diterima — ketik nama channel juga boleh.
+        if ch is None and kind in ('playlist', 'zumo', 'zumobank', 'zumorakit'):
+            # Playlist/Zumo/bank/rakit: jawaban bebas diterima — ketik nama channel juga boleh.
             matched, all_flag = _nlu_match_channels(_nlu_clean(ans), channels)
             if all_flag:
-                send_message(token, chat_id,
-                             "😅 *Playlist dibuat 1 channel sekali proses Bos* — pilih 1 channel ya: balas angkanya atau ketik namanya.")
+                if kind == 'zumo':
+                    send_message(token, chat_id,
+                                 "Playlist Zumo dibuat 1 channel sekali proses Bos — pilih 1 channel ya: balas angkanya atau ketik namanya.")
+                elif kind == 'zumobank':
+                    send_message(token, chat_id,
+                                 "Bank audio dibuat 1 channel sekali proses Bos — pilih 1 channel ya: balas angkanya atau ketik namanya.")
+                elif kind == 'zumorakit':
+                    send_message(token, chat_id,
+                                 "Video rakitan dibuat 1 channel sekali proses Bos — pilih 1 channel ya: balas angkanya atau ketik namanya.")
+                else:
+                    send_message(token, chat_id,
+                                 "😅 *Playlist dibuat 1 channel sekali proses Bos* — pilih 1 channel ya: balas angkanya atau ketik namanya.")
                 return True
             if len(matched) == 1:
                 ch = matched[0]
@@ -4487,6 +5388,12 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
             draft['step'] = _short_next_step(d)
         elif kind == 'playlist':
             draft['step'] = _playlist_next_step(d)
+        elif kind == 'zumo':
+            draft['step'] = _zumo_next_step(d)
+        elif kind == 'zumobank':
+            draft['step'] = _zumobank_next_step(d)
+        elif kind == 'zumorakit':
+            draft['step'] = _zumorakit_next_step(d)
         else:
             draft['step'] = _long_next_step(d)
         _save_make_draft(chat_id, draft)
@@ -4663,6 +5570,140 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
         _save_make_draft(chat_id, draft)
         _make_ask_step(token, chat_id, draft)
         return True
+    if kind == 'zumobank':
+        if step == 'theme':
+            if not ans:
+                send_message(token, chat_id,
+                             "Temanya masih kosong Bos — kirim tema lagunya ya (mis. `jazz instrumental santai`).")
+                return True
+            d['theme'] = ans[:100]
+            draft['step'] = _zumobank_next_step(d)
+        elif step == 'mode':
+            _zumo_apply_mode_answer(d, ans)
+            draft['step'] = _zumobank_next_step(d)
+        elif step == 'style':
+            if low in ('lewati', '-', 'skip', 'default'):
+                # 'lewati' = pakai profil channel di server (style TIDAK
+                # dikirim di order) — bukan default sax hardcode.
+                d['style'] = ''
+            else:
+                _zumo_set_style(d, ans)
+            draft['step'] = _zumobank_next_step(d)
+        elif step == 'bank_count':
+            if low in ('lewati', '-', 'skip', 'default'):
+                d['bank_count'] = 10
+            else:
+                n = _zumo_parse_bank_count(ans)
+                if not n:
+                    send_message(token, chat_id,
+                                 "Jumlah lagunya 1-30 Bos — balas angkanya (mis. `30`). Atau ketik `lewati` untuk 10 lagu.")
+                    return True
+                d['bank_count'] = n
+            draft['step'] = _zumobank_next_step(d)
+        elif step == 'confirm':
+            _zumo_confirm_answer(token, chat_id, draft, low)
+            return True
+        draft['data'] = d
+        _save_make_draft(chat_id, draft)
+        _make_ask_step(token, chat_id, draft)
+        return True
+    if kind == 'zumorakit':
+        if step == 'bank_count':
+            if low in ('lewati', '-', 'skip', 'default'):
+                d['bank_count'] = 8
+            else:
+                n = _zumo_parse_bank_count(ans)
+                if not n:
+                    send_message(token, chat_id,
+                                 "Jumlah lagunya 1-30 Bos — balas angkanya (mis. `8`). Atau ketik `lewati` untuk 8 lagu.")
+                    return True
+                d['bank_count'] = n
+            draft['step'] = _zumorakit_next_step(d)
+        elif step == 'publish':
+            err = _zumo_apply_publish_answer(d, ans)
+            if err:
+                send_message(token, chat_id, err)
+                return True
+            draft['step'] = _zumorakit_next_step(d)
+        elif step == 'confirm':
+            _zumo_confirm_answer(token, chat_id, draft, low)
+            return True
+        draft['data'] = d
+        _save_make_draft(chat_id, draft)
+        _make_ask_step(token, chat_id, draft)
+        return True
+    if kind == 'zumo':
+        if step == 'theme':
+            if not ans:
+                send_message(token, chat_id,
+                             "Temanya masih kosong Bos — kirim tema lagunya ya (mis. `saxophone romantis untuk dinner`).")
+                return True
+            d['theme'] = ans[:100]
+            draft['step'] = _zumo_next_step(d)
+        elif step == 'mode':
+            _zumo_apply_mode_answer(d, ans)
+            draft['step'] = _zumo_next_step(d)
+        elif step == 'style':
+            if low in ('lewati', '-', 'skip', 'default'):
+                # 'lewati' = pakai profil channel di server (style TIDAK
+                # dikirim di order) — bukan default sax hardcode.
+                d['style'] = ''
+            else:
+                _zumo_set_style(d, ans)
+            draft['step'] = _zumo_next_step(d)
+        elif step == 'lyrics':
+            if d.get('mode') == 'instrumental':
+                # Jaring pengaman: instrumental tidak pernah menanyakan
+                # lirik (langkah dilewati _zumo_next_step).
+                d['lyrics_mode'] = 'none'
+                d.pop('titles', None)
+            elif low in ('auto', 'otomatis', 'lewati', '-', 'skip', 'default'):
+                d['lyrics_mode'] = 'auto'
+                d.pop('titles', None)
+            else:
+                # Lirik tempel: kirim APA ADANYA (tag [Bagian: arahan]
+                # utuh, jangan dipotong, jangan dibersihkan tag-nya).
+                # Judul dari baris 'Judul: ...' bila ada, sonst tema.
+                title = (_zumo_title_from_lyrics(ans)
+                         or (d.get('theme') or 'Lagu Zumo')[:80])
+                d['lyrics_mode'] = 'pasted'
+                d['titles'] = [{'title': title, 'lyrics': ans}]
+            draft['step'] = _zumo_next_step(d)
+        elif step == 'count':
+            allow_one = bool(d.get('titles'))
+            if low in ('lewati', '-', 'skip', 'default'):
+                d['song_count'] = 1 if allow_one else 3
+            else:
+                n = _zumo_parse_count(ans, allow_one=allow_one)
+                if not n:
+                    rng = "1, 2, atau 3" if allow_one else "2 atau 3"
+                    send_message(token, chat_id,
+                                 f"Jumlah judulnya {rng} Bos — balas angkanya (tiap judul jadi 2 varian lagu). Atau ketik `lewati`.")
+                    return True
+                d['song_count'] = n
+            draft['step'] = _zumo_next_step(d)
+        elif step == 'particle':
+            p, c = _zumo_parse_particle(ans)
+            if p is None:
+                send_message(token, chat_id,
+                             "Partikelnya salju atau sakura Bos — balas `salju` atau `sakura` (boleh tambah warna spectrum: putih/cyan/viridis). Atau ketik `lewati`.")
+                return True
+            d['particle'] = p
+            d['spectrum_color'] = c
+            draft['step'] = _zumo_next_step(d)
+        elif step == 'publish':
+            err = _zumo_apply_publish_answer(d, ans)
+            if err:
+                send_message(token, chat_id, err)
+                return True
+            draft['step'] = _zumo_next_step(d)
+        elif step == 'confirm':
+            _zumo_confirm_answer(token, chat_id, draft, low)
+            return True
+        draft['data'] = d
+        _save_make_draft(chat_id, draft)
+        _make_ask_step(token, chat_id, draft)
+        return True
     # --- long ---
     if step == 'count':
         try:
@@ -4738,7 +5779,8 @@ def _confirm_make_create(token, chat_id, draft):
     d = draft.get('data') or {}
     kind = draft.get('kind')
     retry_cmd = {'short': '/buatshort', 'long': '/buatlong',
-                 'playlist': '/playlist'}.get(kind, '/buatshort')
+                 'playlist': '/playlist', 'zumo': '/zumo',
+                 'zumobank': '/zumobank', 'zumorakit': '/zumorakit'}.get(kind, '/buatshort')
     if kind == 'short':
         # Jaring pengaman (alur pendek v1.2.19): judul dari one-shot tanpa
         # hook/naskah → isi dari bank tema; tema ikut dikirim supaya panel
@@ -4762,6 +5804,10 @@ def _confirm_make_create(token, chat_id, draft):
             "pixabay_theme": d.get('pixabay_theme') or '',
         })
         resp = resp or {}
+    elif kind in ('zumo', 'zumobank', 'zumorakit'):
+        ok, info, resp = _operator_post('/api/operator/zumo_create',
+                                        _zumo_create_payload(d))
+        resp = resp or {}
     else:
         ok, info, resp = request_create_long({
             "yt_id": d.get('yt_id'), "count": d.get('count', 1),
@@ -4774,6 +5820,15 @@ def _confirm_make_create(token, chat_id, draft):
         send_message(token, chat_id,
                      f"⚠️ *Yah Bos, gagal dibuat* 😅\n{info}\n"
                      f"Coba lagi dengan {retry_cmd} ya Bos!")
+        return
+    if kind == 'zumo':
+        _send_zumo_created_message(token, chat_id, d, resp)
+        return
+    if kind == 'zumobank':
+        _send_zumo_bank_created_message(token, chat_id, d, resp)
+        return
+    if kind == 'zumorakit':
+        _send_zumo_assemble_created_message(token, chat_id, d, resp)
         return
     if kind == 'playlist':
         _send_playlist_created_message(token, chat_id, d, resp)
@@ -5279,6 +6334,35 @@ def _nlu_extract_playlist_theme(clean, channels):
     return t[:100] or None
 
 
+def _nlu_extract_zumo_theme(clean, channels):
+    """Tema lagu Zumo: sisa kalimat setelah buang kata kerja, kata 'zumo',
+    'playlist', 'lagu', 'kie', 'baru', dan nama channel.
+    'buatkan playlist zumo saxophone romantis untuk dinner' → 'saxophone
+    romantis dinner' — kata 'sax'/'saxophone' TIDAK dibuang (bisa jadi isi
+    tema); hanya bila sisanya tinggal 'sax'/'saxophone' saja (mis.
+    'buat lagu sax') dianggap tidak ada tema → None. Kosong bila tema
+    tidak disebut."""
+    t = clean
+    t = re.sub(r'\b(buatkan|bikin|buat|tolong|buatlah)\b', ' ', t)
+    t = re.sub(r'\bzumo\b', ' ', t)
+    t = re.sub(r'\bplaylist\b', ' ', t)
+    t = re.sub(r'\b(lagu|lagu-lagu)\b', ' ', t)
+    t = re.sub(r'\bkie\b', ' ', t)
+    t = re.sub(r'\bbaru\b', ' ', t)
+    for c in (channels or []):
+        nm = _nlu_norm_name(_channel_display_name(c))
+        if nm:
+            t = t.replace(nm, ' ')
+            for w in nm.split():
+                if len(w) >= 3:
+                    t = re.sub(r'\b' + re.escape(w) + r'\b', ' ', t)
+    t = re.sub(r'\b(untuk|di|ke|pada|dari|channel|semua|tema)\b', ' ', t)
+    t = re.sub(r'\s+', ' ', t).strip()
+    if t in ('sax', 'saxophone'):
+        return None
+    return t[:100] or None
+
+
 # ==========================================
 # 🔥 v1.2.20 — SINONIM + TOLERANSI TYPO perintah baru Bagian B
 # Satu helper bersama untuk kata-kata perintah BARU saja (NLU lama tidak
@@ -5395,7 +6479,7 @@ def _match_new_command(clean):
 
 def parse_natural_command(text, channels):
     """Terjemahkan pesan bebas → {intent, confidence 0-100, slots}.
-    Intent: buat_short, buat_long, buat_playlist, status, laporan, kuota, stok, statistik,
+    Intent: buat_short, buat_long, buat_playlist, buat_zumo, buat_zumobank, buat_zumorakit, status, laporan, kuota, stok, statistik,
     monetisasi, jadwal, gagal, channel_list, bantuan, jeda_channel,
     lanjutkan_channel, perpanjang_jadwal, ubah_mode, hapus,
     hentikan_antrean, tidak_dikenali, jadwal_bulan, laporan_detail,
@@ -5470,6 +6554,44 @@ def parse_natural_command(text, channels):
         d = _nlu_extract_days(clean)
         if d:
             slots['days'] = d
+    # --- Bank Audio Zumo (v1.3.0): 'buatkan lagu untuk bank' / 'isi
+    # bank' (generate massal, tanpa upload) dan 'rakit video dari
+    # bank' (video dari lagu bank). Dicek SEBELUM buat_zumo /
+    # buat_playlist — HANYA bila kata 'bank' / 'rakit' disebut
+    # eksplisit, jadi 'buatkan playlist' biasa dan 'buatkan lagu
+    # zumo' tidak direbut. 'cek isi bank' (baca saja) bukan perintah
+    # buat — tidak ketangkap cabang ini. ---
+    elif 'rakit' in clean and ('bank' in clean or 'video' in clean
+                               or 'playlist' in clean):
+        intent = 'buat_zumorakit'
+        conf = 75
+    elif ('bank' in clean and (create_verb or 'isi' in clean)
+            and ('lagu' in clean or 'isi' in clean or 'zumo' in clean
+                 or 'audio' in clean)
+            and not re.search(r'\b(cek|lihat|tampilkan|status|berapa)\b', clean)):
+        intent = 'buat_zumobank'
+        conf = 75
+    # --- Buat lagu Zumo (Kie.ai) — dicek SEBELUM buat_short/buat_long/
+    # buat_playlist supaya 'buatkan playlist zumo' tidak ketangkap
+    # buat_playlist dan 'buatkan lagu zumo untuk Cozy Sax' tidak ketangkap
+    # buat_short (cabang 'buatkan untuk <channel>'). Frasa zumo eksplisit
+    # confidence 80; 'buatkan lagu' (tanpa 'playlist') 60; 'lagu baru'
+    # tanpa kata kerja 40 — selalu DI BAWAH frasa zumo eksplisit dan
+    # tidak pernah merebut 'buatkan playlist ...' (ada kata 'playlist'
+    # → jatuh ke buat_playlist di bawah).
+    elif 'zumo' in clean or (create_verb and 'kie' in clean and 'lagu' in clean):
+        intent = 'buat_zumo'
+        conf = 80
+    elif create_verb and 'lagu' in clean and 'playlist' not in clean \
+            and ('sax' in clean or 'saxophone' in clean):
+        intent = 'buat_zumo'
+        conf = 80
+    elif create_verb and 'lagu' in clean and 'playlist' not in clean:
+        intent = 'buat_zumo'
+        conf = 60
+    elif 'lagu baru' in clean and 'playlist' not in clean:
+        intent = 'buat_zumo'
+        conf = 40
     # --- Buat Short / Long. ---
     elif create_verb and ('short' in clean or 'video pendek' in clean):
         intent = 'buat_short'
@@ -5645,6 +6767,70 @@ def parse_natural_command(text, channels):
             conf += 15
         if create_verb:
             conf += 5
+    elif intent == 'buat_zumo':
+        # Tema lagu + jumlah judul + jadwal (bila disebut). Channel ikut
+        # slot 'channels' (diisi di atas bila disebut namanya — bila tidak,
+        # alur /zumo menanyakan channel, default Cozy Sax). Bahasa lirik &
+        # vokal dari kata kunci ('indonesia'/'inggris', 'pria'/'wanita');
+        # tidak disebut = ikut profil channel di server. Yang belum
+        # disebut TIDAK ditebak — ditanyakan lewat alur tanya-jawab /zumo.
+        th = _nlu_extract_zumo_theme(clean, channels)
+        if th:
+            slots['zumo_theme'] = th
+            conf += 10
+        mcount = re.search(r'\b([23])\s*(judul|lagu)\b', clean)
+        if mcount:
+            slots['song_count'] = int(mcount.group(1))
+            conf += 5
+        lang, vocal = _zumo_parse_style_hints(clean)
+        if lang:
+            slots['lyrics_language'] = lang
+            conf += 5
+        if vocal:
+            slots['vocal_gender'] = vocal
+            conf += 5
+        if 'instrumental' in clean or ('piano' in clean and 'vokal' not in clean):
+            slots['instrumental'] = True
+            conf += 5
+        elif 'vokal' in clean:
+            slots['instrumental'] = False
+        ndt, nnote = _parse_natural_datetime(text)
+        if ndt:
+            slots['publish_date'] = ndt
+            if nnote:
+                slots['publish_note'] = nnote
+            conf += 5
+    elif intent in ('buat_zumobank', 'buat_zumorakit'):
+        # Tema + jumlah lagu bank + mode vokal/instrumental + jadwal
+        # (rakit). Kata 'bank'/'rakit'/'isi' dibuang dari tema.
+        th = _nlu_extract_zumo_theme(clean, channels)
+        if th:
+            th = re.sub(r'\b(bank|rakit|audio|isi)\b', ' ', th)
+            th = re.sub(r'^\d+\s*', '', th)
+            th = re.sub(r'\s+', ' ', th).strip()[:100] or None
+        if th:
+            slots['zumo_theme'] = th
+            conf += 10
+        mbank = re.search(r'\b(\d{1,2})\s*(lagu|judul)\b', clean)
+        if mbank:
+            slots['bank_count'] = max(1, min(30, int(mbank.group(1))))
+            conf += 5
+        if 'instrumental' in clean or ('piano' in clean and 'vokal' not in clean):
+            slots['instrumental'] = True
+            conf += 5
+        elif 'vokal' in clean:
+            slots['instrumental'] = False
+        lang, vocal = _zumo_parse_style_hints(clean)
+        if lang:
+            slots['lyrics_language'] = lang
+        if vocal:
+            slots['vocal_gender'] = vocal
+        ndt, nnote = _parse_natural_datetime(text)
+        if ndt:
+            slots['publish_date'] = ndt
+            if nnote:
+                slots['publish_note'] = nnote
+            conf += 5
     elif intent == 'perpanjang_jadwal':
         if slots.get('channels'):
             conf += 15
@@ -5762,6 +6948,38 @@ def _nlu_describe(pending):
         if slots.get('publish_now'):
             base += ", langsung tayang (publish, tanpa jadwal)"
         elif slots.get('publish_date'):
+            base += f", jadwal {slots['publish_date']}"
+            if slots.get('publish_note'):
+                base += f" ({slots['publish_note']})"
+        return base
+    if intent == 'buat_zumobank':
+        th = slots.get('zumo_theme') or 'lagu (tanya dulu)'
+        ch_zumo = ', '.join(names) if names else 'Cozy Sax Relaxing (default, bisa diubah)'
+        base = f"buatkan {slots.get('bank_count') or 10} lagu tema {th} untuk bank audio {ch_zumo}"
+        if slots.get('instrumental'):
+            base += " (instrumental, tanpa lirik)"
+        return base
+    if intent == 'buat_zumorakit':
+        ch_zumo = ', '.join(names) if names else 'Cozy Sax Relaxing (default, bisa diubah)'
+        base = f"rakit video dari bank audio ({slots.get('bank_count') or 8} lagu acak) untuk {ch_zumo}"
+        if slots.get('publish_date'):
+            base += f", jadwal {slots['publish_date']}"
+            if slots.get('publish_note'):
+                base += f" ({slots['publish_note']})"
+        return base
+    if intent == 'buat_zumo':
+        th = slots.get('zumo_theme') or 'lagu (tanya dulu)'
+        ch_zumo = ', '.join(names) if names else 'Cozy Sax Relaxing (default, bisa diubah)'
+        base = f"buatkan playlist Zumo tema {th} untuk {ch_zumo}"
+        if slots.get('song_count'):
+            base += f", {slots['song_count']} judul"
+        lang_label = {'id': 'bahasa Indonesia', 'en': 'bahasa Inggris'}.get(slots.get('lyrics_language') or '')
+        vocal_label = {'m': 'vokal pria', 'f': 'vokal wanita'}.get(slots.get('vocal_gender') or '')
+        if lang_label:
+            base += f", {lang_label}"
+        if vocal_label:
+            base += f", {vocal_label}"
+        if slots.get('publish_date'):
             base += f", jadwal {slots['publish_date']}"
             if slots.get('publish_note'):
                 base += f" ({slots['publish_note']})"
@@ -5943,6 +7161,15 @@ def _nlu_advance(token, chat_id, pending):
         send_message(token, chat_id,
                      "Tema musik playlist-nya apa Bos? 🤔\n(mis. `lagu malaysia lawas`, `lofi`, `piano santai`)")
         return
+    # --- Tema lagu (buat zumo / bank): bila belum disebut, tanyakan
+    # dulu (tidak ditebak) — jawaban bebas ditangkap cabang 'theme' di
+    # _nlu_try_complete_pending. Channel tidak ditanya (selalu Cozy Sax).
+    if intent in ('buat_zumo', 'buat_zumobank') and not slots.get('zumo_theme'):
+        pending['awaiting'] = 'theme'
+        _save_nlu_pending(chat_id, pending)
+        send_message(token, chat_id,
+                     "Tema lagu Zumo-nya apa Bos?\n(mis. `saxophone romantis untuk dinner`, `jazz santai malam hari`)")
+        return
     # --- Niche (buat short/long). ---
     if intent in ('buat_short', 'buat_long'):
         if not slots.get('niche'):
@@ -5983,7 +7210,8 @@ def _nlu_advance(token, chat_id, pending):
                 pass
     # --- Konfirmasi bila aksi membuat konten / berbahaya / matikan pengaman. ---
     needs_confirm = (
-        intent in ('buat_short', 'buat_long', 'buat_playlist', 'hapus', 'hentikan_antrean')
+        intent in ('buat_short', 'buat_long', 'buat_playlist', 'buat_zumo',
+                   'buat_zumobank', 'buat_zumorakit', 'hapus', 'hentikan_antrean')
         or (intent == 'ubah_mode' and slots.get('mode') == 'auto')
     )
     if needs_confirm and not pending.get('confirmed'):
@@ -6244,6 +7472,109 @@ def _execute_nlu_create_playlist(token, chat_id, pending):
     _make_ask_step(token, chat_id, draft)
 
 
+def _execute_nlu_create_zumo(token, chat_id, pending):
+    """NLU 'buatkan lagu zumo ...' — masuk ke alur tanya-jawab yang SAMA
+    seperti /zumo: slot yang sudah diketahui (channel, tema, bahasa,
+    vokal, jumlah, jadwal) diisi ke draft, sisanya ditanyakan satu per
+    satu (tidak ditebak). Channel yang disebut di perintah dipakai;
+    bila tidak disebut, langkah channel menanyakan (default Cozy Sax)."""
+    slots = pending.get('slots') or {}
+    data = {}
+    chs = [c for c in load_channels()
+           if c.get('yt_id') in (slots.get('channels') or [])]
+    ch = chs[0] if chs else None
+    if ch:
+        data['yt_id'] = ch.get('yt_id')
+        data['channel_name'] = _channel_display_name(ch)
+    if slots.get('zumo_theme'):
+        data['theme'] = slots['zumo_theme']
+    if slots.get('instrumental') is True:
+        data['mode'] = 'instrumental'
+        data['lyrics_mode'] = 'none'
+    elif slots.get('instrumental') is False:
+        data['mode'] = 'vokal'
+    if slots.get('lyrics_language'):
+        data['lyrics_language'] = slots['lyrics_language']
+    if slots.get('vocal_gender'):
+        data['vocal_gender'] = slots['vocal_gender']
+    if slots.get('song_count'):
+        data['song_count'] = slots['song_count']
+    if slots.get('publish_date'):
+        data['publish_date'] = slots['publish_date']
+        if slots.get('publish_note'):
+            data['publish_note'] = slots['publish_note']
+    data['model'] = _zumo_active_model()
+    draft = {"kind": "zumo", "step": _zumo_next_step(data), "data": data}
+    _save_make_draft(chat_id, draft)
+    send_message(token, chat_id,
+                 "Siap Bos, kita buat Playlist Zumo bareng-bareng ya!\n"
+                 "Lagu orisinal (Kie.ai) — jawab tiap langkah satu per satu, ketik /batal kapan saja untuk berhenti.")
+    _make_ask_step(token, chat_id, draft)
+
+
+def _execute_nlu_create_zumobank(token, chat_id, pending):
+    """NLU 'buatkan lagu untuk bank ...' — masuk ke alur tanya-jawab
+    yang SAMA seperti /zumobank: slot yang sudah diketahui (channel,
+    tema, mode, jumlah) diisi ke draft, sisanya ditanyakan satu per
+    satu (tidak ditebak)."""
+    slots = pending.get('slots') or {}
+    data = {'zumo_mode': 'bank'}
+    chs = [c for c in load_channels()
+           if c.get('yt_id') in (slots.get('channels') or [])]
+    ch = chs[0] if chs else None
+    if ch:
+        data['yt_id'] = ch.get('yt_id')
+        data['channel_name'] = _channel_display_name(ch)
+    if slots.get('zumo_theme'):
+        data['theme'] = slots['zumo_theme']
+    if slots.get('instrumental') is True:
+        data['mode'] = 'instrumental'
+        data['lyrics_mode'] = 'none'
+    elif slots.get('instrumental') is False:
+        data['mode'] = 'vokal'
+    if data.get('mode') != 'instrumental':
+        if slots.get('lyrics_language'):
+            data['lyrics_language'] = slots['lyrics_language']
+        if slots.get('vocal_gender'):
+            data['vocal_gender'] = slots['vocal_gender']
+    if slots.get('bank_count'):
+        data['bank_count'] = slots['bank_count']
+    data['model'] = _zumo_active_model()
+    draft = {"kind": "zumobank", "step": _zumobank_next_step(data), "data": data}
+    _save_make_draft(chat_id, draft)
+    send_message(token, chat_id,
+                 "Siap Bos, kita isi Bank Audio Zumo bareng-bareng ya!\n"
+                 "Lagu di-generate massal dan disimpan di bank (tanpa upload) — jawab tiap langkah satu per satu, ketik /batal kapan saja untuk berhenti.")
+    _make_ask_step(token, chat_id, draft)
+
+
+def _execute_nlu_create_zumorakit(token, chat_id, pending):
+    """NLU 'rakit video dari bank ...' — masuk ke alur tanya-jawab
+    yang SAMA seperti /zumorakit: slot yang sudah diketahui (channel,
+    jumlah, jadwal) diisi ke draft, sisanya ditanyakan satu per satu."""
+    slots = pending.get('slots') or {}
+    data = {'zumo_mode': 'assemble', 'theme': 'Bank'}
+    chs = [c for c in load_channels()
+           if c.get('yt_id') in (slots.get('channels') or [])]
+    ch = chs[0] if chs else None
+    if ch:
+        data['yt_id'] = ch.get('yt_id')
+        data['channel_name'] = _channel_display_name(ch)
+    if slots.get('bank_count'):
+        data['bank_count'] = slots['bank_count']
+    if slots.get('publish_date'):
+        data['publish_date'] = slots['publish_date']
+        if slots.get('publish_note'):
+            data['publish_note'] = slots['publish_note']
+    data['model'] = _zumo_active_model()
+    draft = {"kind": "zumorakit", "step": _zumorakit_next_step(data), "data": data}
+    _save_make_draft(chat_id, draft)
+    send_message(token, chat_id,
+                 "Siap Bos, kita rakit video dari Bank Audio Zumo ya!\n"
+                 "Lagu dipilih acak dari bank channel ini — jawab tiap langkah satu per satu, ketik /batal kapan saja untuk berhenti.")
+    _make_ask_step(token, chat_id, draft)
+
+
 def _nlu_execute(token, chat_id, pending):
     kind = pending.get('intent')
     if kind == 'buat_short':
@@ -6252,6 +7583,12 @@ def _nlu_execute(token, chat_id, pending):
         _execute_nlu_create_long(token, chat_id, pending)
     elif kind == 'buat_playlist':
         _execute_nlu_create_playlist(token, chat_id, pending)
+    elif kind == 'buat_zumo':
+        _execute_nlu_create_zumo(token, chat_id, pending)
+    elif kind == 'buat_zumobank':
+        _execute_nlu_create_zumobank(token, chat_id, pending)
+    elif kind == 'buat_zumorakit':
+        _execute_nlu_create_zumorakit(token, chat_id, pending)
     elif kind == 'perpanjang_jadwal':
         _execute_nlu_extend(token, chat_id, pending)
     elif kind == 'ubah_mode':
@@ -6324,6 +7661,13 @@ def _nlu_suggest(clean):
         '/buatlong': ('long', 'panjang', 'kompilasi', 'video', 'buat', 'bikin'),
         '/buatplaylist': ('playlist', 'musik', 'buat', 'bikin'),
         '/playlist': ('playlist', 'musik', 'buat', 'bikin'),
+        '/zumo': ('zumo', 'lagu', 'sax', 'saxophone', 'buat', 'bikin'),
+        '/zumobank': ('zumo', 'bank', 'lagu', 'buat', 'bikin'),
+        '/zumorakit': ('zumo', 'bank', 'rakit', 'video', 'buat'),
+        '/zumomodel': ('zumo', 'model', 'versi'),
+        '/kiekey': ('kie', 'key', 'api'),
+        '/kiekeys': ('kie', 'key', 'api'),
+        '/kiedel': ('kie', 'key', 'hapus'),
         '/laporan': ('laporan', 'report', 'pagi', 'sore'),
         '/kuota': ('kuota', 'limit', 'upload'),
         '/stok': ('stok', 'sisa', 'jadwal'),
@@ -6439,7 +7783,10 @@ def _nlu_try_complete_pending(token, chat_id, raw_cmd, clean_cmd):
         th = re.sub(r'^(tema|temanya)\s+', '', th, flags=re.I).strip()
         if not th:
             return False
-        slots['playlist_theme'] = th[:100]
+        if pending.get('intent') in ('buat_zumo', 'buat_zumobank'):
+            slots['zumo_theme'] = th[:100]
+        else:
+            slots['playlist_theme'] = th[:100]
         _save_nlu_pending(chat_id, pending)
         _nlu_advance(token, chat_id, pending)
         return True
@@ -6532,6 +7879,9 @@ _BOT_COMMANDS = [
     ('buatlong', 'Buat batch video long 60–80 menit terpandu', 'buat', ''),
     ('playlist', 'Buat Playlist baru (bot bertanya satu per satu) atau /playlist status', 'buat', '[status]'),
     ('buatplaylist', 'Buat Musik Playlist (alias /playlist, sekali kirim pakai | )', 'buat', '<tema> | [channel] | [tema pixabay]'),
+    ('zumo', 'Buat playlist lagu Zumo/Kie terpandu atau /zumo status', 'buat', '[status]'),
+    ('zumobank', 'Generate massal lagu ke bank audio (tanpa upload)', 'buat', '[tema] | [jumlah]'),
+    ('zumorakit', 'Rakit video dari lagu bank audio (acak)', 'buat', '[jumlah]'),
     ('batal', 'Batalkan draft yang sedang dibuat', 'buat', ''),
     ('perpanjang', 'Tambah jadwal, mis. /perpanjang Aruya 0089 30 atau /perpanjang semua 30', 'atur', '[channel] [hari]'),
     ('aturjadwal', 'Ubah jam tayang / jadwal auto-shorts channel (cuma 3 pertanyaan)', 'atur', '[channel]'),
@@ -6541,6 +7891,10 @@ _BOT_COMMANDS = [
     ('pixabaykey', 'Tambah API key Pixabay', 'atur', '<key>'),
     ('pixabaykeys', 'Daftar API key Pixabay (masked)', 'atur', ''),
     ('pixabaydel', 'Hapus API key Pixabay', 'atur', '<4-karakter-terakhir|nomor>'),
+    ('zumomodel', 'Lihat/ganti model Zumo (V5.5/V6/V6_MINI/V6_WILD)', 'atur', '[model]'),
+    ('kiekey', 'Tambah API key Kie.ai', 'atur', '<key>'),
+    ('kiekeys', 'Daftar API key Kie.ai (masked)', 'atur', ''),
+    ('kiedel', 'Hapus API key Kie.ai', 'atur', '<4-karakter-terakhir|nomor>'),
     ('backup', 'Backup sekarang + status backup terakhir', 'atur', ''),
     ('update', 'Update panel dari GitHub + restart', 'atur', ''),
     ('restart', 'Restart panel + bot Telegram', 'atur', ''),
@@ -6559,6 +7913,7 @@ _BOT_COMMAND_EXTRAS = {
     'buatshort': '👉 /buatshort Judul | Hook | Naskah | CTA — Sekali kirim',
     'buatlong': '👉 /buatlong 3 | 2026-11-20 19:00 | 1 — Sekali kirim (jumlah | tanggal | jeda hari)',
     'buatplaylist': '👉 /buatplaylist lagu malaysia lawas | Aruya 0089 | autumn — Sekali kirim',
+    'zumo': '/zumo tema | jumlah | jadwal — Sekali kirim',
 }
 
 
@@ -6860,9 +8215,14 @@ def handle_user_command(token, chat_id, text, message_id=None):
             if _d0:
                 _clear_make_draft(chat_id)
                 _retry = {'short': '/buatshort', 'long': '/buatlong',
-                          'playlist': '/playlist'}.get(_d0.get('kind'), '/buatshort')
+                          'playlist': '/playlist', 'zumo': '/zumo',
+                          'zumobank': '/zumobank',
+                          'zumorakit': '/zumorakit'}.get(_d0.get('kind'), '/buatshort')
+                _cancel_msg = {'zumobank': "Tidak ada lagu bank yang dibuat.",
+                               'zumorakit': "Tidak ada video rakitan yang dibuat."}.get(
+                    _d0.get('kind'), "Tidak ada video yang dibuat.")
                 send_message(token, chat_id,
-                             f"😌 *Sip Bos, dibatalkan.* Tidak ada video yang dibuat.\nKetik {_retry} kalau mau mulai lagi ya Bos!")
+                             f"😌 *Sip Bos, dibatalkan.* {_cancel_msg}\nKetik {_retry} kalau mau mulai lagi ya Bos!")
             elif _aj0:
                 # 🔥 v1.2.20: /batal juga membatalkan alur /aturjadwal.
                 _clear_aturjadwal_draft(chat_id)
@@ -6881,15 +8241,21 @@ def handle_user_command(token, chat_id, text, message_id=None):
         if _draft:
             if first_word in ("/start", "/help"):
                 _clear_make_draft(chat_id)
-            elif first_word in ("/buatshort", "/buatlong", "/buatplaylist") or clean_cmd in ("buat short", "buat video long", "buat playlist"):
+            elif first_word in ("/buatshort", "/buatlong", "/buatplaylist", "/zumobank", "/zumorakit") or clean_cmd in ("buat short", "buat video long", "buat playlist"):
                 _clear_make_draft(chat_id)
-                # jatuh ke cabang /buatshort|/buatlong|/buatplaylist di bawah (mulai baru)
+                # jatuh ke cabang /buatshort|/buatlong|/buatplaylist|/zumobank|/zumorakit di bawah (mulai baru)
             elif first_word in ("/playlist",):
                 # /playlist status tidak mengganggu draft; /playlist polos /
                 # berteks memulai alur baru (draft lama dibersihkan).
                 if raw_cmd[len('/playlist'):].strip().lower() != 'status':
                     _clear_make_draft(chat_id)
                 # jatuh ke cabang /playlist di bawah (menu / alur baru)
+            elif first_word in ("/zumo",):
+                # /zumo status tidak mengganggu draft; /zumo polos /
+                # berteks memulai alur baru (draft lama dibersihkan).
+                if raw_cmd[len('/zumo'):].strip().lower() != 'status':
+                    _clear_make_draft(chat_id)
+                # jatuh ke cabang /zumo di bawah (menu / alur baru)
             elif first_word.startswith("/"):
                 pass  # perintah lain tetap jalan, draft tersimpan
             elif clean_cmd in _MAIN_BUTTON_TEXTS:
@@ -7033,6 +8399,58 @@ def handle_user_command(token, chat_id, text, message_id=None):
                          ]})
             return
 
+        # --- 🎵 ZUMO / KIE.AI: /zumo (menu / status / alur terpandu) ---
+        # /zumo polos → menu (Buat Baru / Lihat Job). /zumo status →
+        # saldo + model + job. /zumo <teks bebas> → mulai alur
+        # tanya-jawab, teksnya dipakai sebagai tema awal.
+        if first_word in ("/zumo",):
+            rest = raw_cmd[len('/zumo'):].strip()
+            if rest.lower() == 'status':
+                _send_zumo_jobs_message(token, chat_id)
+                return
+            if rest:
+                _start_make_zumo(token, chat_id, raw_cmd)
+                return
+            send_message(token, chat_id,
+                         "Zumo — Lagu Orisinal (Kie.ai)\n\nBuat playlist lagu orisinal. Mau apa Bos?",
+                         reply_markup={"inline_keyboard": [
+                             [{"text": "Buat Playlist Zumo Baru", "callback_data": "zm:new"}],
+                             [{"text": "Lihat Job Zumo", "callback_data": "zm:jobs"}],
+                         ]})
+            return
+
+        # --- 🎵 ZUMO: /zumobank (generate massal ke bank, tanpa upload) ---
+        if first_word in ("/zumobank",):
+            _start_make_zumobank(token, chat_id, raw_cmd)
+            return
+
+        # --- 🎵 ZUMO: /zumorakit (rakit video dari lagu bank, acak) ---
+        if first_word in ("/zumorakit",):
+            _start_make_zumorakit(token, chat_id, raw_cmd)
+            return
+
+        # --- 🎵 ZUMO: /zumomodel (lihat / ganti model generate) ---
+        if first_word in ("/zumomodel",):
+            arg = raw_cmd[len('/zumomodel'):].strip().upper()
+            if not arg:
+                ok, msg, data = _operator_post('/api/operator/zumo_status', {})
+                if not ok or not isinstance(data, dict):
+                    send_message(token, chat_id, "Zumo — Model\n" + _tg_escape(msg))
+                    return
+                models = data.get('models') or list(_ZUMO_MODELS)
+                rows = [[{"text": m, "callback_data": f"zmmodel:{m}"}] for m in models]
+                send_message(token, chat_id,
+                             f"Zumo — Model\n\nModel aktif: {_tg_escape(data.get('model') or _ZUMO_DEFAULT_MODEL)}\nPilih model baru di bawah, atau ketik `/zumomodel V6`.",
+                             reply_markup={"inline_keyboard": rows})
+                return
+            if arg not in _ZUMO_MODELS:
+                send_message(token, chat_id,
+                             "Zumo — Model\n\nModel tidak dikenal Bos. Pilihan: " + ", ".join(_ZUMO_MODELS) + ".\nContoh: `/zumomodel V6`")
+                return
+            ok, msg, data = _operator_post('/api/operator/zumo_model', {'model': arg})
+            send_message(token, chat_id, "Zumo — Model\n" + _tg_escape(msg))
+            return
+
         # --- 💾 BACKUP OTOMATIS: /backup (buat + status) ---
         # Backup TIDAK PERNAH dikirim ke Telegram (berisi token) — hanya status.
         if first_word in ("/backup",):
@@ -7138,6 +8556,58 @@ def handle_user_command(token, chat_id, text, message_id=None):
                 return
             ok, msg, data = _operator_post('/api/operator/pixabay_key_del', {'ident': ident})
             send_message(token, chat_id, f"🔑 *API Key Pixabay*\n{_tg_escape(msg)}")
+            return
+
+        # --- 🔑 API KEY KIE.AI: /kiekey, /kiekeys, /kiedel ---
+        # Pola sama persis seperti Pixabay di atas. Key TIDAK PERNAH
+        # ditampilkan utuh kembali (di chat, log, status).
+        if first_word in ("/kiekey",):
+            new_key = (raw_cmd[len(first_word):].strip() if raw_cmd else '')
+            if not new_key:
+                send_message(token, chat_id,
+                             "Tambah API Key Kie.ai\nPakai: `/kiekey <key>`\nKey Kie.ai — daftar di kie.ai (menu API Keys). Key tidak akan ditampilkan lagi setelah disimpan.")
+                return
+            ok, msg, data = _operator_post('/api/operator/kie_key_add', {'kie_key': new_key})
+            send_message(token, chat_id, f"API Key Kie.ai\n{_tg_escape(msg)}")
+            return
+        if first_word in ("/kiekeys",):
+            ok, msg, data = _operator_post('/api/operator/kie_key_list', {})
+            if not ok or not isinstance(data, dict):
+                send_message(token, chat_id, f"API Key Kie.ai\n{_tg_escape(msg)}")
+                return
+            keys = data.get('keys') or []
+            if not keys:
+                send_message(token, chat_id,
+                             "API Key Kie.ai\nBelum ada key. Tambah dengan `/kiekey <key>` (daftar di kie.ai, menu API Keys).")
+                return
+            lines = ["API Key Kie.ai", "━━━━━━━━━━━━━━━━━━━━━━"]
+            for k in keys:
+                flag = " (nonaktif — pernah ditolak)" if k.get('disabled') else ""
+                bal = k.get('balance')
+                if isinstance(bal, (int, float)):
+                    bal_txt = f" — {bal:g} kredit"
+                elif not k.get('disabled'):
+                    bal_txt = " — saldo tidak terbaca"
+                else:
+                    bal_txt = ""
+                # masked dari panel ('••••' + 4 karakter terakhir, hanya
+                # bullet + alfanumerik) — aman di dalam backtick, tanpa escape
+                # (escape di dalam backtick justru menampilkan backslash).
+                lines.append(f"• `{k.get('index', '?')}. {k.get('masked', '')}`{flag}{bal_txt}")
+            if any(k.get('disabled') for k in keys):
+                lines.append("Key nonaktif aktif lagi otomatis 24 jam setelah ditolak.")
+            lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+            lines.append("Hapus: `/kiedel <4-karakter-terakhir>` atau `/kiedel <nomor>`.")
+            send_message(token, chat_id, "\n".join(lines))
+            return
+        if first_word in ("/kiedel",):
+            ident = (raw_cmd[len(first_word):].strip() if raw_cmd else '')
+            if not ident:
+                send_message(token, chat_id,
+                             "Hapus API Key Kie.ai\nPakai: `/kiedel <4-karakter-terakhir>` atau `/kiedel <nomor>` — lihat daftar di `/kiekeys`.")
+                return
+            ok, msg, data = _operator_post('/api/operator/kie_key_del', {'ident': ident})
+            send_message(token, chat_id, f"API Key Kie.ai\n{_tg_escape(msg)}")
             return
 
         # --- 🧠 NLU BAHASA MANUSIA: pesan bebas (bukan perintah "/" dan

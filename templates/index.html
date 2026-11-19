@@ -2150,6 +2150,24 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
 
       <div class="card card-tight" style="margin-bottom:16px">
         <div class="card-head">
+          <span class="card-title">🎵 API KEY KIE.AI (Zumo — Lagu Orisinal)</span>
+        </div>
+        <div class="card-body">
+          <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:12px">Dipakai untuk generate lagu orisinal (12 kredit/generate, 2 varian) untuk Playlist Zumo. Daftar/ambil key di <a href="https://kie.ai" target="_blank" style="color:var(--accent)">kie.ai</a> → API Keys. Bisa simpan <b style="color:var(--text)">lebih dari 1 key</b>: bila satu key bermasalah (tidak valid / kredit habis), sistem otomatis pindah ke key berikutnya. Key hanya ditampilkan dalam bentuk masked (****abcd) dan juga bisa dikelola lewat Telegram (<code>/kiekey</code>, <code>/kiekeys</code>, <code>/kiedel</code>). JANGAN pernah menempel key di chat biasa.</div>
+          <div style="display:flex;gap:8px;align-items:flex-end">
+            <div class="fg" style="flex:1;min-width:0;margin-bottom:0">
+              <label class="fl">API Key Baru</label>
+              <input type="password" id="kie-key-new" placeholder="Tempel API key Kie.ai di sini" autocomplete="off">
+            </div>
+            <button class="btn btn-p btn-inline" style="flex:none" onclick="kieKeyAdd()">＋ Tambah Key</button>
+          </div>
+          <div id="kie-keys-list" style="margin-top:8px;font-size:13px"></div>
+          <div id="zumo-status-line" style="margin-top:8px;font-size:12px;color:var(--muted)"></div>
+        </div>
+      </div>
+
+      <div class="card card-tight" style="margin-bottom:16px">
+        <div class="card-head">
           <span class="card-title">🔑 GOOGLE OAUTH 2.0 API</span>
           <span id="api-badge" class="pill p-muted">Mengecek...</span>
         </div>
@@ -2640,7 +2658,7 @@ function go(id, el) {
 
   document.getElementById('tb-title').textContent = PAGE_META[id].t;
   document.getElementById('tb-sub').textContent = PAGE_META[id].s;
-  if (id === 'settings') { loadTgConfig(); checkApiStatus(); loadAppVersion(); loadPixabayKeys(); loadBackupStatus(); loadOperatorStatus(); }
+  if (id === 'settings') { loadTgConfig(); checkApiStatus(); loadAppVersion(); loadPixabayKeys(); loadKieKeys(); loadBackupStatus(); loadOperatorStatus(); }
   if (id === 'dashboard') fetchAnalytics();
   if (id === 'calendar') loadCalendar();
   if (id === 'batch') {
@@ -4515,6 +4533,43 @@ async function pixabayKeyDel(ident) {
   fetch('/api/playlist_pixabay_key_del', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ident }) })
     .then(r => r.json()).then(d => {
       if (d.status === 'success') { toast(d.message, 'success'); loadPixabayKeys(); }
+      else toast(d.message || 'Gagal menghapus key', 'error');
+    }).catch(() => toast('Gagal menghubungi server', 'error'));
+}
+
+function loadKieKeys() {
+  fetch('/api/zumo_kie_keys').then(r => r.json()).then(d => renderKieKeys(d.keys || [])).catch(() => {});
+  fetch('/api/zumo_status').then(r => r.json()).then(d => {
+    const el = document.getElementById('zumo-status-line');
+    if (!el) return;
+    el.textContent = (d.balance_note || '') + ' Model aktif: ' + (d.model || '-');
+  }).catch(() => {});
+}
+function renderKieKeys(keys) {
+  const box = document.getElementById('kie-keys-list');
+  if (!box) return;
+  if (!keys.length) { box.innerHTML = '<div style="color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada key — tambah satu di atas (atau lewat Telegram: /kiekey &lt;key&gt;).</div>'; return; }
+  box.innerHTML = keys.map(k =>
+    `<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-top:1px solid var(--border)">
+      <span style="font-family:var(--font-m)">${k.index}. <b>${escapeHtml(k.masked)}</b>${k.disabled ? ' <span class="pill p-red" title="Aktif lagi otomatis 24 jam setelah ditolak">nonaktif</span>' : ''}</span>
+      <button type="button" class="btn btn-g btn-sm" style="margin-left:auto" onclick="kieKeyDel('${escapeHtml(k.last4 || String(k.index))}')">Hapus</button>
+    </div>`).join('');
+}
+function kieKeyAdd() {
+  const inp = document.getElementById('kie-key-new');
+  const key = (inp.value || '').trim();
+  if (!key) return toast('Tempel API key dulu', 'error');
+  fetch('/api/zumo_kie_key_add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) })
+    .then(r => r.json()).then(d => {
+      if (d.status === 'success') { toast(d.message, 'success'); inp.value = ''; loadKieKeys(); }
+      else toast(d.message || 'Gagal menambah key', 'error');
+    }).catch(() => toast('Gagal menghubungi server', 'error'));
+}
+async function kieKeyDel(ident) {
+  if (!(await themedConfirm('Hapus API key Kie.ai ini?', { title: 'Hapus API Key Kie.ai', okLabel: 'Ya, Hapus' }))) return;
+  fetch('/api/zumo_kie_key_del', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ident }) })
+    .then(r => r.json()).then(d => {
+      if (d.status === 'success') { toast(d.message, 'success'); loadKieKeys(); }
       else toast(d.message || 'Gagal menghapus key', 'error');
     }).catch(() => toast('Gagal menghubungi server', 'error'));
 }

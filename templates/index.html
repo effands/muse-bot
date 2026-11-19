@@ -1293,7 +1293,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         <div class="card-head">
           <div>
             <span class="card-title">MONETISASI &amp; BEBAN</span>
-            <div class="card-sub">Estimasi penghasilan dari RPM per channel (diisi di Settings) — YouTube Data API tidak memberi data penghasilan.</div>
+            <div class="card-sub">Estimasi penghasilan dari RPM per channel (otomatis via Analytics) — YouTube Data API tidak memberi data penghasilan.</div>
           </div>
           <button type="button" class="btn btn-sm" onclick="fetchMonetization()" title="Muat ulang data monetisasi">↻ Refresh</button>
         </div>
@@ -2768,8 +2768,11 @@ function renderChannelsGrid() {
     if(g) g.innerHTML = `<div style="text-align:center;padding:30px;color:var(--muted);font-family:var(--font-m);font-size:12px;border:1px dashed var(--border);border-radius:var(--r)">Belum ada channel. Klik "Tautkan Channel Baru".</div>`;
     return;
   }
-  // Satu channel = satu baris kompak: thumbnail + nama + pill, field RPM,
-  // dan semua kontrol (autopilot / jeda / monetisasi / stop / hapus) di satu tempat.
+  // Satu channel = satu baris kompak: thumbnail + nama + pill, dan semua
+  // kontrol (autopilot / jeda / monetisasi / stop / hapus) di satu tempat.
+  // 🔥 v1.2.33: RPM dihapus dari kartu (input, tombol Simpan, pill) — RPM
+  // tetap hidup di backend + kartu Monetisasi; tiga tombol aksi kanan
+  // (Sudah Monet? / Stop Antrean / Hapus Total) jadi ikon saja + title.
   if(g) g.innerHTML = channels.map(c => `
     <div class="ch-connected" style="padding:10px 12px;flex-wrap:wrap">
       <div class="ch-con-av">${c.thumbnail ? `<img src="${escapeHtml(c.thumbnail)}">` : escapeHtml(c.name[0])}</div>
@@ -2781,14 +2784,8 @@ function renderChannelsGrid() {
           ${c.oauth_client_id ? `<span class="pill p-muted" title="Client OAuth utama channel ini">Project ${_oauthProjectOfClientId(c.oauth_client_id)}</span>` : ''}
           ${c.autopilot === 'auto' ? `<span class="pill p-cyan">🤖 Full-Auto</span>` : `<span class="pill p-muted">👀 Approval</span>`}
           ${c.monetized ? `<span class="pill p-green">💰 Monetisasi Aktif</span>` : ''}
-          <span class="pill p-muted" title="RPM: USD per 1000 views — dipakai hanya untuk estimasi penghasilan di kartu Monetisasi">💵 RPM $${c.rpm_usd != null ? c.rpm_usd : '—'}</span>
           ${c.analytics_scope === false ? `<span class="pill p-yellow" title="Token channel ini belum punya scope YouTube Analytics — taut ulang channel (kode device baru) untuk mengaktifkan subs per video & RPM otomatis">⚠️ Perlu taut ulang (Analytics)</span>` : ''}
         </div>
-      </div>
-      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-        <span style="font-size:11px;color:var(--muted)">RPM $</span>
-        <input type="number" min="0" max="100" step="0.1" placeholder="isi utk estimasi" value="${c.rpm_usd != null ? c.rpm_usd : ''}" id="rpm-${c.yt_id}" style="width:90px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:11px" title="RPM: USD per 1000 views. Kosongkan untuk mematikan estimasi channel ini.">
-        <button class="btn btn-g btn-sm" onclick="setChannelRpm('${c.yt_id}')" title="Simpan RPM channel ini">Simpan RPM</button>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
         ${c.autopilot === 'auto'
@@ -2798,10 +2795,10 @@ function renderChannelsGrid() {
           ? `<button class="btn btn-g btn-sm" onclick="toggleChannelPause('${c.yt_id}', false)" style="border-color:var(--green); color:var(--green);">▶️ Lanjutkan</button>`
           : `<button class="btn btn-g btn-sm" onclick="toggleChannelPause('${c.yt_id}', true)" style="border-color:var(--yellow); color:var(--yellow);">⏸️ Jeda</button>`}
         ${c.monetized
-          ? `<button class="btn btn-g btn-sm" onclick="toggleChannelMonetized('${c.yt_id}', false)" style="border-color:var(--green); color:var(--green);" title="Penanda manual — klik untuk menghapus tanda sudah monetisasi">💰 Monetisasi Aktif</button>`
-          : `<button class="btn btn-g btn-sm" onclick="toggleChannelMonetized('${c.yt_id}', true)" style="border-color:var(--muted); color:var(--muted);" title="Tandai channel ini SUDAH monetisasi (penanda manual — tidak ada data API untuk status monetisasi)">💰 Sudah Monet?</button>`}
-        <button class="btn btn-g btn-sm" onclick="stopChannelTasks('${c.yt_id}')" style="border-color:var(--accent); color:var(--accent);">🛑 Stop Antrean</button>
-        <button class="btn btn-danger btn-sm" onclick="deleteChannel('${c.yt_id}')">🗑 Hapus Total</button>
+          ? `<button class="btn btn-g btn-sm" onclick="toggleChannelMonetized('${c.yt_id}', false)" style="border-color:var(--green); color:var(--green);" title="Penanda manual — klik untuk menghapus tanda sudah monetisasi">💰</button>`
+          : `<button class="btn btn-g btn-sm" onclick="toggleChannelMonetized('${c.yt_id}', true)" style="border-color:var(--muted); color:var(--muted);" title="Sudah Monet?">💰</button>`}
+        <button class="btn btn-g btn-sm" onclick="stopChannelTasks('${c.yt_id}')" style="border-color:var(--accent); color:var(--accent);" title="Stop Antrean">🛑</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteChannel('${c.yt_id}')" title="Hapus Total">🗑</button>
       </div>
     </div>`).join('');
 }

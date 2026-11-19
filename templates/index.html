@@ -1134,7 +1134,14 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
       <a href="/hub" class="btn btn-g" style="text-decoration: none; display: flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 11px; margin-right: 4px;">
          <span style="font-size: 14px;">🏠</span> Hub
       </a>
-      
+
+      <!-- TOMBOL UPDATE — v1.2.35: alur SAMA dengan tombol Update & Restart di
+           Settings (startUpdate -> modal upd-confirm-modal -> doUpdate ->
+           POST /api/update_panel). Tombol di Settings tetap ada. -->
+      <button id="upd-header-btn" class="btn btn-g" onclick="startUpdate()" style="padding: 6px 12px; font-size: 11px; margin-right: 4px; display: flex; align-items: center; gap: 6px; cursor: pointer;" title="Update panel ke versi terbaru dari GitHub">
+         <span style="font-size: 14px;">⬆️</span> Update
+      </button>
+
       <div class="notif-container" style="position:relative;">
         <button id="notif-btn" class="btn btn-g" style="padding:8px; border-radius:50%; width:36px; height:36px; position:relative;" onclick="toggleNotif()">
            🔔
@@ -3221,7 +3228,9 @@ document.addEventListener('keydown', _tcOnKeydown);
 function startUpdate() { openUpdConfirm(); }
 function doUpdate() {
   const btn = document.getElementById('upd-run-btn');
+  const hbtn = document.getElementById('upd-header-btn'); // 🔥 v1.2.35: tombol Update di header ikut nonaktif selama update
   if (btn) btn.disabled = true;
+  if (hbtn) hbtn.disabled = true;
   _updSetStatus('⏳ Memulai update…');
   fetch('/api/update_panel', { method: 'POST' }).then(r => r.json().then(d => ({ http: r.status, body: d }))).then(({ http, body }) => {
     if (body.status === 'success') {
@@ -3234,8 +3243,9 @@ function doUpdate() {
       _updSetStatus('❌ ' + (body.message || 'Update ditolak.'), 'var(--red)');
       toast(body.message || 'Update ditolak.', 'error');
       if (btn) btn.disabled = false;
+      if (hbtn) hbtn.disabled = false;
     }
-  }).catch(() => { _updSetStatus('❌ Tidak bisa menghubungi panel.', 'var(--red)'); if (btn) btn.disabled = false; });
+  }).catch(() => { _updSetStatus('❌ Tidak bisa menghubungi panel.', 'var(--red)'); if (btn) btn.disabled = false; if (hbtn) hbtn.disabled = false; });
 }
 
 // ────────────────────────────────────────────────────────

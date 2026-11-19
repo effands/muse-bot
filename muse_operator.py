@@ -1125,6 +1125,15 @@ def _fmt_snapshot_time(at_str):
         return None
 
 
+# 🔥 v1.3.1: pemisah antar channel di laporan Telegram. Garis tipis box
+# drawing (U+2500) — dipertahankan sanitizer v1.2.21 (bukan emoji), jadi
+# tampil utuh di Telegram. Panjang 22 = sejajar pemisah tebal "━━━"
+# antar seksi. Dipakai _build_channel_stats_section (laporan harian),
+# build_detail_report (/laporan detail) dan build_channel_list_report
+# (/channel) supaya blok tiap channel tidak menempel jadi satu tembok teks.
+TG_CHANNEL_DIVIDER = "──────────────────────"
+
+
 def _build_channel_stats_section(channels):
     """Bagian 'Views & Subscriber per Channel' untuk laporan pagi/sore/
     on-demand. Kembalikan (lines, new_snapshot): new_snapshot =
@@ -1156,11 +1165,13 @@ def _build_channel_stats_section(channels):
     for st in stats[:8]:
         name = st["name"]
         if not st["ok"]:
-            blocks.append([f"• *{_tg_escape(name)}* — data belum bisa diambil 😌 (coba lagi di laporan berikutnya)"])
+            blocks.append([f"*{_tg_escape(name)}*",
+                           "  Data belum bisa diambil (coba lagi di laporan berikutnya)"])
             continue
         views, subs, videos = int(st["views"]), int(st["subs"] or 0), int(st["videos"] or 0)
         new_snapshot[st["yt_id"]] = {"views": views, "subs": subs, "videos": videos, "at": now_label}
-        block = [f"• *{_tg_escape(name)}* — 👁️ {_fmt_num(views)} views • 👥 {_fmt_num(subs)} subs (📹 {_fmt_num(videos)} video)"]
+        block = [f"*{_tg_escape(name)}*",
+                 f"  Views: {_fmt_num(views)} • Subs: {_fmt_num(subs)} • Video: {_fmt_num(videos)}"]
         base = prev.get(st["yt_id"]) or {}
         subs_per_day = hours_per_day = None
         eta_hint = None
@@ -1232,8 +1243,13 @@ def _build_channel_stats_section(channels):
             parts.insert(1, f"{n_ready} channel siap diajukan")
         lines.append("💰 *Monetisasi:* " + " • ".join(parts))
         lines.append("_Segera siap = syarat yang paling kurang sudah ≥50%._")
-    for block in blocks:
-        lines.extend(block)
+    if blocks:
+        lines.append("")
+        for i, block in enumerate(blocks):
+            if i > 0:
+                lines.append(TG_CHANNEL_DIVIDER)
+                lines.append("")
+            lines.extend(block)
     if len(stats) > 8:
         lines.append(f"_...dan {len(stats) - 8} channel lainnya (cek di panel)._")
     if any_missing_baseline:
@@ -2408,7 +2424,7 @@ def build_channel_list_report():
         key = (t.get('finished_date') or (t.get('publish_date') or '')[:10] or '')
         if yt not in latest_by_yt or key > latest_by_yt[yt][0]:
             latest_by_yt[yt] = (key, t)
-    for ch, st in zip(channels, stats):
+    for i, (ch, st) in enumerate(zip(channels, stats)):
         name = _channel_display_name(ch)
         mode = 'Full-Auto 🤖' if _autopilot_of(ch) == 'auto' else 'Approval 👀'
         paused = " ⏸️ *DIJEDA*" if ch.get('paused') else ""
@@ -2436,6 +2452,8 @@ def build_channel_list_report():
             stock_txt = f"sisa ~{int(stock)} hari"
         lines.append(f"   📦 Stok: {stock_txt} (terakhir: `{_tg_escape(last)}`)")
         lines.append(f"   {_channel_monet_compact(st, cache, history, today_str)}")
+        if i < len(channels) - 1:
+            lines.append(TG_CHANNEL_DIVIDER)
         lines.append("")
     lines.append(f"Total: `{len(channels)} channel` tertaut.")
     return "\n".join(lines)
@@ -2481,7 +2499,7 @@ def build_detail_report():
     lines.append("━━━━━━━━━━━━━━━━━━━━━━")
     if not channels:
         lines.append("📺 Belum ada channel terhubung.")
-    for st in stats[:8]:
+    for i, st in enumerate(stats[:8]):
         name = st["name"]
         lines.append(f"📺 *{_tg_escape(name)}*")
         if not st["ok"]:
@@ -2506,10 +2524,12 @@ def build_detail_report():
                      key=lambda v: v.get("views", 0), reverse=True)[:3]
         if top:
             lines.append("   🏆 *3 video terbaik:*")
-            for i, v in enumerate(top, 1):
-                lines.append(f"      {i}. {_video_meta(v.get('title'), v.get('views'), _fmt_date_short(v.get('pub')), v.get('dur'))}")
+            for j, v in enumerate(top, 1):
+                lines.append(f"      {j}. {_video_meta(v.get('title'), v.get('views'), _fmt_date_short(v.get('pub')), v.get('dur'))}")
         else:
             lines.append("   🏆 Video terbaik: belum ada data (video tayang belum tercatat di statistik).")
+        if i < len(stats[:8]) - 1:
+            lines.append(TG_CHANNEL_DIVIDER)
         lines.append("")
     if len(stats) > 8:
         lines.append(f"_...dan {len(stats) - 8} channel lainnya (cek di panel)._")

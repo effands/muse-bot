@@ -96,10 +96,12 @@ def load_monitor_state():
         data.setdefault("make_drafts", {})
         data.setdefault("channel_report_snapshot", {})
         data.setdefault("channel_stats_cache", {})
+        data.setdefault("approval_reminders", {})
         return data
     except Exception:
         return {"daily_report_date": "", "evening_report_date": "", "alerts": {},
-                "make_drafts": {}, "channel_report_snapshot": {}, "channel_stats_cache": {}}
+                "make_drafts": {}, "channel_report_snapshot": {}, "channel_stats_cache": {},
+                "approval_reminders": {}}
 
 def save_monitor_state(state):
     """Simpan state secara atomik (temp + replace) agar tidak rusak saat restart."""
@@ -194,6 +196,167 @@ def _parse_make_date(raw):
 
 def _wib_now():
     return datetime.now(ZoneInfo("Asia/Jakarta"))
+
+# Nama bulan Indonesia (lengkap + singkatan) untuk parse tanggal alami.
+_ID_MONTH_NAMES = {
+    'januari': 1, 'jan': 1, 'februari': 2, 'feb': 2, 'maret': 3, 'mar': 3,
+    'april': 4, 'apr': 4, 'mei': 5, 'juni': 6, 'jun': 6, 'juli': 7, 'jul': 7,
+    'agustus': 8, 'agu': 8, 'september': 9, 'sep': 9, 'oktober': 10, 'okt': 10,
+    'november': 11, 'nov': 11, 'desember': 12, 'des': 12,
+}
+_ID_MONTH_DISPLAY = ['', 'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+                     'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember']
+
+
+def _parse_natural_datetime(text, now=None):
+    """Bahasa Indonesia sehari-hari → ('YYYY-MM-DD HH:MM', catatan) atau
+    (None, None) bila tidak dikenali. Paham: 'hari ini jam 9' → hari ini
+    09:00; 'jam 9' → hari ini 09:00 bila masih di depan, besok 09:00 bila
+    sudah lewat; 'jam 9 malam' → 21:00; 'jam 7 sore' → 19:00; 'jam 12
+    siang' → 12:00; 'jam 12 malam' → 00:00 (hari berikut); 'jam 9.30' /
+    'jam 9:30' / 'jam 9 lewat 30' → 09:30; 'besok jam 9' / 'lusa jam 9';
+    'tanggal 20 jam 19' / '20 Nov jam 19:00' / '20 November jam 7 malam';
+    format kaku 'YYYY-MM-DD HH:MM' tetap jalan (via _parse_make_date).
+    'jam 9' tanpa keterangan = pagi (09:00) — catatan selalu menyebut
+    tafsiran ini supaya Bos bisa mengoreksi di ringkasan konfirmasi.
+    Jam yang sudah lewat hari ini digeser ke besok (catatan menyebutnya);
+    tanggal eksplisit yang sudah lewat digeser ke bulan/tahun berikut.
+    Nama hari (Senin, Selasa, ...) BELUM didukung — bila disebut,
+    kembalikan (None, None) supaya pemanggil bertanya ulang (jangan
+    tebak jadi hari ini)."""
+    now = now or _wib_now()
+    raw = (text or '').strip()
+    if not raw:
+        return None, None
+    # 1. Format kaku dulu (tetap jalan, tanpa catatan tafsiran).
+    strict = _parse_make_date(raw)
+    if strict:
+        return strict, None
+    low = raw.lower()
+    # Nama hari (Senin, Selasa, ...) BELUM didukung — jangan pura-pura
+    # paham: kembalikan None supaya pemanggil bertanya ulang.
+    if re.search(r'\b(senin|selasa|rabu|kamis|jumat|jum\'at|sabtu|minggu|ahad)\b', low):
+        return None, None
+    # 2. Tanggal: eksplisit ("tanggal 20", "20 November") atau relatif
+    # ("hari ini" / "besok" / "lusa" — yang disebut paling awal menang).
+    exp_day = exp_month = None
+    m = re.search(r'(?:tanggal|tgl)\s+(\d{1,2})(?:\s+([a-z]+))?', low)
+    if m:
+        exp_day = int(m.group(1))
+        if m.group(2) and m.group(2) in _ID_MONTH_NAMES:
+            exp_month = _ID_MONTH_NAMES[m.group(2)]
+    else:
+        m = re.search(
+            r'\b(\d{1,2})\s+(januari|februari|maret|april|mei|juni|juli|agustus|'
+            r'september|oktober|november|desember|jan|feb|mar|apr|jun|jul|agu|'
+            r'sep|okt|nov|des)\b', low)
+        if m:
+            exp_day = int(m.group(1))
+            exp_month = _ID_MONTH_NAMES[m.group(2)]
+    offset = 0
+    day_word = None
+    if exp_day is None:
+        hits = []
+        for w, off in (('hari ini', 0), ('besok', 1), ('lusa', 2)):
+            idx = low.find(w)
+            if idx >= 0:
+                hits.append((idx, w, off))
+        if hits:
+            hits.sort()
+            _, day_word, offset = hits[0]
+    # 3. Jam: "jam 9", "jam 9.30", "jam 9:30", "jam 9 lewat 30",
+    # "jam 7 malam", "pukul 9".
+    hour = minute = None
+    mer = ''
+    lewat = False
+    minute_given = False
+    orig_hour = None
+    m = re.search(r'(?:jam|pukul)\s+(\d{1,2})\s+lewat\s+(\d{1,2})\b', low)
+    if m:
+        orig_hour = int(m.group(1))
+        hour, minute, lewat = orig_hour, int(m.group(2)), True
+    else:
+        m = re.search(
+            r'(?:jam|pukul)\s+(\d{1,2})(?:[:.](\d{2}))?'
+            r'(?:\s*(pagi|siang|sore|malam|petang))?', low)
+        if m:
+            orig_hour = int(m.group(1))
+            hour = orig_hour
+            minute_given = m.group(2) is not None
+            minute = int(m.group(2) or 0)
+            mer = m.group(3) or ''
+    if hour is None:
+        return None, None
+    if hour > 23 or minute > 59:
+        return None, None
+    # Konversi meridiem. 'jam 12 malam' → 00:00; 'jam 12 siang' → 12:00.
+    if mer == 'pagi':
+        if hour == 12:
+            hour = 0
+    elif mer == 'siang':
+        if hour < 12:
+            hour += 12
+    elif mer in ('sore', 'petang'):
+        if hour < 12:
+            hour += 12
+    elif mer == 'malam':
+        if hour == 12:
+            hour = 0
+        elif hour < 12:
+            hour += 12
+    # 4. Tanggal final + geser bila sudah lewat.
+    bumped = ''
+    if exp_day is not None:
+        month = exp_month if exp_month is not None else now.month
+        try:
+            dt = now.replace(year=now.year, month=month, day=exp_day, hour=hour,
+                             minute=minute, second=0, microsecond=0)
+        except ValueError:
+            return None, None
+        if dt <= now:
+            if exp_month is not None:
+                try:
+                    dt = dt.replace(year=dt.year + 1)
+                except ValueError:
+                    return None, None
+                bumped = ' — sudah lewat, saya pakai tahun depan'
+            else:
+                nm = dt.month + 1
+                ny = dt.year + (1 if nm > 12 else 0)
+                nm = nm if nm <= 12 else 1
+                try:
+                    dt = dt.replace(year=ny, month=nm)
+                except ValueError:
+                    return None, None
+                bumped = ' — sudah lewat, saya pakai bulan depan'
+    else:
+        dt = (now + timedelta(days=offset)).replace(
+            hour=hour, minute=minute, second=0, microsecond=0)
+        if dt <= now:
+            dt = dt + timedelta(days=1)
+            bumped = ' — hari ini sudah lewat, jadi besok'
+    # 5. Catatan tafsiran untuk ringkasan konfirmasi.
+    if exp_day is not None:
+        day_txt = f"{dt.day} {_ID_MONTH_DISPLAY[dt.month]}"
+        if dt.year != now.year:
+            day_txt += f" {dt.year}"
+    elif offset == 2:
+        day_txt = 'lusa'
+    elif offset == 1:
+        day_txt = 'besok'
+    else:
+        day_txt = 'hari ini'
+    if lewat:
+        time_txt = f"jam {orig_hour} lewat {minute}"
+    elif minute_given:
+        time_txt = f"jam {orig_hour}:{minute:02d}" + (f" {mer}" if mer else '')
+    else:
+        time_txt = f"jam {orig_hour}" + (f" {mer}" if mer else '')
+    note = f"{day_txt} {time_txt}"
+    if not mer and not lewat and hour < 12:
+        note += f" — saya artikan jam {orig_hour} pagi"
+    note += bumped
+    return dt.strftime('%Y-%m-%d %H:%M'), note
 
 def _wib_today_str():
     return _wib_now().strftime("%Y-%m-%d")
@@ -329,6 +492,10 @@ def build_status_report():
         f"💾 *Sisa Disk:* `{stats['disk_free_gb']} GB`",
         "━━━━━━━━━━━━━━━━━━━━━━",
     ]
+    # 🔥 v1.2.16: pending approval PALING ATAS — yang paling butuh keputusan Bos.
+    _pend_lines = _pending_approval_lines(active, channels, limit=5)
+    if _pend_lines:
+        lines += _pend_lines + ["━━━━━━━━━━━━━━━━━━━━━━"]
     # --- Channel + kuota ---
     if not channels:
         lines.append("📺 *Channel:* Belum ada yang terhubung nih Bos 😅")
@@ -948,6 +1115,11 @@ def build_daily_report(kind="pagi"):
     if len(active) > 5:
         lines.append(f"_...dan {len(active) - 5} task lainnya._")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    # 🔥 v1.2.16: bagian Menunggu Approval di laporan pagi/sore/ondemand.
+    _pend_lines = _pending_approval_lines(active, channels, limit=5)
+    if _pend_lines:
+        lines += _pend_lines
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
     if not channels:
         lines.append("📺 *Channel:* Belum ada channel terhubung.")
     else:
@@ -1492,6 +1664,151 @@ def _task_schedule_label(t, ch_paused=False):
     if 'Selesai' in st or 'Sukses' in st or 'Tayang' in st:
         return "✅ Selesai"
     return "🗓️ Terjadwal"
+
+# ==========================================
+# 🔥 v1.2.16 — PENGINGAT APPROVAL (user sering lupa tekan ✅)
+# ==========================================
+def _pending_approval_tasks(active):
+    """Task aktif yang masih menunggu approval Bos, urut jam tayang
+    (yang tanpa jadwal di belakang). Kembalikan [(dt, task), ...]."""
+    far = datetime(2999, 1, 1, tzinfo=ZoneInfo("Asia/Jakarta"))
+    out = []
+    for t in active or []:
+        if t.get('approval') != 'pending':
+            continue
+        if 'Ditolak' in str(t.get('status', '')):
+            continue
+        dt = _parse_schedule_dt(t.get('time') or (t.get('blueprint') or {}).get('publish_date') or '')
+        out.append((dt, t))
+    out.sort(key=lambda x: (x[0] is None, x[0] or far))
+    return out
+
+def _task_channel_name(t, channels):
+    """Nama channel pemilik task (cocokkan yt_id); 'Channel tidak dikenal'
+    bila tidak ketemu — jangan ditebak."""
+    yt = t.get('yt_id') or (t.get('blueprint') or {}).get('yt_id') or ''
+    for ch in channels or []:
+        if ch.get('yt_id') == yt:
+            return _channel_display_name(ch)
+    return 'Channel tidak dikenal'
+
+def _fmt_approval_delta(dt, now):
+    """Jarak jam tayang dari sekarang, bahasa sehari-hari:
+    'tinggal 30 menit lagi' / 'sudah lewat 2 jam 15 menit'."""
+    secs = int((dt - now).total_seconds())
+    if secs >= 0:
+        mins = secs // 60
+        if mins < 1:
+            return "tayang sebentar lagi"
+        if mins < 60:
+            return f"tinggal {mins} menit lagi"
+        h, m = divmod(mins, 60)
+        return f"tinggal {h} jam {m} menit lagi" if m else f"tinggal {h} jam lagi"
+    mins = (-secs) // 60
+    if mins < 1:
+        return "baru saja lewat"
+    if mins < 60:
+        return f"sudah lewat {mins} menit"
+    h, m = divmod(mins, 60)
+    return f"sudah lewat {h} jam {m} menit" if m else f"sudah lewat {h} jam"
+
+def _fmt_schedule_id(dt):
+    """'Rabu, 19 Nov 2026 09:00' (WIB)."""
+    return f"{_DAYS_ID[dt.weekday()]}, {dt.day} {_MONTHS_ID[dt.month - 1]} {dt.year} {dt.strftime('%H:%M')}"
+
+def _pending_approval_lines(active, channels, limit=5):
+    """Baris '⏳ Menunggu Approval (N)' untuk /status & laporan harian.
+    [] bila tidak ada yang pending — pemanggil tidak menampilkan bagian."""
+    pend = _pending_approval_tasks(active)
+    if not pend:
+        return []
+    now = _wib_now()
+    lines = [f"⏳ *Menunggu Approval ({len(pend)}):*"]
+    for dt, t in pend[:limit]:
+        name = _task_channel_name(t, channels)
+        title = (t.get('title') or '?')[:40]
+        if dt is None:
+            sched = "jadwal: —"
+        else:
+            sched = f"tayang {dt.strftime('%d %b %H:%M')} ({_fmt_approval_delta(dt, now)})"
+        lines.append(f"• *{_tg_escape(name)}* — {_tg_escape(title)} — {sched}")
+    if len(pend) > limit:
+        lines.append(f"_...dan {len(pend) - limit} video lainnya — ketuk ✅ di pesan preview-nya ya Bos._")
+    return lines
+
+def _approval_reminder_check(token, chat_id):
+    """Ingatkan Bos bila ada task yang jam tayangnya sudah ≤60 menit lagi
+    ('soon') atau SUDAH LEWAT ('late') tapi approval-nya masih pending.
+    Tiap ambang dikirim SEKALI per task (maks 2 pengingat per task) —
+    dicatat di monitor_state['approval_reminders'] dan dicatat HANYA
+    setelah pesan benar-benar terkirim (res 'ok'), supaya bila Telegram
+    down pengingat diulang di tick berikutnya, bukan hilang. Tombol ✅/❌
+    memakai callback_data yang SAMA PERSIS dengan pesan preview
+    (approve:<id> / reject:<id>) sehingga ketukannya bekerja identik.
+    Dipanggil dari watchdog_background_loop tiap 5 menit."""
+    tasks_data = load_tasks()
+    active = tasks_data.get('active', [])
+    channels = load_channels()
+    pend = _pending_approval_tasks(active)
+    if not pend:
+        return
+    state = load_monitor_state()
+    reminded = state.setdefault('approval_reminders', {})
+    # Bersihkan catatan task yang sudah tidak pending lagi (disetujui /
+    # ditolak / render) supaya state tidak membesar tanpa batas.
+    pend_ids = set()
+    for _dt, t in pend:
+        try:
+            pend_ids.add(str(int(t.get('id'))))
+        except Exception:
+            pass
+    for key in list(reminded):
+        if key not in pend_ids:
+            reminded.pop(key, None)
+    now = _wib_now()
+    sent = 0
+    for dt, t in pend:
+        if sent >= 5:  # pengaman: maks 5 pesan pengingat per tick
+            break
+        if dt is None:
+            continue
+        try:
+            tid = int(t.get('id'))
+        except Exception:
+            continue
+        mins_left = (dt - now).total_seconds() / 60.0
+        if mins_left > 60:
+            continue
+        threshold = 'late' if mins_left <= 0 else 'soon'
+        done = reminded.setdefault(str(tid), [])
+        if threshold in done:
+            continue
+        name = _task_channel_name(t, channels)
+        title = (t.get('title') or '?')[:60]
+        when = f"{_fmt_schedule_id(dt)} — {_fmt_approval_delta(dt, now)}"
+        if threshold == 'late':
+            head = "⏰ *Bos, video ini kelewat jam tayangnya tapi masih nunggu approval nih* 😅"
+        else:
+            head = "⏰ *Bos, video ini bentar lagi tayang tapi masih nunggu approval nih* 😅"
+        text = (
+            f"{head}\n\n"
+            f"📺 Channel: *{_tg_escape(name)}*\n"
+            f"🎬 Judul: *{_tg_escape(title)}*\n"
+            f"📅 Jadwal tayang: *{when}*\n\n"
+            "Ketuk ✅ di pesan ini untuk menyetujui, atau ❌ kalau mau ditolak — "
+            "videonya belum jalan sebelum Bos setujui 🙏"
+        )
+        res = send_message(token, chat_id, text, reply_markup={"inline_keyboard": [[
+            {"text": "✅ Setujui", "callback_data": f"approve:{tid}"},
+            {"text": "❌ Tolak", "callback_data": f"reject:{tid}"},
+        ]]})
+        if res and res.get('ok'):
+            done.append(threshold)
+            save_monitor_state(state)
+            sent += 1
+            print(f"⏰ Pengingat approval terkirim: task #{tid} ({threshold}).", flush=True)
+        else:
+            print(f"⏰ Pengingat approval GAGAL terkirim: task #{tid} ({threshold}) — coba lagi tick berikutnya.", flush=True)
 
 def build_schedule_report(days=7):
     """Jadwal publish N hari ke depan per channel (untuk /jadwal).
@@ -2523,6 +2840,9 @@ def _make_short_summary(d):
             bg_label = "acak dari galeri"
         else:
             bg_label = "gradien otomatis"
+    sched_txt = d.get('publish_date', '')
+    if d.get('publish_note'):
+        sched_txt += f" ({d['publish_note']})"
     return (
         "📋 *Cek dulu ya Bos, ini Shorts yang mau dibuat:* 🎬\n"
         f"📺 Channel: *{_tg_escape(d.get('channel_name', ''))}*\n"
@@ -2531,7 +2851,7 @@ def _make_short_summary(d):
         f"📝 Naskah: {_tg_escape(script[:200])}{'…' if len(script) > 200 else ''}\n"
         f"📣 CTA: {_tg_escape(d.get('cta', 'Subscribe'))}\n"
         f"⏱️ Durasi: `{d.get('duration_sec', 30)} detik`\n"
-        f"🗓️ Jadwal: `{_tg_escape(d.get('publish_date', ''))}`\n"
+        f"🗓️ Jadwal: `{_tg_escape(sched_txt)}`\n"
         f"🖼️ Background: `{_tg_escape(bg_label)}`\n"
         f"🎵 Musik: `{_tg_escape(d.get('bgm_file') if d.get('bgm_file') not in (None, '', 'none') else 'musik bawaan')}`\n"
         "🎙️ Suara: `voiceover + musik` (suara membacakan naskah)\n\n"
@@ -2539,11 +2859,14 @@ def _make_short_summary(d):
     )
 
 def _make_long_summary(d):
+    start_txt = d.get('start_date', '')
+    if d.get('start_note'):
+        start_txt += f" ({d['start_note']})"
     lines = [
         "📋 *Cek dulu ya Bos, ini batch video long yang mau dibuat:* 🎥",
         f"📺 Channel: *{_tg_escape(d.get('channel_name', ''))}*",
         f"🎬 Jumlah: `{d.get('count', 1)} video` (durasi tiap video diacak 60–80 menit)",
-        f"🗓️ Mulai: `{_tg_escape(d.get('start_date', ''))}` • Jeda antar video: `{d.get('interval_days', 1)} hari`",
+        f"🗓️ Mulai: `{_tg_escape(start_txt)}` • Jeda antar video: `{d.get('interval_days', 1)} hari`",
         "📝 Judul:",
     ]
     titles = d.get('titles') or []
@@ -2571,6 +2894,10 @@ def _send_make_created_message(token, chat_id, kind, d, resp):
             lines.append(f"🎬 Background: video ({(resp or {}).get('bg_video_count', 0)} klip, disambung)")
         elif (resp or {}).get('bg_auto'):
             lines.append("🖼️ Background: gradien otomatis (galeri masih kosong — upload gambar sendiri di panel bila mau yang lebih bagus)")
+        # 🧹 v1.2.13: bila judul/deskripsi dibersihkan dari emoji/simbol,
+        # sebutkan sekali (jujur ke Bos) — judul final dari server.
+        if (resp or {}).get('title_cleaned'):
+            lines.append(f"🧹 Judul/deskripsi dibersihkan dari emoji/simbol agar aman di-upload: '{_tg_escape((resp or {}).get('title') or d.get('title', ''))}'")
     else:
         tasks = (resp or {}).get('tasks') or []
         lines = [
@@ -2579,6 +2906,9 @@ def _send_make_created_message(token, chat_id, kind, d, resp):
         ]
         for t in tasks[:7]:
             lines.append(f"• {_tg_escape(t.get('title', ''))} — `{_tg_escape(t.get('publish_date', ''))}`")
+        # 🧹 v1.2.13: sebutkan sekali bila ada judul/deskripsi yang dibersihkan.
+        if (resp or {}).get('title_cleaned'):
+            lines.append("🧹 Judul/deskripsi dibersihkan dari emoji/simbol agar aman di-upload.")
     if approval == 'pending':
         lines += ["",
                   "⏳ *Video menunggu persetujuan Bos dulu ya* — preview-nya bakal masuk ke chat ini, "
@@ -2644,7 +2974,7 @@ def _make_ask_step(token, chat_id, draft):
                                               if c.get('yt_id') == d.get('yt_id')), None))
             send_message(token, chat_id,
                          "🗓️ *Langkah 5: Jadwal tayang*\n\nKetik `publish` untuk langsung tayang setelah render (tanpa jadwal), "
-                         "atau kirim tanggal & jam (format `YYYY-MM-DD HH:MM`, mis. `2026-11-20 19:00`).\n"
+                         "atau tulis jamnya — mis. `hari ini jam 9`, `besok jam 7 malam`, atau `2026-11-20 19:00`.\n"
                          f"Ketik `lewati` atau `default` untuk jadwal berikutnya (`{nxt}`).")
         elif step == 'confirm':
             send_message(token, chat_id, _make_playlist_summary(d),
@@ -2672,7 +3002,7 @@ def _make_ask_step(token, chat_id, draft):
             nxt = _next_slot_for_channel(next((c for c in load_channels()
                                               if c.get('yt_id') == d.get('yt_id')), None))
             send_message(token, chat_id,
-                         "🗓️ *Langkah 6 dari 7: Jadwal tayang*\n\nKirim tanggal & jam (format `YYYY-MM-DD HH:MM`, mis. `2026-11-20 19:00`).\n"
+                         "🗓️ *Langkah 6 dari 7: Jadwal tayang*\n\nTulis jamnya — mis. `hari ini jam 9`, `besok jam 7 malam`, atau `2026-11-20 19:00`.\n"
                          f"Ketik `lewati` untuk jadwal berikutnya (`{nxt}`).")
         elif step == 'bg':
             opts = d.get('bg_options') or []
@@ -2725,7 +3055,7 @@ def _make_ask_step(token, chat_id, draft):
                          "Ketik `lewati` untuk pakai judul dari Bank Judul channel.")
         elif step == 'start':
             send_message(token, chat_id,
-                         "🗓️ *Langkah 3 dari 4: Tanggal mulai*\n\nKirim tanggal & jam video pertama (format `YYYY-MM-DD HH:MM`, mis. `2026-11-20 19:00`).\n"
+                         "🗓️ *Langkah 3 dari 4: Tanggal mulai*\n\nTulis tanggal & jam video pertama — mis. `hari ini jam 9`, `besok jam 7 malam`, atau `2026-11-20 19:00`.\n"
                          "Tanggal saja juga boleh (jam jadi 19:00). Ketik `lewati` untuk besok jam 19:00.")
         elif step == 'interval':
             send_message(token, chat_id,
@@ -2832,9 +3162,11 @@ def _start_make_long(token, chat_id, raw_cmd):
         except Exception:
             pass
         if len(parts) > 1 and parts[1]:
-            parsed = _parse_make_date(parts[1])
+            parsed, note = _parse_natural_datetime(parts[1])
             if parsed:
                 pre['start_date'] = parsed
+                if note:
+                    pre['start_note'] = note
         try:
             if len(parts) > 2 and parts[2]:
                 pre['interval_days'] = max(0.5, min(30.0, float(parts[2])))
@@ -2952,10 +3284,15 @@ def _playlist_publish_now_date():
 
 def _playlist_schedule_text(d):
     """Teks jadwal untuk ringkasan/pesan sukses: kalimat 'Langsung tayang'
-    bila publish_now, else tanggal terjadwal."""
+    bila publish_now, else tanggal terjadwal + catatan tafsiran waktu
+    alami bila ada (mis. '2026-11-19 09:00 (hari ini jam 9)')."""
     if d.get('publish_now'):
         return "Langsung tayang setelah render (tanpa jadwal)"
-    return d.get('publish_date') or ''
+    pd = d.get('publish_date') or ''
+    note = d.get('publish_note')
+    if pd and note:
+        return f"{pd} ({note})"
+    return pd
 
 
 def _make_playlist_summary(d):
@@ -3343,13 +3680,19 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
             if low in ('lewati', '-', 'skip'):
                 ch = next((c for c in load_channels() if c.get('yt_id') == d.get('yt_id')), None)
                 d['publish_date'] = _next_slot_for_channel(ch)
+                d.pop('publish_note', None)
             else:
-                parsed = _parse_make_date(ans)
+                parsed, note = _parse_natural_datetime(ans)
                 if not parsed:
                     send_message(token, chat_id,
-                                 "😅 *Format tanggalnya salah Bos* — pakai `YYYY-MM-DD HH:MM` (mis. `2026-11-20 19:00`).")
+                                 "😅 *Waktu tayangnya belum saya pahami Bos* — coba `hari ini jam 9`, `besok jam 7 malam`, "
+                                 "atau `2026-11-20 19:00` (atau `lewati` untuk jadwal berikutnya).")
                     return True
                 d['publish_date'] = parsed
+                if note:
+                    d['publish_note'] = note
+                else:
+                    d.pop('publish_note', None)
             draft['step'] = 'bg'
         elif step == 'bg':
             opts = d.get('bg_options') or []
@@ -3457,18 +3800,24 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
                 # besok 19:00 — jadi JANGAN dikosongkan.)
                 d['publish_date'] = _playlist_publish_now_date()
                 d['publish_now'] = True
+                d.pop('publish_note', None)
             elif low in ('lewati', '-', 'skip', 'default'):
                 ch = next((c for c in load_channels() if c.get('yt_id') == d.get('yt_id')), None)
                 d['publish_date'] = _next_slot_for_channel(ch)
                 d.pop('publish_now', None)
+                d.pop('publish_note', None)
             else:
-                parsed = _parse_make_date(ans)
+                parsed, note = _parse_natural_datetime(ans)
                 if not parsed:
                     send_message(token, chat_id,
-                                 "😅 *Format tanggalnya salah Bos* — pakai `YYYY-MM-DD HH:MM` (mis. `2026-11-20 19:00`), "
-                                 "ketik `publish` untuk langsung tayang, atau `default`.")
+                                 "😅 *Waktu tayangnya belum saya pahami Bos* — coba `hari ini jam 9`, `besok jam 7 malam`, "
+                                 "`2026-11-20 19:00`, ketik `publish` untuk langsung tayang, atau `default`.")
                     return True
                 d['publish_date'] = parsed
+                if note:
+                    d['publish_note'] = note
+                else:
+                    d.pop('publish_note', None)
                 d.pop('publish_now', None)
             draft['step'] = _playlist_next_step(d)
         elif step == 'confirm':
@@ -3512,12 +3861,17 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
             if not d.get('start_date'):
                 d['start_date'] = (_wib_now() + timedelta(days=1)).strftime('%Y-%m-%d 19:00')
         else:
-            parsed = _parse_make_date(ans)
+            parsed, note = _parse_natural_datetime(ans)
             if not parsed:
                 send_message(token, chat_id,
-                             "😅 *Format tanggalnya salah Bos* — pakai `YYYY-MM-DD HH:MM` (mis. `2026-11-20 19:00`).")
+                             "😅 *Tanggal mulainya belum saya pahami Bos* — coba `hari ini jam 9`, `besok jam 7 malam`, "
+                             "atau `2026-11-20 19:00` (atau `lewati` untuk besok jam 19:00).")
                 return True
             d['start_date'] = parsed
+            if note:
+                d['start_note'] = note
+            else:
+                d.pop('start_note', None)
         draft['step'] = _long_next_step(d)
     elif step == 'interval':
         if low in ('lewati', '-', 'skip'):
@@ -3862,21 +4216,27 @@ def _nlu_channel_occupied(yt_id):
     return occ
 
 
-def _nlu_compute_shorts_schedule(ch, count, anchor_time, publish_time):
+def _nlu_compute_shorts_schedule(ch, count, anchor_time, publish_time, first_dt=None):
     """Hitung jadwal Shorts aturan jeda 6 jam (2026-11-19): video pertama
     di slot kosong berikutnya (jam eksplisit/jangkar hari/jam tetap
     channel), video berikutnya = sebelumnya + 6 jam — boleh lewat tengah
-    malam ke hari berikutnya. Bila slot hasil hitungan sudah terisi,
-    geser +6 jam sampai kosong. Kembalikan list 'YYYY-MM-DD HH:MM'."""
-    first = anchor_time or publish_time
+    malam ke hari berikutnya. first_dt ('YYYY-MM-DD HH:MM' lengkap dari
+    perintah alami, mis. 'besok jam 9') MENANG atas anchor/publish_time.
+    Bila slot hasil hitungan sudah terisi, geser +6 jam sampai kosong.
+    Kembalikan list 'YYYY-MM-DD HH:MM'."""
+    first = first_dt or anchor_time or publish_time
     dt = None
     if first:
         try:
-            hh, mm = str(first).split(':')
-            dt = _wib_now().replace(hour=int(hh), minute=int(mm),
-                                    second=0, microsecond=0)
-            if dt <= _wib_now():
-                dt = dt + timedelta(days=1)
+            if len(str(first)) > 5:  # 'YYYY-MM-DD HH:MM' lengkap — pakai apa adanya
+                dt = datetime.strptime(str(first), '%Y-%m-%d %H:%M').replace(
+                    tzinfo=ZoneInfo("Asia/Jakarta"))
+            else:
+                hh, mm = str(first).split(':')
+                dt = _wib_now().replace(hour=int(hh), minute=int(mm),
+                                        second=0, microsecond=0)
+                if dt <= _wib_now():
+                    dt = dt + timedelta(days=1)
         except Exception:
             dt = None
     if dt is None:
@@ -3912,7 +4272,8 @@ def _nlu_build_shorts_schedules(slots):
     for ch in load_channels():
         if ch.get('yt_id') in (slots.get('channels') or []):
             sched[ch.get('yt_id')] = _nlu_compute_shorts_schedule(
-                ch, count, slots.get('anchor_time'), slots.get('publish_time'))
+                ch, count, slots.get('anchor_time'), slots.get('publish_time'),
+                slots.get('publish_date'))
     return sched
 
 
@@ -4260,6 +4621,15 @@ def parse_natural_command(text, channels):
         if tm:
             slots['publish_time'] = tm
             conf += 5
+        # Waktu lengkap alami ("hari ini jam 9", "besok jam 7 malam",
+        # "20 November jam 19") → slot publish_date + catatan tafsiran.
+        # Dipakai sebagai jadwal pertama (menang atas jam saja).
+        ndt, nnote = _parse_natural_datetime(text)
+        if ndt:
+            slots['publish_date'] = ndt
+            if nnote:
+                slots['publish_note'] = nnote
+            conf += 5
         # Jangkar waktu harian (buat_short saja): jam eksplisit menang,
         # kalau tidak ada → kata hari (pagi 07:00, sore 17:00, dst.).
         # Jadwal 6 jam dihitung di _nlu_advance sebelum konfirmasi.
@@ -4290,6 +4660,14 @@ def parse_natural_command(text, channels):
             slots['publish_now'] = True
             conf += 5
             clean = re.sub(r'\bpublish\b', ' ', clean)
+        # Waktu lengkap alami ("hari ini jam 9", "besok jam 7 malam") →
+        # slot publish_date + catatan tafsiran (bila tidak publish).
+        ndt, nnote = _parse_natural_datetime(text)
+        if ndt and not slots.get('publish_now'):
+            slots['publish_date'] = ndt
+            if nnote:
+                slots['publish_note'] = nnote
+            conf += 5
         dur = _nlu_extract_playlist_duration(text)
         if dur and dur[0] is not None:
             slots['duration_min_sec'], slots['duration_max_sec'], slots['duration_note'] = dur
@@ -4385,25 +4763,32 @@ def _nlu_describe(pending):
                 f"CTA {slots.get('cta') or 'Subscribe'}, "
                 f"durasi {slots.get('duration_sec') or 30} detik, untuk {ch}")
         # Jadwal hasil hitungan (aturan jeda 6 jam) WAJIB disebut supaya
-        # Bos bisa mengoreksi sebelum dieksekusi.
+        # Bos bisa mengoreksi sebelum dieksekusi — plus catatan tafsiran
+        # waktu alami bila ada (mis. 'hari ini jam 9').
         sched = slots.get('schedule') or {}
+        note_suffix = f" ({slots['publish_note']})" if slots.get('publish_note') else ''
         if sched:
             if len(sched) == 1:
-                return base + f" — jadwal: {_nlu_format_schedule(next(iter(sched.values())))}"
+                return base + f" — jadwal: {_nlu_format_schedule(next(iter(sched.values())))}" + note_suffix
             lines = []
             for yt in (slots.get('channels') or []):
                 if yt in sched:
                     nm = _nlu_channel_names([yt])
                     lines.append(f"• {nm[0] if nm else yt}: {_nlu_format_schedule(sched[yt])}")
             if lines:
-                return base + " — jadwal:\n" + "\n".join(lines)
+                return base + " — jadwal:\n" + "\n".join(lines) + note_suffix
             return base
         if slots.get('publish_time'):
             return base + f", jam tayang {slots['publish_time']}"
         return base
     if intent == 'buat_long':
         niche = _NICHES.get(slots.get('niche') or 'sleep', 'Deep Sleep Music')
-        return (f"buatkan {slots.get('count') or 1} video long tema {niche} untuk {ch}")
+        base = (f"buatkan {slots.get('count') or 1} video long tema {niche} untuk {ch}")
+        if slots.get('publish_date'):
+            base += f" — mulai {slots['publish_date']}"
+            if slots.get('publish_note'):
+                base += f" ({slots['publish_note']})"
+        return base
     if intent == 'buat_playlist':
         th = slots.get('playlist_theme') or 'musik (tanya dulu)'
         px = slots.get('pixabay_theme') or 'auto (dari tema musik)'
@@ -4414,6 +4799,10 @@ def _nlu_describe(pending):
             base += ", pilih otomatis (views tertinggi)"
         if slots.get('publish_now'):
             base += ", langsung tayang (publish, tanpa jadwal)"
+        elif slots.get('publish_date'):
+            base += f", jadwal {slots['publish_date']}"
+            if slots.get('publish_note'):
+                base += f" ({slots['publish_note']})"
         return base
     if intent == 'perpanjang_jadwal':
         return f"perpanjang jadwal {slots.get('days') or 30} hari untuk {ch}"
@@ -4634,7 +5023,7 @@ def _execute_nlu_create_shorts(token, chat_id, pending):
         # Galeri kosong TIDAK lagi menolak: panel membuat gradien otomatis
         # sekali (helper _create_shorts_muse_task); pesan "galeri kosong"
         # hanya muncul bila pembuatan gradien itu sendiri gagal (dari panel).
-        base_slot = _nlu_publish_slot(slots.get('publish_time'), ch)
+        base_slot = slots.get('publish_date') or _nlu_publish_slot(slots.get('publish_time'), ch)
         # Jadwal 6 jam yang sudah dihitung sebelum konfirmasi (slots['schedule'])
         # dipakai apa adanya; bila tidak ada (pending lama), fallback ke
         # perilaku lama (base_slot + 1 hari per video).
@@ -4690,6 +5079,9 @@ def _execute_nlu_create_shorts(token, chat_id, pending):
                         "upload gambar sendiri di panel bila mau yang lebih bagus.")
             else:
                 note = ""
+            # 🧹 v1.2.13: sebutkan sekali bila judul/deskripsi dibersihkan.
+            if (last_resp or {}).get('title_cleaned'):
+                note += " 🧹 Judul/deskripsi dibersihkan dari emoji/simbol agar aman di-upload."
             sched_note = (f" Jadwal: {_nlu_format_schedule(made_dates)}."
                           if made_dates else "")
             lines.append(f"✅ *{name}* — {made} Short dibuat, {stat}.{sched_note}{note}")
@@ -4707,7 +5099,7 @@ def _execute_nlu_create_long(token, chat_id, pending):
         send_message(token, chat_id, "Channelnya nggak ketemu Bos 😅 — coba sebut nama channelnya lagi.")
         return
     count = slots.get('count') or 1
-    start_date = _nlu_publish_slot(slots.get('publish_time'), ch)
+    start_date = slots.get('publish_date') or _nlu_publish_slot(slots.get('publish_time'), ch)
     ok, info, resp = request_create_long({
         "yt_id": ch.get('yt_id'), "count": count, "titles": [],
         "start_date": start_date, "interval_days": 1,
@@ -4834,6 +5226,12 @@ def _execute_nlu_create_playlist(token, chat_id, pending):
     if slots.get('publish_now'):
         data['publish_now'] = True
         data['publish_date'] = _playlist_publish_now_date()
+    elif slots.get('publish_date'):
+        # Jadwal lengkap dari perintah alami — masuk ke draft supaya
+        # langkah jadwal dilewati dan ringkasan menyebut tafsirannya.
+        data['publish_date'] = slots['publish_date']
+        if slots.get('publish_note'):
+            data['publish_note'] = slots['publish_note']
     if not data.get('theme'):
         data.pop('theme', None)
     draft = {"kind": "playlist", "step": _playlist_next_step(data), "data": data}
@@ -5658,6 +6056,12 @@ def watchdog_background_loop(token, chat_id):
                             _mark_alerted(state, key)
             except Exception as e:
                 print(f"Watchdog stock-alert exception: {e}", flush=True)
+            # 🔥 v1.2.16: pengingat approval — video yang jam tayangnya
+            # sudah dekat / sudah lewat tapi masih menunggu ✅ Bos.
+            try:
+                _approval_reminder_check(token, chat_id)
+            except Exception as e:
+                print(f"Watchdog approval-reminder exception: {e}", flush=True)
         except Exception as e:
             print(f"Watchdog exception: {e}", flush=True)
             time.sleep(60)

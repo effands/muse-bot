@@ -649,6 +649,30 @@ input[type=color] { padding:0; height:36px; width:100%; border:1px solid var(--b
 .cancel-btn { background:rgba(58,84,112,.12); color:var(--muted); border:1px solid var(--border); padding:6px 12px; border-radius:7px; font-family:var(--font-d); font-size:11px; font-weight:700; cursor:pointer; transition:.15s; }
 .cancel-btn:hover { border-color:var(--accent2); color:var(--accent2); }
 
+/* ════════ TASK MONITOR — kerapian baris tugas & tabel history (v1.2.15) ════════ */
+/* Cluster aksi: satu grup rata tengah, tombol ikon seragam 36×36, gap 8px. */
+.task-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; margin-left:auto; }
+.task-actions .stop-btn { height:36px; display:inline-flex; align-items:center; justify-content:center; padding:0 14px; line-height:1; }
+.task-actions .stop-btn.icon-btn { width:36px; padding:0; font-size:14px; }
+.task-actions .stop-btn.appr { background:rgba(0,232,135,.12); color:var(--green); border-color:rgba(0,232,135,.4); }
+.task-actions .stop-btn.appr:hover { background:var(--green); color:#fff; border-color:transparent; }
+.task-actions .stop-btn.rej { background:rgba(255,77,109,.1); color:var(--accent2); border-color:rgba(255,77,109,.25); }
+.task-actions .stop-btn.rej:hover { background:var(--accent2); color:#fff; }
+.task-actions .cancel-btn { height:36px; display:inline-flex; align-items:center; }
+/* Tabel history: lebar kolom tetap — ID tidak pernah meluber ke judul. */
+.hist-tbl { table-layout:fixed; }
+.hist-tbl th, .hist-tbl td { padding-right:12px; overflow-wrap:break-word; }
+.hist-tbl th:last-child, .hist-tbl td:last-child { padding-right:0; }
+.hist-tbl th:nth-child(3) { width:30%; }
+.hist-tbl td { overflow:hidden; }
+.hist-tbl tbody tr:hover td { background:rgba(255,255,255,.025); }
+.hist-id { font-family:var(--font-m); font-size:10px; color:var(--muted); white-space:nowrap; }
+.hist-title { display:block; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.hist-dur { display:block; margin-top:3px; font-family:var(--font-m); font-size:10px; color:var(--green); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.hist-sub { display:block; margin-top:3px; font-size:10px; color:var(--text2); font-weight:400; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.hist-tbl .hist-del { width:36px; height:36px; padding:0; display:inline-flex; align-items:center; justify-content:center; }
+@media (max-width:640px) { .hist-tbl .hist-id-cell { display:none; } }
+
 .ch-connected { display:flex; align-items:center; gap:12px; background:rgba(0,232,135,.04); border:1px solid rgba(0,232,135,.15); border-radius:var(--r); padding:14px; margin-bottom:12px; }
 .ch-con-av { width:42px; height:42px; border-radius:50%; overflow:hidden; flex-shrink:0; background:linear-gradient(135deg,var(--accent2),var(--accent3)); display:grid; place-items:center; font-size:18px; font-weight:800; color:#fff; }
 .ch-con-av img { width:100%; height:100%; object-fit:cover; }
@@ -1404,8 +1428,8 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
       <div class="card">
         <div class="card-head"><span class="card-title">🗂 HISTORY</span><button class="btn btn-g btn-sm" onclick="clearHistory()" title="Hapus seluruh riwayat (task aktif tidak ikut terhapus)">🧹 Hapus Semua Riwayat</button></div>
         <div class="card-body" style="padding:0 16px 8px;overflow-x:auto">
-          <table class="tbl" style="min-width:500px">
-            <thead><tr><th style="width:8%">ID</th><th style="width:48%">JUDUL</th><th>STATUS</th><th style="width:6%">AKSI</th></tr></thead>
+          <table class="tbl hist-tbl" style="min-width:500px">
+            <thead><tr><th class="hist-id-cell" style="width:92px">ID</th><th>JUDUL</th><th>STATUS</th><th style="width:56px">AKSI</th></tr></thead>
             <tbody id="historyTbl"><tr><td colspan="4" style="text-align:center;padding:16px;color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada history.</td></tr></tbody>
           </table>
         </div>
@@ -5146,15 +5170,15 @@ function renderTasks() {
       if (!qCollapsed[key]) {
         let rows = items.map(t => {
           if (isUnknown) {
-            return `<div class="task-row"><div class="task-icon">📤</div><div class="task-info"><div class="task-name">${escapeHtml(t.judul || 'Task')}</div><div class="task-meta">${escapeHtml(t.jadwal || '')}</div></div><span class="pill p-yellow" style="flex-shrink:0">${escapeHtml(t.status || 'Menunggu')}</span><button class="cancel-btn" onclick="cancelBrowserTask(${JSON.stringify(t.id)})">Batalkan</button></div>`;
+            return `<div class="task-row"><div class="task-icon">📤</div><div class="task-info"><div class="task-name">${escapeHtml(t.judul || 'Task')}</div><div class="task-meta">${escapeHtml(t.jadwal || '')}</div></div><span class="task-actions"><span class="pill p-yellow" style="flex-shrink:0">${escapeHtml(t.status || 'Menunggu')}</span><button class="cancel-btn" title="Batalkan" onclick="cancelBrowserTask(${JSON.stringify(t.id)})">Batalkan</button></span></div>`;
           } else {
             const _st = String(t.status || '');
             const _pend = t.approval === 'pending';
             const _qw = _pend || _st.includes('Queue') || _st.includes('Menunggu reset') || _st.includes('Cooldown') || _st.includes('Ditunda') || _st.includes('Dijadwalkan');
             // 🔥 FASE 2: task pending menampilkan tombol approval langsung di panel
             // (cadangan kalau operator Telegram mati).
-            const _apprBtns = _pend ? `<button class="stop-btn" style="background:var(--green);color:#fff" title="Setujui & masuk antrean" onclick="approveTask(${Number(t.id)})">✅</button><button class="stop-btn" style="background:var(--accent2);color:#fff" title="Tolak (tidak dieksekusi)" onclick="rejectTask(${Number(t.id)})">❌</button>` : '';
-            return `<div class="task-row${_qw ? ' q-waiting' : ''}"><div class="task-icon">${_qw ? '⏳' : '⚙️'}</div><div class="task-info"><div class="task-name">${escapeHtml(t.title || 'Task')}</div><div class="task-meta">${escapeHtml(t.time || '')}${t.thumb_status ? `<span style="color:var(--text2);font-size:10px"> · 🖼️ ${escapeHtml(t.thumb_status)}</span>` : ''}</div></div><span class="pill ${_qw ? 'p-yellow' : 'p-cyan'}" style="flex-shrink:0;max-width:200px;white-space:normal;line-height:1.3">${escapeHtml(t.status || '—')}</span>${_apprBtns}<button class="stop-btn" onclick="stopTask(${Number(t.id)})">Stop</button></div>`;
+            const _apprBtns = _pend ? `<button class="stop-btn icon-btn appr" title="Setujui" onclick="approveTask(${Number(t.id)})">✅</button><button class="stop-btn icon-btn rej" title="Tolak" onclick="rejectTask(${Number(t.id)})">❌</button>` : '';
+            return `<div class="task-row${_qw ? ' q-waiting' : ''}"><div class="task-icon">${_qw ? '⏳' : '⚙️'}</div><div class="task-info"><div class="task-name">${escapeHtml(t.title || 'Task')}</div><div class="task-meta">${escapeHtml(t.time || '')}${t.thumb_status ? `<span style="color:var(--text2);font-size:10px"> · 🖼️ ${escapeHtml(t.thumb_status)}</span>` : ''}</div></div><span class="pill ${_qw ? 'p-yellow' : 'p-cyan'}" style="flex-shrink:0;max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(t.status || '—')}">${escapeHtml(t.status || '—')}</span><span class="task-actions">${_apprBtns}<button class="stop-btn" title="Hentikan" onclick="stopTask(${Number(t.id)})">Stop</button></span></div>`;
           }
         }).join('');
         html += `<div class="q-group-content">${rows}</div>`;
@@ -5208,12 +5232,12 @@ function renderTasks() {
           
           let rows = pageItems.map(t => {
             const c = String(t.status).includes('❌') ? 'var(--accent2)' : 'var(--muted)';
-            const renderInfo = t.render_info ? `<br><span style="font-size:10px;color:var(--green);font-family:var(--font-m)">${escapeHtml(t.render_info)}</span>` : '';
+            const renderInfo = t.render_info ? `<span class="hist-dur">${escapeHtml(t.render_info)}</span>` : '';
             const vid = histVideoId(t);
             const ytLink = vid ? ` <a href="https://youtu.be/${vid}" target="_blank" rel="noopener" style="color:var(--accent)">▶ Lihat</a>` : '';
             const dl = histDownloadUrl(t);
             const dlLink = dl ? ` <a href="${escapeHtml(dl)}" target="_blank" rel="noopener" style="color:var(--accent)">[Download]</a>` : '';
-            return `<tr><td><span style="font-family:var(--font-m);font-size:10px;color:var(--muted)">#${t.id}</span></td><td style="font-weight:700">${escapeHtml(t.title || '—')}${renderInfo}</td><td style="color:${c};font-weight:600">${escapeHtml(histCleanStatus(t))}${ytLink}${dlLink}${t.thumb_status ? `<br><span style="font-size:10px;color:var(--text2);font-weight:400">🖼️ ${escapeHtml(t.thumb_status)}</span>` : ''}</td><td style="text-align:center"><button class="btn btn-g btn-sm" style="padding:2px 8px" title="Hapus entri ini dari riwayat" onclick="deleteHistoryItem(${t.id})">🗑️</button></td></tr>`;
+            return `<tr><td class="hist-id-cell"><span class="hist-id" title="#${t.id}">#${String(t.id).slice(-6)}</span></td><td><span class="hist-title" title="${escapeHtml(t.title || '—')}">${escapeHtml(t.title || '—')}</span>${renderInfo}</td><td style="color:${c};font-weight:600">${escapeHtml(histCleanStatus(t))}${ytLink}${dlLink}${t.thumb_status ? `<span class="hist-sub">🖼️ ${escapeHtml(t.thumb_status)}</span>` : ''}</td><td style="text-align:center"><button class="btn btn-g btn-sm hist-del" title="Hapus entri ini dari riwayat" onclick="deleteHistoryItem(${t.id})">🗑️</button></td></tr>`;
           }).join('');
           
           html += `<tbody>${rows}</tbody>`;

@@ -1,4 +1,5 @@
 import os, sys, time, queue, threading, subprocess, random, json, shutil, math, re, hmac, wave
+import unicodedata
 import html as _html
 import numpy as np
 import cv2, librosa, imageio
@@ -3423,8 +3424,32 @@ def background_worker():
             if channel_data:
                 creds_list = channel_data.get('creds_list', [channel_data.get('creds_json')])
                 upload_berhasil = False
-                pesan_error = "Token API Tidak Ditemukan/Kosong!" 
-                
+                pesan_error = "Token API Tidak Ditemukan/Kosong!"
+                # 🧹 v1.2.13: JARING PENGAMAN TERAKHIR — bersihkan judul /
+                # deskripsi / tag tepat sebelum videos.insert, supaya teks
+                # kotor dari jalur mana pun (termasuk task lama yang dibuat
+                # sebelum v1.2.13) tidak pernah sampai ke YouTube. Nilai
+                # bersih ditulis balik ke blueprint + task aktif supaya
+                # panel/riwayat/notifikasi konsisten.
+                _up_title = _clean_upload_text(task.get('title', ''), max_len=100,
+                                               fallback='Video Tanpa Judul')
+                _up_desc = _clean_upload_text(task.get('description', ''), max_len=5000,
+                                              fallback=_up_title)
+                if _up_title != (task.get('title') or '') or _up_desc != (task.get('description') or ''):
+                    task['title'] = _up_title
+                    task['description'] = _up_desc
+                    task['title_cleaned'] = True
+                    try:
+                        with db_lock:
+                            for _d in active_tasks:
+                                if _d.get('id') == task_id:
+                                    _d['title'] = _up_title
+                                    _d['title_cleaned'] = True
+                                    break
+                        save_tasks_db()
+                    except Exception:
+                        pass
+
                 # 🔥 FASE 5 + audit F8: retry upload dengan backoff eksponensial.
                 # 1 percobaan + maks 2x retry (jeda 10 dtk lalu 20 dtk), TANPA
                 # render ulang — file final_video dipakai lagi tiap percobaan.
@@ -3448,24 +3473,17 @@ def background_worker():
                             try: sch_obj = datetime.strptime(task['publish_date'], "%Y-%m-%d %H:%M")
                             except: raise Exception("Format tanggal salah")
                         
-                            raw_tags = task.get('tags', '')
-                            clean_tags = raw_tags.replace('#', '').replace('<', '').replace('>', '').replace('"', '')
-                            temp_tags = [t.strip() for t in clean_tags.split(',') if t.strip()]
-                        
-                            tags_list = []
-                            char_count = 0
-                            for t in temp_tags:
-                                if char_count + len(t) <= 400:
-                                    tags_list.append(t)
-                                    char_count += len(t) + 1
-                        
-                            if not tags_list: tags_list = ['wavepush']
-                        
+                            # 🧹 v1.2.13: tag dibersihkan di sini (jaring
+                            # pengaman terakhir) — '#' dibuang seperti
+                            # perilaku lama, tiap tag maks 30 karakter,
+                            # total maks 400 karakter.
+                            tags_list = _clean_upload_tags(task.get('tags', '')) or ['wavepush']
+
                             # 🔥 FASE 8: Shorts Muse masuk kategori Hiburan (24)
                             # seperti Clipper; video panjang tetap Musik (10).
                             _cat = '24' if task.get('kind') == SHORTS_MUSE_KIND else '10'
                             body = {
-                                'snippet': {'title': task['title'], 'description': task.get('description', ''), 'tags': tags_list, 'categoryId': _cat},
+                                'snippet': {'title': _up_title, 'description': _up_desc, 'tags': tags_list, 'categoryId': _cat},
                                 'status': {'privacyStatus': task.get('privacy', 'public')}
                             }
                             if sch_obj > datetime.now():
@@ -3585,7 +3603,14 @@ def background_worker():
                             if task.get('kind') == PLAYLIST_KIND:
                                 _pl_note = (f"\n🎵 Musik Playlist"
                                             f" (referensi: {(task.get('playlist_ref_title') or '')[:50]})")
-                            notify_event("✅", task['title'], f"{_shorts_pfx}udah tayang di YouTube {ch_name} 😎\nJadwal tayang: {task['publish_date']}" + (f"\n🎙️ Suara: {_audio_note}" if _audio_note else "") + _pl_note)
+                            # 🧹 v1.2.13: bila judul/deskripsi dibersihkan dan
+                            # belum disebut di preview approval (mode Full-Auto
+                            # tidak ada preview), sebutkan sekali di sini.
+                            _clean_note = ""
+                            if task.get('title_cleaned') and not task.get('cleaned_noted'):
+                                _clean_note = (f"\n🧹 Judul/deskripsi dibersihkan dari emoji/simbol "
+                                               f"agar aman di-upload: '{task['title']}'")
+                            notify_event("✅", task['title'], f"{_shorts_pfx}udah tayang di YouTube {ch_name} 😎\nJadwal tayang: {task['publish_date']}" + (f"\n🎙️ Suara: {_audio_note}" if _audio_note else "") + _pl_note + _clean_note)
                             upload_berhasil = True
                             # 🔥 FASE 5: 1 sukses → reset hitungan gagal beruntun.
                             _record_channel_success(yt_id)
@@ -7635,6 +7660,21 @@ def _send_approval_previews(batch_id, channel_name, previews):
             f"⏱️ Durasi target: `{pv.get('duration_label') or str(pv.get('duration', '-')) + ' jam'}` • 🔒 `{_tg_escape(pv.get('privacy', 'public'))}`\n"
             f"📝 Deskripsi: {desc_txt}"
         )
+        # 🧹 v1.2.13: bila judul/deskripsi dibersihkan dari emoji/simbol,
+        # sebutkan sekali di preview (jujur ke Bos) — dan tandai task
+        # supaya pesan "Tayang!" nanti tidak mengulanginya lagi.
+        if pv.get('title_cleaned'):
+            text += (f"\n\n🧹 Judul/deskripsi dibersihkan dari emoji/simbol agar aman "
+                     f"di-upload: '{_tg_escape(pv.get('title', ''))}'")
+            try:
+                with db_lock:
+                    for _t in active_tasks:
+                        if _t.get('id') == pv.get('id'):
+                            _t['cleaned_noted'] = True
+                            break
+                save_tasks_db()
+            except Exception:
+                pass
         if idx == 0:
             text += "\n\n_Kalau oke tinggal pencet Setujui, saya yang eksekusi 💪_"
         markup = {"inline_keyboard": [
@@ -7679,6 +7719,144 @@ def _stagger_publish_date(v_date_str, yt_id):
         dt = dt + timedelta(hours=1)
         v_date_str = dt.strftime('%Y-%m-%d %H:%M')
     return v_date_str
+
+# ============================================================
+# 🧹 v1.2.13: BERSIHKAN emoji & simbol dari judul/deskripsi/tag
+# sebelum upload ke YouTube. User + temannya pernah gagal upload
+# karena karakter "kotor" (emoji, kadang simbol biasa) di judul /
+# deskripsi. Aturan: hanya teks polos yang lolos — huruf (termasuk
+# beraksen), angka, spasi, baris baru, dan tanda baca aman
+# . , ! ? - : ; ' " ( ) [ ] & % + / @ #. Sisanya dibuang; tanda
+# baca fancy dinormalisasi ke ASCII bila wajar ("…"→"...",
+# "—"/"–"→"-", "‘’"→"'", "“”"→'"'). Dipakai di SEMUA jalur
+# pembuatan teks upload + jaring pengaman terakhir tepat sebelum
+# videos.insert.
+# ============================================================
+_CLEAN_FANCY_MAP = {
+    '\u2018': "'", '\u2019': "'", '\u201a': "'", '\u201b': "'",
+    '\u201c': '"', '\u201d': '"', '\u201e': '"', '\u201f': '"',
+    '\u00ab': '"', '\u00bb': '"', '\u2039': "'", '\u203a': "'",
+    '\u2013': '-', '\u2014': '-', '\u2212': '-',
+    '\u2026': '...', '\u2044': '/',
+}
+_CLEAN_SPACE_CHARS = frozenset(
+    ['\u00a0', '\u1680', '\u2000', '\u2001', '\u2002', '\u2003',
+     '\u2004', '\u2005', '\u2006', '\u2007', '\u2008', '\u2009',
+     '\u200a', '\u202f', '\u205f', '\u3000'])
+_CLEAN_SAFE_PUNCT = frozenset('.,!?-:;\'"()[]&%+/@#')
+# Karakter yang DIBUANG eksplisit (sebagian lolos isalnum(), jadi
+# filter "hanya alnum" saja tidak cukup): kontrol, invisible,
+# variation selector, simbol/dingbat, emoji, angka/huruf berlingkar,
+# superskrip, angka Romawi, private-use.
+_CLEAN_REMOVE_RE = re.compile(
+    '['
+    '\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f'  # kontrol + C1
+    # (tab, LF, CR sengaja TIDAK di sini: tab→spasi, LF dipertahankan)
+    '\u00a9\u00ae\u00aa\u00ba\u00ad'   # © ® ª º soft-hyphen
+    '\u061c\u180e'                    # arabic letter mark, mongolian VS
+    '\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff'  # zero-width / bidi / BOM
+    '\ufe00-\ufe0f\ufe20-\ufe2f'      # variation selector
+    '\u20d0-\u20ff\u1ab0-\u1aff\u1dc0-\u1dff'  # combining enclosing
+    '\u203c\u2049\u2122\u2139\u3030\u303d\u3297\u3299'  # ‼ ⁉ ™ ℹ 〰 〽 ㊗ ㊙
+    '\u2190-\u21ff'                   # panah
+    '\u2300-\u23ff'                   # simbol teknis (⌚ ⌛ ⏰)
+    '\u2460-\u24ff'                   # ① ② Ⓐ ⓨ ...
+    '\u2500-\u257f\u2580-\u259f'      # box drawing, block
+    '\u25a0-\u25ff\u2600-\u26ff'      # geometri ★■▶, misc ☀♠♥♪
+    '\u2700-\u27bf\u2b00-\u2bff'      # dingbat ✓✗, misc ⬛⭐
+    '\u3200-\u32ff\u3300-\u33ff'      # enclosed CJK ㊗ ㍿ ...
+    '\u00b2\u00b3\u00b9\u2070-\u207f\u2080-\u208f'  # superskrip/subskrip
+    '\u2160-\u217f'                   # angka Romawi Ⅰ Ⅱ ...
+    '\ue000-\uf8ff'                   # private use
+    '\U0001f000-\U0001faff'           # semua emoji (plane 1)
+    '\U000f0000-\U000fffff\U00100000-\U0010ffff'  # private use plane 15/16
+    ']')
+
+
+def _clean_upload_text(text, max_len=None, fallback=''):
+    """Bersihkan teks untuk judul/deskripsi YouTube: buang emoji,
+    simbol dekoratif, karakter kontrol & invisible; pertahankan huruf
+    (termasuk beraksen), angka, spasi, baris baru, dan tanda baca aman.
+    Tanda baca fancy dinormalisasi ke ASCII. Spasi ganda dirapikan.
+    Bila max_len diberikan, potong di batas kata. Bila hasil bersih
+    KOSONG dan fallback diberikan, kembalikan fallback yang sudah
+    dibersihkan (tidak pernah string kosong — YouTube menolak
+    judul/deskripsi kosong)."""
+    s = '' if text is None else str(text)
+    if not s:
+        return _clean_upload_text(fallback, max_len=max_len) if fallback else ''
+    s = unicodedata.normalize('NFC', s)
+    out = []
+    for ch in s:
+        o = ord(ch)
+        if 0xFF01 <= o <= 0xFF5E:
+            out.append(chr(o - 0xFEE0))  # fullwidth → ASCII
+        elif ch in _CLEAN_FANCY_MAP:
+            out.append(_CLEAN_FANCY_MAP[ch])
+        elif ch in _CLEAN_SPACE_CHARS or ch == '\t':
+            out.append(' ')
+        elif ch == '\r':
+            pass  # buang CR; LF dipertahankan untuk deskripsi
+        else:
+            out.append(ch)
+    s = ''.join(out)
+    s = _CLEAN_REMOVE_RE.sub('', s)
+    kept = []
+    for ch in s:
+        # Kategori 'M' (combining mark) ikut dipertahankan — vokal/tanda
+        # aksara Thai, Devanagari, Arab, dsb. adalah huruf, bukan simbol.
+        # (Mark penutup seperti U+20E3 sudah dibuang regex di atas.)
+        if ch == '\n' or ch == ' ' or ch in _CLEAN_SAFE_PUNCT or ch.isalnum() \
+                or unicodedata.category(ch).startswith('M'):
+            kept.append(ch)
+    s = ''.join(kept)
+    # Rapikan spasi per baris; baris kosong beruntun jadi satu; buang
+    # baris kosong di awal/akhir (baris baru dipertahankan untuk deskripsi).
+    lines = [' '.join(ln.split()) for ln in s.split('\n')]
+    cleaned_lines = []
+    for ln in lines:
+        if ln:
+            cleaned_lines.append(ln)
+        elif cleaned_lines and cleaned_lines[-1] != '':
+            cleaned_lines.append('')
+    while cleaned_lines and cleaned_lines[-1] == '':
+        cleaned_lines.pop()
+    s = '\n'.join(cleaned_lines)
+    if max_len is not None and len(s) > max_len:
+        cut = s[:max_len]
+        if s[max_len] not in (' ', '\n'):
+            sp = max(cut.rfind(' '), cut.rfind('\n'))
+            if sp > max_len // 2:
+                cut = cut[:sp]
+        s = cut.rstrip(' .,!?;:-').rstrip()
+    if not s and fallback:
+        return _clean_upload_text(fallback, max_len=max_len)
+    return s
+
+
+def _clean_upload_tags(raw, max_total=400, max_each=30):
+    """Bersihkan tag YouTube: tiap tag dibersihkan seperti judul
+    (emoji/simbol dibuang, '#' dibuang seperti perilaku lama), kosong
+    dibuang, duplikat dibuang, tiap tag maks 30 karakter, total maks
+    400 karakter. Kembalikan LIST tag bersih — pemanggil yang
+    menggabungkan dengan ', '."""
+    if isinstance(raw, str):
+        items = raw.split(',')
+    elif raw:
+        items = list(raw)
+    else:
+        items = []
+    out, total = [], 0
+    for t in items:
+        c = _clean_upload_text(t, max_len=max_each).replace('#', '').strip()
+        if not c or c in out:
+            continue
+        if total + len(c) > max_total:
+            continue
+        out.append(c)
+        total += len(c) + 1
+    return out
+
 
 def _shorts_norm_title(title):
     """Normalisasi judul untuk perbandingan duplikat: kecil + spasi tunggal."""
@@ -7779,6 +7957,7 @@ def shorts_muse_create():
         threading.Thread(target=_send_approval_previews,
                          args=(res["batch_id"], res["channel_name"], [res["preview"]]), daemon=True).start()
     return jsonify({"status": "success", "message": res["message"], "task_id": res["task_id"],
+                    "title": res.get("title"), "title_cleaned": res.get("title_cleaned", False),
                     "bg_auto": res.get("bg_auto", False),
                     "bg_video": res.get("bg_video", False),
                     "bg_video_count": res.get("bg_video_count", 0)})
@@ -7806,6 +7985,17 @@ def _create_shorts_muse_task(data):
     # task dengan judul yang pasti ditolak QC — ganti ke judul bank
     # berikutnya yang belum dipakai, atau varian bernomor.
     title = _shorts_dedup_title(yt_id, title, channel_rec)
+    # 🧹 v1.2.13: bersihkan emoji/simbol dari judul (bank judul & ketikan
+    # user bisa mengandung emoji) — lalu dedup ulang, karena pembersihan
+    # bisa saja menyamakan judul dengan yang sudah dipakai.
+    _raw_title = title
+    _ch_clean = _clean_upload_text(channel_rec.get('name', '') or '') or 'ZIMUSE'
+    _date_s = _wib_now().strftime('%Y-%m-%d')
+    title = _clean_upload_text(title, max_len=100,
+                               fallback=f"Shorts {_ch_clean} {_date_s}")
+    title_cleaned = (title != _raw_title)
+    if title != _raw_title:
+        title = _shorts_dedup_title(yt_id, title, channel_rec)
     hook = (data.get('hook') or '').strip()
     script = (data.get('script') or '').strip()
     if not hook and not script:
@@ -7898,7 +8088,13 @@ def _create_shorts_muse_task(data):
         description = (auto_desc[:900] + ('…' if len(auto_desc) > 900 else '')) or title
         if cta_text:
             description += f"\n\n{cta_text}"
-    tags = (data.get('tags') or '').strip() or '#shorts'
+    # 🧹 v1.2.13: bersihkan deskripsi & tag (naskah/ketikan user bisa
+    # mengandung emoji/simbol yang ditolak YouTube).
+    _raw_desc = description
+    description = _clean_upload_text(description, max_len=5000, fallback=title)
+    _raw_tags = (data.get('tags') or '').strip() or '#shorts'
+    tags = ', '.join(_clean_upload_tags(_raw_tags)) or '#shorts'
+    title_cleaned = title_cleaned or (description != _raw_desc) or (tags != _raw_tags)
 
     # ID milidetik (bukan detik seperti batch_create) supaya klik ganda
     # dalam satu detik tidak membuat dua task dengan ID yang sama.
@@ -7926,6 +8122,7 @@ def _create_shorts_muse_task(data):
         "render_preset": "ultrafast",
         "source_mode": "mix",
         "batch_id": batch_id,
+        "title_cleaned": title_cleaned,
     }
     # 🔒 #15: mode Full-Auto langsung masuk antrean — tolak sebelum task
     # dibuat bila antrean penuh (task yang dibuat tapi tidak ter-queue
@@ -7943,6 +8140,7 @@ def _create_shorts_muse_task(data):
             "batch_id": batch_id,
             "kind": SHORTS_MUSE_KIND,
             "type": "📱 Shorts Muse",
+            "title_cleaned": title_cleaned,
             "blueprint": blueprint,
         })
         for c in database_channel:
@@ -7978,13 +8176,16 @@ def _create_shorts_muse_task(data):
         return {"ok": True, "message": "Shorts Muse dibuat dan langsung masuk antrean (mode Full-Auto)!",
                 "http": 200, "task_id": t_id, "auto_mode": True, "batch_id": batch_id,
                 "preview": None, "channel_name": channel_name, "publish_date": v_date_str,
+                "title": title, "title_cleaned": title_cleaned,
                 "bg_auto": bg_auto, "bg_video": bg_video_count > 0, "bg_video_count": bg_video_count}
     preview = {"id": t_id, "title": title, "publish_date": v_date_str,
                "duration_label": f"{duration_sec} detik (Shorts Muse)",
-               "description": description, "privacy": "private"}
+               "description": description, "privacy": "private",
+               "title_cleaned": title_cleaned}
     return {"ok": True, "message": "Shorts Muse dibuat dan menunggu approval di Telegram!",
             "http": 200, "task_id": t_id, "auto_mode": False, "batch_id": batch_id,
             "preview": preview, "channel_name": channel_name, "publish_date": v_date_str,
+            "title": title, "title_cleaned": title_cleaned,
             "bg_auto": bg_auto, "bg_video": bg_video_count > 0, "bg_video_count": bg_video_count}
 
 
@@ -8695,6 +8896,22 @@ def _playlist_create_task(data):
     if channel_rec is None:
         return {"ok": False, "message": "Channel tidak ditemukan.", "http": 404}
     title = _shorts_dedup_title(yt_id, title, channel_rec)
+    # 🧹 v1.2.13: bersihkan judul/deskripsi/tag (judul referensi YouTube
+    # sering mengandung emoji) — lalu dedup ulang, karena pembersihan
+    # bisa saja menyamakan judul dengan yang sudah dipakai.
+    _raw_title = title
+    _ch_clean = _clean_upload_text(channel_rec.get('name', '') or '') or 'ZIMUSE'
+    _date_s = _wib_now().strftime('%Y-%m-%d')
+    title = _clean_upload_text(title, max_len=100,
+                               fallback=f"Playlist {_ch_clean} {_date_s}")
+    title_cleaned = bool(data.get('title_cleaned')) or (title != _raw_title)
+    if title != _raw_title:
+        title = _shorts_dedup_title(yt_id, title, channel_rec)
+    _raw_desc = (data.get('description') or '').strip() or title
+    _description = _clean_upload_text(_raw_desc, max_len=5000, fallback=title)
+    _raw_tags = (data.get('tags') or '').strip()
+    _tags = ', '.join(_clean_upload_tags(_raw_tags)) or 'musik, playlist'
+    title_cleaned = title_cleaned or (_description != _raw_desc) or (_tags != _raw_tags)
     try:
         pub_dt = datetime.strptime(data.get('publish_date', ''), '%Y-%m-%dT%H:%M')
     except Exception:
@@ -8723,8 +8940,8 @@ def _playlist_create_task(data):
         "publish_date": v_date_str,
         "kind": PLAYLIST_KIND,
         "target_duration_hours": audio_dur / 3600.0,
-        "description": (data.get('description') or '').strip() or title,
-        "tags": (data.get('tags') or '').strip() or 'musik, playlist',
+        "description": _description,
+        "tags": _tags,
         "privacy": (data.get('privacy') or 'public').strip() or 'public',
         "playlist_id": (data.get('playlist_id') or '').strip(),
         "playlist_audio": data.get('audio_path'),
@@ -8737,6 +8954,7 @@ def _playlist_create_task(data):
         "render_preset": "ultrafast",
         "source_mode": "mix",
         "batch_id": batch_id,
+        "title_cleaned": title_cleaned,
     }
     if auto_mode and not channel_paused and render_queue.qsize() >= QUEUE_MAX_SIZE:
         return {"ok": False,
@@ -8751,6 +8969,7 @@ def _playlist_create_task(data):
             "batch_id": batch_id,
             "kind": PLAYLIST_KIND,
             "type": "🎵 Musik Playlist",
+            "title_cleaned": title_cleaned,
             "blueprint": blueprint,
         })
         for c in database_channel:
@@ -8780,13 +8999,16 @@ def _playlist_create_task(data):
                                    "Task ada di Riwayat dan bisa dipulihkan lewat 'Pulihkan Task Gagal'.", "http": 500}
         return {"ok": True, "message": "Musik Playlist dibuat dan langsung masuk antrean (mode Full-Auto)!",
                 "http": 200, "task_id": t_id, "auto_mode": True, "batch_id": batch_id,
-                "preview": None, "channel_name": channel_name, "publish_date": v_date_str}
+                "preview": None, "channel_name": channel_name, "publish_date": v_date_str,
+                "title": title, "title_cleaned": title_cleaned}
     preview = {"id": t_id, "title": title, "publish_date": v_date_str,
                "duration_label": f"{int(audio_dur // 60)} menit (Musik Playlist)",
-               "description": blueprint["description"], "privacy": blueprint["privacy"]}
+               "description": blueprint["description"], "privacy": blueprint["privacy"],
+               "title_cleaned": title_cleaned}
     return {"ok": True, "message": "Musik Playlist dibuat dan menunggu approval di Telegram!",
             "http": 200, "task_id": t_id, "auto_mode": False, "batch_id": batch_id,
-            "preview": preview, "channel_name": channel_name, "publish_date": v_date_str}
+            "preview": preview, "channel_name": channel_name, "publish_date": v_date_str,
+            "title": title, "title_cleaned": title_cleaned}
 
 
 def _playlist_build_thread(job_id):
@@ -8841,9 +9063,20 @@ def _playlist_build_thread(job_id):
                              pixabay_fallback=pixabay_fallback)
         channel = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
         ch_name = (channel or {}).get('name', yt_id)
-        new_title = _playlist_rewrite_title(job.get('ref_title', ''), ch_name)
-        new_desc = _playlist_rewrite_description(job.get('ref_description', ''), ch_name, new_title)
-        new_tags = _playlist_build_tags(job.get('ref_tags') or [], job.get('theme', ''))
+        # 🧹 v1.2.13: bersihkan judul/deskripsi/tag hasil rewrite —
+        # judul referensi YouTube sering mengandung emoji/simbol yang
+        # ditolak saat upload. Thumbnail memakai judul yang sudah bersih.
+        _raw_title = _playlist_rewrite_title(job.get('ref_title', ''), ch_name)
+        _ch_clean = _clean_upload_text(ch_name) or 'ZIMUSE'
+        _date_s = _wib_now().strftime('%Y-%m-%d')
+        new_title = _clean_upload_text(_raw_title, max_len=100,
+                                       fallback=f"Playlist {_ch_clean} {_date_s}")
+        _raw_desc = _playlist_rewrite_description(job.get('ref_description', ''), ch_name, new_title)
+        new_desc = _clean_upload_text(_raw_desc, max_len=5000, fallback=new_title)
+        _raw_tags = _playlist_build_tags(job.get('ref_tags') or [], job.get('theme', ''))
+        new_tags = ', '.join(_clean_upload_tags(_raw_tags)) or 'musik, playlist'
+        _title_cleaned = (new_title != _raw_title or new_desc != _raw_desc
+                          or new_tags != _raw_tags)
         thumb_path = ''
         if job.get('ref_thumbnail_url'):
             try:
@@ -8856,7 +9089,8 @@ def _playlist_build_thread(job_id):
         _playlist_job_update(job_id, status='preparing',
                              progress='Membuat task upload...',
                              new_title=new_title, new_description=new_desc,
-                             new_tags=new_tags, thumb_path=thumb_path)
+                             new_tags=new_tags, thumb_path=thumb_path,
+                             title_cleaned=_title_cleaned)
         res = _playlist_create_task({
             'yt_id': yt_id, 'title': new_title, 'description': new_desc,
             'tags': new_tags, 'publish_date': job.get('publish_date') or '',
@@ -8865,7 +9099,7 @@ def _playlist_build_thread(job_id):
             'audio_path': audio, 'clip_paths': clip_paths,
             'thumb_path': thumb_path, 'job_dir': job_dir, 'job_id': job_id,
             'ref_video_id': video_id, 'ref_title': job.get('ref_title', ''),
-            'audio_duration': audio_dur})
+            'audio_duration': audio_dur, 'title_cleaned': _title_cleaned})
         if not res.get('ok'):
             raise RuntimeError(res.get('message') or 'Gagal membuat task.')
         if res.get('preview'):
@@ -9171,6 +9405,7 @@ def operator_create_shorts():
                          args=(res["batch_id"], res["channel_name"], [res["preview"]]), daemon=True).start()
     return jsonify({"status": "success", "message": res["message"],
                     "task_id": res["task_id"],
+                    "title": res.get("title"), "title_cleaned": res.get("title_cleaned", False),
                     "approval": "approved" if res["auto_mode"] else "pending",
                     "publish_date": res.get("publish_date"),
                     "bg_auto": res.get("bg_auto", False),
@@ -9217,7 +9452,8 @@ def batch_create():
     if res.get("previews"):
         threading.Thread(target=_send_approval_previews,
                          args=(res["batch_id"], res["channel_name"], res["previews"]), daemon=True).start()
-    return jsonify({"status": "success", "message": res["message"]})
+    return jsonify({"status": "success", "message": res["message"],
+                    "title_cleaned": res.get("title_cleaned", False)})
 
 
 def _create_long_batch(data, max_count=BATCH_MAX_COUNT):
@@ -9295,6 +9531,10 @@ def _create_long_batch(data, max_count=BATCH_MAX_COUNT):
     auto_blueprints = []
     adjusted_dates = []
     shifted_count = 0
+    # 🧹 v1.2.13: tag dibersihkan sekali untuk seluruh batch (bank judul
+    # & ketikan user bisa mengandung emoji/simbol yang ditolak YouTube).
+    _tags_clean = ', '.join(_clean_upload_tags(data.get('tags') or ''))
+    _any_cleaned = False
 
     for i in range(count):
         # 🔒 #15: ID task monotonik — tidak pernah bentrok antar batch.
@@ -9319,8 +9559,20 @@ def _create_long_batch(data, max_count=BATCH_MAX_COUNT):
         else:
             vid_duration = data.get('target_duration_hours', 1)
             
+        # 🧹 v1.2.13: bersihkan judul & deskripsi tiap video (bank judul
+        # bisa mengandung emoji) — fallback aman bila hasil bersih kosong.
+        _raw_title = titles[i] if i < len(titles) else f"Auto Video #{i+1}"
+        _ch_clean = _clean_upload_text(channel_name) or 'ZIMUSE'
+        _date_s = _wib_now().strftime('%Y-%m-%d')
+        _title = _clean_upload_text(_raw_title, max_len=100,
+                                    fallback=f"Video {_ch_clean} {_date_s}")
+        _raw_desc = descs[i] if i < len(descs) else data.get('description', '')
+        _desc = _clean_upload_text(_raw_desc, max_len=5000, fallback=_title)
+        _title_cleaned = (_title != _raw_title) or (_desc != _raw_desc)
+        _any_cleaned = _any_cleaned or _title_cleaned
+
         blueprint = {
-            "id": t_id, "yt_id": yt_id, "title": titles[i] if i < len(titles) else f"Auto Video #{i+1}",
+            "id": t_id, "yt_id": yt_id, "title": _title,
             "publish_date": v_date_str,
             "mp3_per_video": data.get('mp3_per_video', 5), 
             "vid_per_video": data.get('vid_per_video', 1), 
@@ -9337,12 +9589,13 @@ def _create_long_batch(data, max_count=BATCH_MAX_COUNT):
             "use_special_song": data.get('use_special_song', False),
             
             # 🔥 UBAH BARIS DESKRIPSI INI 🔥
-            "description": descs[i] if i < len(descs) else data.get('description', ''), 
+            "description": _desc, 
             
-            "tags": data.get('tags', ''), "privacy": data.get('privacy', 'public'), "playlist_id": data.get('playlist_id', ''),
+            "tags": _tags_clean, "privacy": data.get('privacy', 'public'), "playlist_id": data.get('playlist_id', ''),
             "use_floating_card": data.get('use_floating_card', False),
             "source_mode": data.get('source_mode', 'mix'),  # 🔥 BARU: simpan jalur render engine di blueprint
-            "batch_id": batch_id  # 🔥 FASE 2: batch pemilik task (untuk "Setujui Semua")
+            "batch_id": batch_id,  # 🔥 FASE 2: batch pemilik task (untuk "Setujui Semua")
+            "title_cleaned": _title_cleaned,
         }
         with db_lock:
             active_tasks.append({
@@ -9358,6 +9611,7 @@ def _create_long_batch(data, max_count=BATCH_MAX_COUNT):
                 "approval": "approved" if auto_mode else "pending",
                 "batch_id": batch_id,
                 "type": "📺 VOD",
+                "title_cleaned": _title_cleaned,
                 "blueprint": blueprint
             })
         if auto_mode and not channel_paused:
@@ -9368,6 +9622,7 @@ def _create_long_batch(data, max_count=BATCH_MAX_COUNT):
             "duration": blueprint['target_duration_hours'],
             "description": blueprint.get('description', ''),
             "privacy": blueprint.get('privacy', 'public'),
+            "title_cleaned": _title_cleaned,
         })
 
     save_tasks_db()
@@ -9417,20 +9672,25 @@ def _create_long_batch(data, max_count=BATCH_MAX_COUNT):
                     "message": f"{len(failed_bps)} dari {count} video gagal masuk antrean render (antrean penuh). "
                                "Task yang gagal ada di Riwayat dan bisa dipulihkan lewat 'Pulihkan Task Gagal'.",
                     "http": 500, "count": count, "batch_id": batch_id, "auto_mode": True,
-                    "previews": previews, "channel_name": channel_name}
-        _ok_tasks = [{"id": p["id"], "title": p["title"], "publish_date": p["publish_date"]} for p in previews]
+                    "previews": previews, "channel_name": channel_name,
+                    "title_cleaned": _any_cleaned}
+        _ok_tasks = [{"id": p["id"], "title": p["title"], "publish_date": p["publish_date"],
+                      "title_cleaned": p.get("title_cleaned", False)} for p in previews]
         return {"ok": True,
                 "message": f"{count} Video dibuat dan langsung masuk antrean (mode Full-Auto)!{_shift_note}",
                 "http": 200, "count": count, "batch_id": batch_id, "auto_mode": True,
-                "previews": [], "tasks": _ok_tasks, "channel_name": channel_name}
+                "previews": [], "tasks": _ok_tasks, "channel_name": channel_name,
+                "title_cleaned": _any_cleaned}
 
     # 🔥 FASE 2: preview approval dikirim pemanggil di thread background
     # (panel langsung merespons; kalau Telegram mati, task tetap pending).
-    _ok_tasks = [{"id": p["id"], "title": p["title"], "publish_date": p["publish_date"]} for p in previews]
+    _ok_tasks = [{"id": p["id"], "title": p["title"], "publish_date": p["publish_date"],
+                  "title_cleaned": p.get("title_cleaned", False)} for p in previews]
     return {"ok": True,
             "message": f"{count} Video dibuat dan menunggu approval di Telegram!{_shift_note}",
             "http": 200, "count": count, "batch_id": batch_id, "auto_mode": False,
-            "previews": previews, "tasks": _ok_tasks, "channel_name": channel_name}
+            "previews": previews, "tasks": _ok_tasks, "channel_name": channel_name,
+            "title_cleaned": _any_cleaned}
 
 
 def _last_scheduled_info(yt_id):
@@ -9612,7 +9872,8 @@ def operator_create_long():
     return jsonify({"status": "success", "message": res["message"],
                     "batch_id": res["batch_id"], "count": res["count"],
                     "approval": "approved" if res["auto_mode"] else "pending",
-                    "tasks": res.get("tasks", [])})
+                    "tasks": res.get("tasks", []),
+                    "title_cleaned": res.get("title_cleaned", False)})
 
 
 @app.route('/api/operator/extend_schedule', methods=['POST'])

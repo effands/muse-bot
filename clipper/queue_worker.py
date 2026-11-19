@@ -124,6 +124,84 @@ def build_clip_description(transcript):
         excerpt = excerpt[:400].rsplit(" ", 1)[0] + "…"
     return excerpt + "\n\n#shorts"
 
+
+# 🧹 v1.2.13: fallback lokal bila helper app.py tidak bisa diimpor di
+# proses worker ini — jaga tetap selaras dengan _clean_upload_text
+# di app.py (buang emoji/simbol/kontrol, hanya teks polos yang lolos).
+_CLIP_CLEAN_REMOVE_RE = re.compile(
+    '['
+    '\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f'
+    '\u00a9\u00ae\u2122'
+    '\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff'
+    '\ufe00-\ufe0f'
+    '\u20d0-\u20ff'
+    '\u2190-\u21ff\u2300-\u23ff\u2460-\u24ff'
+    '\u2500-\u257f\u2580-\u259f\u25a0-\u25ff\u2600-\u26ff'
+    '\u2700-\u27bf\u2b00-\u2bff'
+    '\u3200-\u32ff\u3300-\u33ff'
+    '\ue000-\uf8ff'
+    '\U0001f000-\U0001faff'
+    ']')
+_CLIP_CLEAN_SAFE = frozenset('.,!?-:;\'"()[]&%+/@#')
+
+
+def _clip_clean_text(text, max_len=None, fallback=''):
+    """Versi ringkas _clean_upload_text untuk worker Clipper."""
+    import unicodedata as _ud
+    s = '' if text is None else str(text)
+    if not s:
+        return _clip_clean_text(fallback, max_len=max_len) if fallback else ''
+    s = _ud.normalize('NFC', s)
+    out = []
+    for ch in s:
+        o = ord(ch)
+        if 0xFF01 <= o <= 0xFF5E:
+            out.append(chr(o - 0xFEE0))
+        elif ch in ('\u2018', '\u2019', '\u201a'):
+            out.append("'")
+        elif ch in ('\u201c', '\u201d', '\u201e'):
+            out.append('"')
+        elif ch in ('\u2013', '\u2014', '\u2212'):
+            out.append('-')
+        elif ch == '\u2026':
+            out.append('...')
+        elif ch in ('\u00a0', '\u2000', '\u2001', '\u2002', '\u2003',
+                    '\u2004', '\u2005', '\u2006', '\u2007', '\u2008',
+                    '\u2009', '\u200a', '\u202f', '\u205f', '\u3000', '\t'):
+            out.append(' ')
+        elif ch == '\r':
+            pass
+        else:
+            out.append(ch)
+    s = ''.join(out)
+    s = _CLIP_CLEAN_REMOVE_RE.sub('', s)
+    kept = []
+    for ch in s:
+        if ch == '\n' or ch == ' ' or ch in _CLIP_CLEAN_SAFE or ch.isalnum() \
+                or _ud.category(ch).startswith('M'):
+            kept.append(ch)
+    s = ''.join(kept)
+    lines = [' '.join(ln.split()) for ln in s.split('\n')]
+    cleaned_lines = []
+    for ln in lines:
+        if ln:
+            cleaned_lines.append(ln)
+        elif cleaned_lines and cleaned_lines[-1] != '':
+            cleaned_lines.append('')
+    while cleaned_lines and cleaned_lines[-1] == '':
+        cleaned_lines.pop()
+    s = '\n'.join(cleaned_lines)
+    if max_len is not None and len(s) > max_len:
+        cut = s[:max_len]
+        if s[max_len] not in (' ', '\n'):
+            sp = max(cut.rfind(' '), cut.rfind('\n'))
+            if sp > max_len // 2:
+                cut = cut[:sp]
+        s = cut.rstrip(' .,!?;:-').rstrip()
+    if not s and fallback:
+        return _clip_clean_text(fallback, max_len=max_len)
+    return s
+
 def read_db():
     with _db_lock:
         if not os.path.exists(DB_PATH): return []
@@ -174,8 +252,19 @@ def upload_to_youtube(video_path, job_data):
 
         transcript = job_data.get('transcript_text', '')
         title = build_clip_title(transcript, job_data.get('batch_index', 1))
+        # 🧹 v1.2.13: jaring pengaman terakhir — bersihkan judul &
+        # deskripsi tepat sebelum videos.insert (transkrip bisa
+        # mengandung emoji/simbol). Pakai helper app.py bila bisa
+        # diimpor, fallback lokal bila tidak.
+        try:
+            from app import _clean_upload_text as _clip_clean
+        except Exception:
+            _clip_clean = _clip_clean_text
+        title = _clip_clean(title, max_len=100, fallback='Video Tanpa Judul')
+        description = _clip_clean(build_clip_description(transcript),
+                                  max_len=5000, fallback=title)
         body = {
-            'snippet': {'title': title, 'description': build_clip_description(transcript), 'categoryId': '24'},
+            'snippet': {'title': title, 'description': description, 'categoryId': '24'},
             'status': {'privacyStatus': 'private'}
         }
 

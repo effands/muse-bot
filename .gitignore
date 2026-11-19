@@ -10,6 +10,8 @@ update.log
 nodes.json
 nodes.json.tmp
 nlu_audit.jsonl
+telegram_inbox.jsonl
+telegram_inbox_state.json
 playlist_jobs.json
 playlist_jobs.json.tmp
 backups/
@@ -19,6 +21,8 @@ backup_key.txt
 config.json
 client_secret.json
 client_secrets.json
+oauth_clients.json
+oauth_clients/
 channels_db.json
 tasks_db.json
 *.jsonl

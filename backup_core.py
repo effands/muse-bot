@@ -51,11 +51,15 @@ LOCK_FILE = os.path.join(BACKUP_DIR, '.backup.lock')
 # lama sebelum v1.2.7).
 STATE_FILES = [
     'config.json', 'channels_db.json', 'tasks_db.json',
-    'client_secret.json', 'monitor_state.json',
+    'client_secret.json', 'oauth_clients.json', 'monitor_state.json',
     'video_stats_cache.json', 'auto_shorts_state.json',
     'playlist_jobs.json', 'nlu_audit.jsonl',
     'presets.json', 'VERSION',
 ]
+# 🔥 v1.2.25: file secret per client (oauth_clients/*.json) ikut backup
+# seperti client_secret.json — tanpa ini, restore kehilangan client
+# cadangan. Restore hanya boleh mengeluarkan awalan yang diizinkan.
+_OAUTH_CLIENTS_PREFIX = 'oauth_clients/'
 # Galeri: semua file di uploads/ KECUALI file kerja sementara yang bisa
 # di-generate ulang (temp render, segmen TTS, concat, playlist_tmp).
 _GALLERY_SKIP_PREFIXES = ('temp_', 'loop_', 'shorts_voice_', 'shorts_seg_',
@@ -68,7 +72,7 @@ LOCK_STALE_SECONDS = 30 * 60               # lock lebih tua dari ini dianggap ma
 PRE_UPDATE_DEDUPE_SECONDS = 10 * 60        # backup pre-update <10 mnt lalu -> pakai yang lama
 _FILENAME_RE = re.compile(r'^backup-\d{4}-\d{2}-\d{2}-\d{4}\.tar\.gz(\.enc)?$')
 # Awalan path yang BOLEH keluar dari arsip saat restore (anti path-traversal).
-_ALLOWED_RESTORE_PREFIXES = tuple(STATE_FILES) + ('uploads/', 'manifest.json')
+_ALLOWED_RESTORE_PREFIXES = tuple(STATE_FILES) + ('uploads/', 'manifest.json', 'oauth_clients/')
 
 
 class BackupError(Exception):
@@ -211,6 +215,16 @@ def _gather_files(media_max_bytes=MEDIA_MAX_BYTES):
         if os.path.isfile(p):
             files.append((p, name))
             state_included.append(name)
+    # 🔥 v1.2.25: file secret per client (oauth_clients/*.json).
+    _oc_dir = os.path.join(BASE_DIR, 'oauth_clients')
+    if os.path.isdir(_oc_dir):
+        for nm in sorted(os.listdir(_oc_dir)):
+            if not nm.endswith('.json'):
+                continue
+            p = os.path.join(_oc_dir, nm)
+            if os.path.isfile(p):
+                files.append((p, f'oauth_clients/{nm}'))
+                state_included.append(f'oauth_clients/{nm}')
     # Galeri uploads/
     uploads_dir = os.path.join(BASE_DIR, 'uploads')
     gallery = []
@@ -464,7 +478,7 @@ def _safe_members(tf):
         name = m.name
         if os.path.isabs(name) or '..' in name.split('/'):
             raise BackupError(f'Arsip berisi path tidak aman: {name}')
-        if not (name == 'manifest.json' or name.startswith('uploads/') or name in STATE_FILES):
+        if not (name == 'manifest.json' or name.startswith('uploads/') or name.startswith('oauth_clients/') or name in STATE_FILES):
             raise BackupError(f'Arsip berisi file di luar cakupan backup: {name}')
         out.append(m)
     return out

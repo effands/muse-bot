@@ -2125,15 +2125,19 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
           <span id="api-badge" class="pill p-muted">Mengecek...</span>
         </div>
         <div class="card-body">
-          <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:14px">Upload <b style="color:var(--text)">client_secret.json</b> (Tipe: TVs and Limited Input Devices) untuk menghubungkan channel.</div>
+          <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:14px">Upload <b style="color:var(--text)">client_secret.json</b> (Tipe: TVs and Limited Input Devices) untuk menghubungkan channel. Bisa simpan <b style="color:var(--text)">lebih dari 1 client</b> (satu per project Google) — bila kuota satu project habis, sistem otomatis pindah ke project cadangan yang channel-nya sudah dihubungkan. Secret tidak pernah ditampilkan di mana pun.</div>
           <form id="api-form" style="display:flex;gap:10px;flex-wrap:wrap">
             <input type="file" id="secret-file-input" name="secret_file" accept=".json" required style="flex:1;min-width:200px">
+            <input type="text" id="secret-name-input" name="client_name" placeholder="Nama client (opsional, mis. Ziqva Musik 2)" style="flex:1;min-width:200px">
             <button type="button" class="btn btn-p" onclick="uploadSecret()">Upload API Key</button>
           </form>
-          <div id="secret-info" class="meta-line">Memeriksa file API…</div>
-          <div class="btn-row">
-            <button class="btn btn-danger" onclick="deleteSecret()">Hapus API Key</button>
-            <button class="btn btn-g" onclick="focusSecretFile()">Ganti File</button>
+          <div id="secret-info" class="meta-line">Memeriksa client OAuth…</div>
+          <div id="oauth-clients-list" style="margin-top:10px;font-size:13px"></div>
+          <div style="font-size:12px;font-weight:700;margin:14px 0 6px">Pemetaan Channel → Client</div>
+          <div id="oauth-mapping-list" style="font-size:13px;color:var(--muted)">Memuat channel…</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;align-items:center">
+            <span style="font-size:12px;color:var(--muted)">Device login pakai client:</span>
+            <select id="tv-client-select" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;min-width:220px"></select>
           </div>
         </div>
       </div>
@@ -2714,6 +2718,7 @@ function loadChannels() {
     }
     data.forEach(c => { if (c.title_bank) titleBankData[c.yt_id] = c.title_bank; if (c.title_weights) titleWeightsData[c.yt_id] = c.title_weights; });
     renderChannelsGrid();
+    renderOAuthMapping();
     renderAutoShorts();
     renderTaskChannels();
     renderDashboardChannels();
@@ -2737,6 +2742,7 @@ function renderChannelsGrid() {
         <div style="display:flex;gap:4px;flex-wrap:wrap">
           <span class="pill p-green">${escapeHtml(c.status)}</span>
           ${c.paused ? `<span class="pill p-yellow">⏸️ Dijeda</span>` : ''}
+          ${c.oauth_client_id ? `<span class="pill p-muted" title="Client OAuth utama channel ini">Project ${_oauthProjectOfClientId(c.oauth_client_id)}</span>` : ''}
           ${c.autopilot === 'auto' ? `<span class="pill p-cyan">🤖 Full-Auto</span>` : `<span class="pill p-muted">👀 Approval</span>`}
           ${c.monetized ? `<span class="pill p-green">💰 Monetisasi Aktif</span>` : ''}
           <span class="pill p-muted" title="RPM: USD per 1000 views — dipakai hanya untuk estimasi penghasilan di kartu Monetisasi">💵 RPM $${c.rpm_usd != null ? c.rpm_usd : '—'}</span>
@@ -5621,51 +5627,136 @@ function drawChart(title, labels, d1, d2, type) {
 // ────────────────────────────────────────────────────────
 //  SETTINGS
 // ────────────────────────────────────────────────────────
-function renderSecretInfo(d) {
-  const el = document.getElementById('secret-info');
+// ────────────────────────────────────────────────────────
+//  SETTINGS — OAUTH MULTI-CLIENT (v1.2.25)
+// ────────────────────────────────────────────────────────
+let _oauthClients = [];
+let _oauthChannels = [];
+
+function _oauthProjectOfClientId(cid) {
+  return (cid || '').split('-')[0] || '—';
+}
+function _oauthClientLabel(c) {
+  return (c.name || c.project_id || '—') + ' (project ' + (c.project_id || '—') + ')';
+}
+function selectedTvClient() {
+  const sel = document.getElementById('tv-client-select');
+  return sel && sel.value ? sel.value : '';
+}
+
+function renderOAuthClients() {
+  const list = document.getElementById('oauth-clients-list');
+  const sel = document.getElementById('tv-client-select');
+  const info = document.getElementById('secret-info');
+  if (info) {
+    info.textContent = _oauthClients.length
+      ? _oauthClients.length + ' client OAuth tersimpan — utama: ' + _oauthClientLabel(_oauthClients.find(c => c.primary) || _oauthClients[0])
+      : 'Belum ada client OAuth yang terupload.';
+  }
+  if (sel) {
+    const cur = sel.value;
+    sel.innerHTML = _oauthClients.map(c =>
+      `<option value="${escapeHtml(c.client_id)}">${escapeHtml(_oauthClientLabel(c))}${c.primary ? ' — UTAMA' : ''}</option>`).join('');
+    if (cur && _oauthClients.some(c => c.client_id === cur)) sel.value = cur;
+    else { const p = _oauthClients.find(c => c.primary); if (p) sel.value = p.client_id; }
+  }
+  if (!list) return;
+  if (!_oauthClients.length) { list.innerHTML = ''; return; }
+  list.innerHTML = _oauthClients.map(c => `
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:7px 0;border-bottom:1px solid var(--border)">
+      <span style="font-weight:700">${escapeHtml(c.name || c.project_id || '—')}</span>
+      ${c.primary ? '<span class="pill p-green">UTAMA</span>' : ''}
+      <span style="color:var(--muted);font-size:12px">project ${escapeHtml(c.project_id || '—')} · ${escapeHtml(c.type || '—')} · ${c.uploaded_at ? new Date(c.uploaded_at).toLocaleString('id-ID') : '—'}</span>
+      <span style="flex:1"></span>
+      ${c.primary ? '' : `<button class="btn btn-g btn-sm" onclick="oauthClientSetPrimary('${escapeHtml(c.client_id)}')">Jadikan Utama</button>`}
+      <button class="btn btn-danger btn-sm" onclick="oauthClientDelete('${escapeHtml(c.client_id)}')">Hapus</button>
+    </div>`).join('');
+  renderOAuthMapping();
+}
+
+function renderOAuthMapping() {
+  const el = document.getElementById('oauth-mapping-list');
   if (!el) return;
-  if (!d.exists) { el.textContent = 'Belum ada file client_secret.json yang terupload.'; return; }
-  if (d.parse_error) { el.textContent = 'File client_secret.json ada, tetapi isinya tidak bisa dibaca. Upload ulang file JSON yang benar.'; return; }
-  const kb = d.size_bytes != null ? (d.size_bytes / 1024).toFixed(1) + ' KB' : '—';
-  const when = d.modified_iso ? new Date(d.modified_iso).toLocaleString('id-ID') : '—';
-  el.textContent = 'Terupload: client_secret.json · Client ID: ' + (d.client_id || '—')
-    + ' · Tipe: ' + (d.client_type || '—')
-    + (d.project_id ? ' · Project: ' + d.project_id : '')
-    + ' · Ukuran: ' + kb + ' · Diunggah: ' + when;
+  if (!channels.length) { el.textContent = 'Belum ada channel tertaut.'; return; }
+  if (!_oauthClients.length) { el.textContent = 'Upload client OAuth dulu.'; return; }
+  el.innerHTML = channels.map(ch => {
+    const have = ch.token_client_ids || [];
+    const primary = ch.oauth_client_id || (have[0] || '');
+    const opts = _oauthClients.filter(c => have.includes(c.client_id)).map(c =>
+      `<option value="${escapeHtml(c.client_id)}"${c.client_id === primary ? ' selected' : ''}>${escapeHtml(_oauthClientLabel(c))}</option>`).join('');
+    const missing = _oauthClients.filter(c => !have.includes(c.client_id));
+    const missTxt = missing.length
+      ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">Belum dihubungkan di: ${missing.map(c => escapeHtml(_oauthClientLabel(c))).join(', ')} — tautkan channel ini dengan client itu supaya bisa auto-switch.</div>`
+      : '';
+    return `<div style="padding:7px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span style="font-weight:700">${escapeHtml(ch.name)}</span>
+        <span style="color:var(--muted);font-size:12px">utama:</span>
+        ${opts
+          ? `<select onchange="setChannelClient('${escapeHtml(ch.yt_id)}', this.value)" style="padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px">${opts}</select>`
+          : `<span style="font-size:12px;color:var(--muted)">belum ada token — tautkan dulu</span>`}
+        <button class="btn btn-g btn-sm" onclick="oauthLinkChannel('${escapeHtml(ch.yt_id)}')" title="Buka device login untuk channel ini">Tautkan Ulang</button>
+      </div>${missTxt}</div>`;
+  }).join('');
 }
 
 function checkApiStatus() {
-  fetch('/api/check_secret?t=' + Date.now()).then(r => r.json()).then(d => {
+  fetch('/api/oauth_clients?t=' + Date.now()).then(r => r.json()).then(d => {
     const b = document.getElementById('api-badge');
-    if (d.exists) { b.textContent = 'API AKTIF'; b.className = 'pill p-green'; } else { b.textContent = 'BELUM ADA API'; b.className = 'pill p-red'; }
-    renderSecretInfo(d);
+    _oauthClients = d.clients || [];
+    _oauthChannels = d.channels || [];
+    if (_oauthClients.length) { b.textContent = 'API AKTIF (' + _oauthClients.length + ' CLIENT)'; b.className = 'pill p-green'; }
+    else { b.textContent = 'BELUM ADA API'; b.className = 'pill p-red'; }
+    renderOAuthClients();
   }).catch(() => {});
 }
 
-function deleteSecret() {
-  if (!confirm('Hapus file client_secret.json yang terupload? Channel yang sudah terhubung tidak ikut terhapus, tapi tautan channel baru tidak bisa dibuat sampai file diupload ulang.')) return;
-  fetch('/api/delete_secret', { method: 'POST' }).then(r => r.json()).then(d => {
-    toast(d.message || 'API key dihapus.', d.status === 'success' ? 'success' : 'error');
+function oauthClientDelete(cid) {
+  const c = _oauthClients.find(x => x.client_id === cid);
+  if (!c) return;
+  if (!confirm('Hapus client ' + _oauthClientLabel(c) + '? Token channel yang sudah diterbitkan client ini tetap tersimpan, tapi channel tidak bisa refresh / login ulang dengan client ini sampai JSON-nya di-upload lagi.')) return;
+  fetch('/api/oauth_client_delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: cid }) }).then(r => r.json()).then(d => {
+    toast(d.message || 'Client dihapus.', d.status === 'success' ? 'success' : 'error');
     checkApiStatus();
-  }).catch(() => toast('Gagal menghapus API key', 'error'));
+  }).catch(() => toast('Gagal menghapus client', 'error'));
 }
 
-function focusSecretFile() {
-  const el = document.getElementById('secret-file-input');
-  if (el) el.click();
+function oauthClientSetPrimary(cid) {
+  fetch('/api/oauth_client_primary', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: cid }) }).then(r => r.json()).then(d => {
+    toast(d.message || 'Client utama diganti.', d.status === 'success' ? 'success' : 'error');
+    checkApiStatus();
+  }).catch(() => toast('Gagal mengganti client utama', 'error'));
+}
+
+function setChannelClient(ytId, cid) {
+  fetch('/api/set_channel_client', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ yt_id: ytId, client_id: cid }) }).then(r => r.json()).then(d => {
+    toast(d.message || 'Client utama channel diganti.', d.status === 'success' ? 'success' : 'error');
+    loadChannels();
+  }).catch(() => toast('Gagal mengganti client channel', 'error'));
+}
+
+function oauthLinkChannel(ytId) {
+  const ch = channels.find(c => c.yt_id === ytId);
+  const have = (ch && ch.token_client_ids) || [];
+  const missing = _oauthClients.filter(c => !have.includes(c.client_id));
+  const target = missing.length ? missing[0] : (_oauthClients.find(c => c.primary) || _oauthClients[0]);
+  if (!target) { toast('Upload client OAuth dulu!', 'warn'); return; }
+  window.open('/device_login?client=' + encodeURIComponent(target.client_id), '_blank');
 }
 
 function uploadSecret() {
   const form = document.getElementById('api-form'); const fileInput = form.querySelector('input[type=file]');
   if (!fileInput.files.length) { toast('Pilih file JSON dulu!', 'warn'); return; }
-  fetch('/api/upload_secret', { method: 'POST', body: new FormData(form) }).then(r => r.json()).then(d => { toast(d.message, 'success'); checkApiStatus(); form.reset(); }).catch(() => toast('Gagal upload API key', 'error'));
+  fetch('/api/upload_secret', { method: 'POST', body: new FormData(form) }).then(r => r.json()).then(d => { toast(d.message, d.status === 'success' ? 'success' : 'error'); checkApiStatus(); form.reset(); }).catch(() => toast('Gagal upload API key', 'error'));
 }
 
 function generateTVLink() {
-  fetch('/api/generate_tv_link').then(r => r.json()).then(d => {
+  const cid = selectedTvClient();
+  const url = '/api/generate_tv_link' + (cid ? '?client=' + encodeURIComponent(cid) : '');
+  fetch(url).then(r => r.json()).then(d => {
     const box = document.getElementById('tv-box'); const msg = document.getElementById('tv-msg'); const inp = document.getElementById('tv-url');
     box.style.display = 'block';
-    if (d.error) { msg.textContent = d.error; msg.style.color = 'var(--accent2)'; inp.style.display = 'none'; } 
+    if (d.error) { msg.textContent = d.error; msg.style.color = 'var(--accent2)'; inp.style.display = 'none'; }
     else { msg.textContent = 'Copy link ini di profil Chrome channel YouTube target:'; msg.style.color = 'var(--accent)'; inp.style.display = 'block'; inp.value = d.auth_url; }
   }).catch(() => toast('Gagal generate link', 'error'));
 }
@@ -5799,11 +5890,14 @@ function openAddChannelModal() {
   if (!modal || !body) return;
   modal.style.display = 'flex';
   body.innerHTML = '<div style="color:var(--muted)">⏳ Meminta kode device dari Google…</div>';
-  fetch('/api/device_code', { method: 'POST' })
+  // 🔥 v1.2.25: device login memakai client yang dipilih di Settings
+  // (dropdown "Device login pakai client").
+  const _cid = (typeof selectedTvClient === 'function') ? selectedTvClient() : '';
+  fetch('/api/device_code', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(_cid ? { client_id: _cid } : {}) })
     .then(r => r.json().then(d => ({ status: r.status, d })))
     .then(({ status, d }) => {
       if (d.status !== 'success') {
-        const noKey = /client_secret\.json/.test(d.message || '');
+        const noKey = /client_secret\.json|Belum ada client OAuth/.test(d.message || '');
         body.innerHTML = '<div style="color:var(--red,#f43f5e);font-weight:700;margin-bottom:8px">❌ ' + escapeHtml(d.message || 'Gagal meminta kode device.') + '</div>'
           + (noKey
             ? '<div style="margin-bottom:12px">Upload client_secret.json dulu di Settings — file JSON client TV dari Google Cloud.</div><button type="button" class="btn btn-p" onclick="closeAddChannelModal();go(\'settings\')">Buka Settings</button>'

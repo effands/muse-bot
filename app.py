@@ -501,6 +501,457 @@ DB_FILE = os.path.join(BASE_DIR, 'channels_db.json')
 TASKS_FILE = os.path.join(BASE_DIR, 'tasks_db.json')
 PRESETS_FILE = os.path.join(BASE_DIR, 'presets.json')
 CLIENT_SECRETS_FILE = os.path.join(BASE_DIR, 'client_secret.json')
+# 🔥 v1.2.25: REGISTRY MULTI-CLIENT OAUTH — panel bisa menyimpan BANYAK
+# client_secret.json (satu per project Google). Kuota YouTube dihitung PER
+# PROJECT (100 upload/hari, 10.000 unit/hari, 100 pencarian/hari), jadi
+# tiap project cadangan butuh client-nya sendiri. Registry hanya menyimpan
+# METADATA (client_id BUKAN secret — nomor project & client_id aman
+# ditampilkan); file secret JSON disimpan per client di oauth_clients/
+# (chmod 0600, di-.gitignore, ikut backup). client_secret TIDAK PERNAH
+# dikembalikan ke browser / log / Telegram.
+OAUTH_CLIENTS_FILE = os.path.join(BASE_DIR, 'oauth_clients.json')
+OAUTH_CLIENTS_DIR = os.path.join(BASE_DIR, 'oauth_clients')
+
+
+def _oauth_client_id_of_cred_str(cred_str):
+    """client_id dari satu entri token channel (string JSON), atau None.
+    Hanya identifier — BUKAN secret."""
+    try:
+        if not cred_str:
+            return None
+        return (json.loads(cred_str) or {}).get('client_id') or None
+    except Exception:
+        return None
+
+
+def _oauth_project_of_cred_str(cred_str):
+    """Nomor project Google (prefix client_id sebelum '-') dari satu entri
+    token channel, atau None."""
+    cid = _oauth_client_id_of_cred_str(cred_str)
+    return str(cid).split('-')[0] or None if cid else None
+
+
+def _oauth_project_of_client_id(client_id):
+    try:
+        return str(client_id or '').split('-')[0] or None
+    except Exception:
+        return None
+
+
+def _oauth_clients_load():
+    """Baca registry multi-client. Migrasi SEKALI dari file tunggal lama
+    (client_secret.json → entri pertama, primary) bila registry belum ada.
+    File lama TIDAK dihapus (cadangan + kompatibilitas). Tidak pernah raise."""
+    try:
+        if os.path.exists(OAUTH_CLIENTS_FILE):
+            with open(OAUTH_CLIENTS_FILE, 'r') as f:
+                store = json.load(f) or {}
+            clients = store.get('clients') or []
+            if isinstance(clients, list):
+                return {"clients": [c for c in clients if isinstance(c, dict)]}
+        store = {"clients": []}
+        if os.path.exists(CLIENT_SECRETS_FILE):
+            try:
+                with open(CLIENT_SECRETS_FILE, 'r') as f:
+                    data = json.load(f)
+                conf, _err = _oauth_validate_client_json(data)
+                if conf:
+                    os.makedirs(OAUTH_CLIENTS_DIR, exist_ok=True)
+                    dest = os.path.join(OAUTH_CLIENTS_DIR, f"{conf['project_id']}.json")
+                    with open(dest, 'w') as f:
+                        json.dump(data, f, indent=2)
+                    try:
+                        os.chmod(dest, 0o600)
+                    except Exception:
+                        pass
+                    store["clients"].append({
+                        "client_id": conf['client_id'],
+                        "project_id": conf['project_id'],
+                        "type": conf['type'],
+                        "name": conf['project_id'],
+                        "file": os.path.relpath(dest, BASE_DIR),
+                        "uploaded_at": datetime.fromtimestamp(
+                            os.path.getmtime(CLIENT_SECRETS_FILE),
+                            tz=timezone.utc).isoformat(),
+                        "primary": True,
+                        "migrated_from_legacy": True,
+                    })
+                    _oauth_clients_save(store)
+            except Exception:
+                pass
+        return store
+    except Exception:
+        return {"clients": []}
+
+
+def _oauth_clients_save(store):
+    """Tulis registry (metadata saja) + kunci 0600. Gagal chmod tidak fatal."""
+    with db_lock:
+        with open(OAUTH_CLIENTS_FILE, 'w') as f:
+            json.dump(store, f, indent=2)
+    try:
+        os.chmod(OAUTH_CLIENTS_FILE, 0o600)
+    except Exception:
+        pass
+
+
+def _oauth_client_entries():
+    return list(_oauth_clients_load().get('clients') or [])
+
+
+def _oauth_client_by_id(client_id):
+    for e in _oauth_client_entries():
+        if e.get('client_id') == client_id:
+            return e
+    return None
+
+
+def _oauth_client_by_project(project_id):
+    for e in _oauth_client_entries():
+        if str(e.get('project_id')) == str(project_id):
+            return e
+    return None
+
+
+def _oauth_primary_client():
+    entries = _oauth_client_entries()
+    for e in entries:
+        if e.get('primary'):
+            return e
+    return entries[0] if entries else None
+
+
+def _oauth_set_primary(client_id):
+    """Jadikan satu client sebagai utama (dipakai default device login).
+    Kembalikan True bila client ditemukan."""
+    store = _oauth_clients_load()
+    found = False
+    for e in store.get('clients') or []:
+        if e.get('client_id') == client_id:
+            e['primary'] = True
+            found = True
+        else:
+            e['primary'] = False
+    if found:
+        _oauth_clients_save(store)
+    return found
+
+
+def _oauth_validate_client_json(data):
+    """Validasi file client_secret.json. Kembalikan (conf, error):
+    conf = {'client_id','client_secret','project_id','type'} — client_secret
+    hanya dipakai di server, tidak pernah dikembalikan ke browser.
+    project_id diambil dari JSON, atau diturunkan dari prefix client_id."""
+    try:
+        if not isinstance(data, dict):
+            return None, "File bukan JSON object."
+        conf_raw = None
+        ctype = None
+        for key in ('installed', 'web'):
+            if isinstance(data.get(key), dict):
+                conf_raw = data[key]
+                ctype = key
+                break
+        if not conf_raw:
+            return None, "File bukan client OAuth (tidak ada bagian 'installed'/'web')."
+        client_id = (conf_raw.get('client_id') or '').strip()
+        client_secret = (conf_raw.get('client_secret') or '').strip()
+        if not client_id or not client_secret:
+            return None, "File client OAuth tidak berisi client_id/client_secret."
+        project_id = (conf_raw.get('project_id') or '').strip()
+        if not project_id:
+            project_id = _oauth_project_of_client_id(client_id)
+        if not project_id:
+            return None, "Project ID tidak bisa dibaca dari file."
+        return {"client_id": client_id, "client_secret": client_secret,
+                "project_id": project_id, "type": ctype}, None
+    except Exception as e:
+        return None, f"File tidak bisa dibaca: {e}"
+
+
+def _oauth_register_client(file_bytes, name=None):
+    """Daftarkan satu client_secret.json ke registry. Upload ulang client
+    yang sama (client_id sama) = update file, BUKAN entri ganda.
+    Kembalikan (entry_metadata, error). entry TIDAK berisi secret."""
+    try:
+        data = json.loads(file_bytes.decode('utf-8') if isinstance(file_bytes, (bytes, bytearray)) else file_bytes)
+    except Exception:
+        return None, "File bukan JSON yang valid."
+    conf, err = _oauth_validate_client_json(data)
+    if not conf:
+        return None, err
+    try:
+        os.makedirs(OAUTH_CLIENTS_DIR, exist_ok=True)
+        safe_proj = re.sub(r'[^A-Za-z0-9_.-]', '_', str(conf['project_id']))
+        dest = os.path.join(OAUTH_CLIENTS_DIR, f"{safe_proj}.json")
+        with open(dest, 'w') as f:
+            json.dump(data, f, indent=2)
+        try:
+            os.chmod(dest, 0o600)
+        except Exception:
+            pass
+        store = _oauth_clients_load()
+        existing = None
+        for e in store.get('clients') or []:
+            if e.get('client_id') == conf['client_id']:
+                existing = e
+                break
+        if existing:
+            existing['file'] = os.path.relpath(dest, BASE_DIR)
+            existing['project_id'] = conf['project_id']
+            existing['type'] = conf['type']
+            if name:
+                existing['name'] = name
+            existing['uploaded_at'] = _wib_now().isoformat()
+            entry = existing
+        else:
+            entry = {
+                "client_id": conf['client_id'],
+                "project_id": conf['project_id'],
+                "type": conf['type'],
+                "name": (name or '').strip() or conf['project_id'],
+                "file": os.path.relpath(dest, BASE_DIR),
+                "uploaded_at": _wib_now().isoformat(),
+                "primary": not store.get('clients'),
+            }
+            store.setdefault('clients', []).append(entry)
+        _oauth_clients_save(store)
+        return dict(entry), None
+    except Exception as e:
+        return None, f"Gagal menyimpan client: {e}"
+
+
+def _oauth_client_secret_path(entry):
+    """Path absolut file secret satu client (di bawah oauth_clients/).
+    Tolak path yang keluar dari folder itu."""
+    try:
+        rel = (entry or {}).get('file') or ''
+        path = _safe_join_under(OAUTH_CLIENTS_DIR, os.path.basename(rel))
+        return path if os.path.isfile(path) else None
+    except Exception:
+        return None
+
+
+def _oauth_client_conf(entry):
+    """(client_id, client_secret) satu client dari file tersimpannya.
+    Dipakai HANYA di server (device flow / refresh token)."""
+    try:
+        if not entry:
+            return None, None
+        path = _oauth_client_secret_path(entry)
+        if not path:
+            return None, None
+        with open(path, 'r') as f:
+            data = json.load(f)
+        conf, _err = _oauth_validate_client_json(data)
+        if not conf:
+            return None, None
+        return conf['client_id'], conf['client_secret']
+    except Exception:
+        return None, None
+
+
+def _oauth_delete_client(client_id):
+    """Hapus satu client dari registry + file secret-nya. Client terakhir
+    tidak boleh dihapus (tambahkan pengganti dulu). Bila yang dihapus adalah
+    utama, client pertama yang tersisa jadi utama. Token channel yang sudah
+    diterbitkan client itu TIDAK ikut dihapus — channel tetap bisa memakai
+    tokennya sampai kedaluwarsa, tapi tidak bisa refresh / login ulang
+    dengan client itu sampai JSON-nya di-upload lagi.
+    Kembalikan (ok, pesan)."""
+    store = _oauth_clients_load()
+    entries = store.get('clients') or []
+    target = None
+    for e in entries:
+        if e.get('client_id') == client_id:
+            target = e
+            break
+    if not target:
+        return False, "Client tidak ditemukan."
+    if len(entries) <= 1:
+        return False, "Ini satu-satunya client — tambahkan client lain dulu sebelum menghapus."
+    was_primary = bool(target.get('primary'))
+    store['clients'] = [e for e in entries if e.get('client_id') != client_id]
+    if was_primary and store['clients']:
+        store['clients'][0]['primary'] = True
+    _oauth_clients_save(store)
+    try:
+        path = _oauth_client_secret_path(target)
+        if path and os.path.isfile(path):
+            os.remove(path)
+    except Exception:
+        pass
+    try:
+        if os.path.exists(CLIENT_SECRETS_FILE):
+            with open(CLIENT_SECRETS_FILE, 'r') as f:
+                legacy = json.load(f)
+            lconf, _e = _oauth_validate_client_json(legacy)
+            if lconf and lconf['client_id'] == client_id:
+                os.remove(CLIENT_SECRETS_FILE)
+    except Exception:
+        pass
+    return True, f"Client {target.get('name') or target.get('project_id')} dihapus."
+
+
+def _oauth_channel_cred_client_ids(channel):
+    """Daftar client_id token yang dimiliki channel, sesuai urutan
+    creds_list (index 0 = utama)."""
+    out = []
+    try:
+        for s in (channel or {}).get('creds_list') or [(channel or {}).get('creds_json')]:
+            cid = _oauth_client_id_of_cred_str(s)
+            if cid and cid not in out:
+                out.append(cid)
+    except Exception:
+        pass
+    return out
+
+
+def _oauth_channel_primary_client_id(channel):
+    """Client utama channel = client_id token pertama (creds_list[0]).
+    Disimpan juga di field channel 'oauth_client_id' supaya panel bisa
+    menampilkannya tanpa membaca token. Lazy-persist, tidak pernah raise."""
+    try:
+        if not channel:
+            return None
+        cid = channel.get('oauth_client_id') or None
+        first = _oauth_channel_cred_client_ids(channel)
+        if first:
+            if cid != first[0]:
+                cid = first[0]
+                try:
+                    channel['oauth_client_id'] = cid
+                except Exception:
+                    pass
+            return cid
+        return cid
+    except Exception:
+        return None
+
+
+def _oauth_is_quota_error(exc):
+    """True bila exception adalah quotaExceeded YouTube (403) — dari
+    HttpError Google API (reason) maupun teks error lain."""
+    try:
+        s = str(exc or '')
+        if 'quotaExceeded' in s:
+            return True
+        err = getattr(exc, 'content', None)
+        if err:
+            try:
+                info = json.loads(err.decode('utf-8') if isinstance(err, (bytes, bytearray)) else err)
+                for e in (info.get('error') or {}).get('errors', []):
+                    if e.get('reason') == 'quotaExceeded':
+                        return True
+            except Exception:
+                pass
+        return 'quotaexceeded' in s.lower()
+    except Exception:
+        return False
+
+
+def _oauth_missing_backup_clients(channel):
+    """Client di registry yang channel ini BELUM punya tokennya — calon
+    cadangan yang belum bisa dipakai auto-switch sampai channel di-device-
+    login dengan client itu. Kembalikan daftar entry metadata."""
+    try:
+        have = set(_oauth_channel_cred_client_ids(channel))
+        return [e for e in _oauth_client_entries() if e.get('client_id') not in have]
+    except Exception:
+        return []
+
+
+def _oauth_quota_failure_hint(channel, channel_name=''):
+    """Pesan jujur saat SEMUA token channel kena quotaExceeded: sebut
+    project cadangan yang belum dihubungkan (bila ada) + langkahnya.
+    Kembalikan string tambahan ('' bila tidak ada cadangan sama sekali)."""
+    try:
+        missing = _oauth_missing_backup_clients(channel)
+        if not missing:
+            return ''
+        names = ", ".join((e.get('name') or e.get('project_id') or '?') for e in missing)
+        who = f"Channel '{channel_name}'" if channel_name else "Channel ini"
+        return (f" {who} belum dihubungkan di project cadangan ({names}) — "
+                "device login channel ini dengan client cadangan itu supaya "
+                "lain kali bisa auto-switch.")
+    except Exception:
+        return ''
+
+
+def _oauth_upsert_channel_cred(channel, cred_json):
+    """Sisipkan token hasil device login ke creds_list channel.
+    Dedup BERDASARKAN client_id (bukan isi JSON — access_token berubah
+    tiap login): token client yang sama MENGGANTI entri lama di tempat
+    yang sama (urutan/primary tidak berubah); client baru ditambahkan
+    di akhir. Kembalikan True bila ada perubahan."""
+    try:
+        if not channel or not cred_json:
+            return False
+        cid = _oauth_client_id_of_cred_str(cred_json)
+        creds = channel.get('creds_list')
+        if not isinstance(creds, list) or not creds:
+            legacy = channel.get('creds_json') or ''
+            creds = [legacy] if legacy else []
+            channel['creds_list'] = creds
+        if cid:
+            for i, s in enumerate(creds):
+                if s and _oauth_client_id_of_cred_str(s) == cid:
+                    if creds[i] != cred_json:
+                        creds[i] = cred_json
+                        return True
+                    return False
+        if cred_json not in creds:
+            creds.append(cred_json)
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _oauth_set_channel_primary_cred(channel, client_id):
+    """Pindahkan token client tertentu ke index 0 creds_list channel
+    (menjadikannya utama) + set field oauth_client_id.
+    Kembalikan (True, None) bila berhasil, (False, pesan) bila channel
+    belum punya token untuk client itu."""
+    try:
+        if not channel or not client_id:
+            return False, "Channel/client tidak valid."
+        creds = channel.get('creds_list') or ([channel.get('creds_json')] if channel.get('creds_json') else [])
+        idx = None
+        for i, s in enumerate(creds):
+            if s and _oauth_client_id_of_cred_str(s) == client_id:
+                idx = i
+                break
+        if idx is None:
+            return False, "Channel belum punya token untuk client ini."
+        if idx != 0:
+            creds.insert(0, creds.pop(idx))
+            channel['creds_list'] = creds
+        channel['oauth_client_id'] = client_id
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def _oauth_notify_quota_switch(channel_name, what, from_pid, to_pid, used=None, limit=None):
+    """Laporan Telegram saat auto-switch kuota berhasil (tanpa emoji —
+    send_tg_message juga men-strip emoji, v1.2.21). Untuk upload,
+    sertakan hitungan hari ini (used/limit); untuk riset, cukup kabar
+    pindahnya."""
+    try:
+        if what == 'riset':
+            msg = (f"Kuota pencarian project {from_pid or '?'} habis saat riset "
+                   f"untuk channel {channel_name} — otomatis pindah ke project "
+                   f"{to_pid or '?'} dan riset berhasil.")
+        else:
+            msg = (f"Kuota project {from_pid or '?'} habis saat {what} untuk "
+                   f"channel {channel_name} — otomatis pindah ke project "
+                   f"{to_pid or '?'} dan berhasil.")
+            if used is not None and limit:
+                msg += f" Upload hari ini di project {to_pid or '?'}: {used}/{limit}."
+        send_tg_message(msg)
+    except Exception:
+        pass
 SCOPES = ['https://www.googleapis.com/auth/youtube', 'https://www.googleapis.com/auth/youtube.upload']
 # ⚠️ Scope Analytics (yt-analytics.readonly + yt-analytics-monetary.readonly)
 # TIDAK BOLEH masuk SCOPES: endpoint device-code Google menolaknya dengan
@@ -1132,9 +1583,13 @@ def _next_midnight_wib_ts():
     nxt = (now_wib + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     return nxt.timestamp()
 
-def track_daily_upload(yt_id):
+def track_daily_upload(yt_id, project_id=None):
     """Catat 1 upload sukses untuk channel hari ini (WIB).
-    Kembalikan (jumlah_hari_ini, sudah_kena_batas)."""
+    Kembalikan (jumlah_hari_ini, sudah_kena_batas).
+    🔥 v1.2.25: bila project_id (project yang BENAR-BENAR dipakai —
+    bisa project cadangan setelah auto-switch) diberikan, hitungan
+    per-project dicatat juga di channel['daily_uploads_by_project']
+    supaya kuota per project tetap benar setelah switch."""
     today = _wib_now().strftime("%Y-%m-%d")
     count = 0
     with db_lock:
@@ -1143,6 +1598,12 @@ def track_daily_upload(yt_id):
                 du = c.get('daily_uploads') or {}
                 count = int(du.get('count', 0)) + 1 if du.get('date') == today else 1
                 c['daily_uploads'] = {"date": today, "count": count}
+                if project_id:
+                    byp = c.get('daily_uploads_by_project') or {}
+                    ent = byp.get(str(project_id)) or {}
+                    pc = int(ent.get('count', 0)) + 1 if ent.get('date') == today else 1
+                    byp[str(project_id)] = {"date": today, "count": pc}
+                    c['daily_uploads_by_project'] = byp
                 break
         try: save_channels(database_channel)
         except Exception: pass
@@ -1171,17 +1632,28 @@ def _project_id_of_channel(channel_data):
         return None
 
 def _project_uploads_today(project_id):
-    """Total upload hari ini (WIB) dari semua channel di project ini."""
+    """Total upload hari ini (WIB) dari semua channel di project ini.
+    🔥 v1.2.25: hitung dari daily_uploads_by_project (project yang
+    benar-benar dipakai, termasuk setelah auto-switch). Channel lama
+    tanpa catatan per-project untuk project ini dihitung dari counter
+    legacy dikurangi upload yang tercatat di project lain hari ini,
+    supaya tidak dobel."""
     if not project_id:
         return 0
     today = _wib_now().strftime("%Y-%m-%d")
     total = 0
     with db_lock:
         for c in database_channel:
-            if _project_id_of_channel(c) == project_id:
+            byp = c.get('daily_uploads_by_project') or {}
+            ent = byp.get(str(project_id))
+            if ent and ent.get('date') == today:
+                total += int(ent.get('count', 0))
+            elif _project_id_of_channel(c) == project_id:
                 du = c.get('daily_uploads') or {}
                 if du.get('date') == today:
-                    total += int(du.get('count', 0))
+                    other = sum(int(v.get('count', 0)) for k, v in byp.items()
+                                if k != str(project_id) and v.get('date') == today)
+                    total += max(0, int(du.get('count', 0)) - other)
     return total
 
 def get_project_quotas():
@@ -1195,10 +1667,26 @@ def get_project_quotas():
             pid = _project_id_of_channel(c) or 'tidak-diketahui'
             entry = projects.setdefault(pid, {"project_id": pid, "channels": [], "uploads_today": 0})
             entry["channels"].append({"yt_id": c.get('yt_id'), "name": c.get('name', c.get('yt_id', ''))})
-            du = c.get('daily_uploads') or {}
-            if du.get('date') == today:
-                entry["uploads_today"] += int(du.get('count', 0))
+    for _e in _oauth_client_entries():
+        _pid = str(_e.get('project_id') or '')
+        if _pid and _pid in projects:
+            projects[_pid]["client_name"] = _e.get('name') or _pid
+    # 🔥 v1.2.25: hitungan per project lewat _project_uploads_today
+    # (memakai daily_uploads_by_project) supaya upload via project
+    # cadangan setelah auto-switch dihitung di project yang benar.
+    for _pid, _entry in projects.items():
+        if _pid != 'tidak-diketahui':
+            _entry["uploads_today"] = _project_uploads_today(_pid)
     out = []
+    # 🔥 v1.2.25: tampilkan juga project cadangan di registry yang belum
+    # punya channel (0 upload) supaya cadangan terlihat di panel/Telegram.
+    for e in _oauth_client_entries():
+        pid = str(e.get('project_id') or '')
+        if pid and pid not in projects:
+            projects[pid] = {"project_id": pid, "channels": [],
+                             "uploads_today": _project_uploads_today(pid),
+                             "client_name": e.get('name') or pid,
+                             "backup": True}
     for pid in sorted(projects):
         e = projects[pid]
         e["limit"] = MAX_UPLOADS_PER_CHANNEL_PER_DAY
@@ -3673,6 +4161,10 @@ def background_worker():
             if channel_data:
                 creds_list = channel_data.get('creds_list', [channel_data.get('creds_json')])
                 upload_berhasil = False
+                # 🔥 v1.2.25: kredensial yang BENAR-BENAR dipakai upload
+                # (bisa index > 0 setelah auto-switch kuota) + project-nya.
+                used_cred_index = None
+                used_project_id = None
                 pesan_error = "Token API Tidak Ditemukan/Kosong!"
                 # 🧹 v1.2.13: JARING PENGAMAN TERAKHIR — bersihkan judul /
                 # deskripsi / tag tepat sebelum videos.insert, supaya teks
@@ -3877,6 +4369,11 @@ def background_worker():
                                                f"agar aman di-upload: '{task['title']}'")
                             notify_event("✅", task['title'], f"{_shorts_pfx}udah tayang di YouTube {ch_name} 😎\nJadwal tayang: {task['publish_date']}" + (f"\n🎙️ Suara: {_audio_note}" if _audio_note else "") + _pl_note + _clean_note)
                             upload_berhasil = True
+                            # 🔥 v1.2.25: catat kredensial/project yang
+                            # benar-benar dipakai (untuk hitungan kuota
+                            # per project + notifikasi auto-switch).
+                            used_cred_index = index_kunci
+                            used_project_id = _oauth_project_of_cred_str(cred_str)
                             # 🔥 FASE 5: 1 sukses → reset hitungan gagal beruntun.
                             _record_channel_success(yt_id)
                             # 🎵 MUSIK PLAYLIST: setelah upload sukses → hapus
@@ -3886,7 +4383,9 @@ def background_worker():
                             # 🔥 v1.2.20: batas 100 upload/hari/channel → cooldown sampai tengah malam WIB,
                             # besok lanjut otomatis. Task antre tetap aman menunggu.
                             try:
-                                cnt, capped = track_daily_upload(yt_id)
+                                # 🔥 v1.2.25: hitungan kuota dicatat di
+                                # project yang benar-benar dipakai upload.
+                                cnt, capped = track_daily_upload(yt_id, project_id=used_project_id)
                                 if capped:
                                     channel_cooldowns[yt_id] = _next_midnight_wib_ts()
                                     try: persist_cooldown(yt_id)
@@ -3903,7 +4402,9 @@ def background_worker():
                                 # cooldown semua channel di project yang sama
                                 # (channel yang barusan upload sudah di-cooldown
                                 # di atas; saudara satu project ikut dijeda).
-                                _pid = _project_id_of_channel(channel_data) if channel_data else None
+                                # 🔥 v1.2.25: project yang dicek = project yang
+                                # benar-benar dipakai (bisa project cadangan).
+                                _pid = used_project_id or (_project_id_of_channel(channel_data) if channel_data else None)
                                 if _pid:
                                     ptotal = _project_uploads_today(_pid)
                                     if ptotal >= MAX_UPLOADS_PER_CHANNEL_PER_DAY:
@@ -3957,7 +4458,22 @@ def background_worker():
                             break
                         
                     if upload_berhasil:
+                        # 🔥 v1.2.25: upload berhasil via kredensial
+                        # cadangan → laporkan switch kuota ke Telegram
+                        # (sekali, tanpa emoji).
+                        if used_cred_index is not None and used_cred_index > 0:
+                            _from_pid = _project_id_of_channel(channel_data) if channel_data else None
+                            _oauth_notify_quota_switch(
+                                ch_name, "upload", _from_pid, used_project_id,
+                                _project_uploads_today(used_project_id),
+                                MAX_UPLOADS_PER_CHANNEL_PER_DAY)
                         break
+                    # 🔥 v1.2.25: semua kredensial kena quotaExceeded →
+                    # pesan jujur: sebut project cadangan yang belum
+                    # dihubungkan channel ini (bila ada) + langkahnya.
+                    if not upload_berhasil and "API Habis" in (pesan_error or "") \
+                            and "belum dihubungkan" not in pesan_error:
+                        pesan_error = pesan_error + _oauth_quota_failure_hint(channel_data, ch_name)
                     # Gagal pada percobaan ini — hanya error sementara yang
                     # di-retry (backoff eksponensial); permanen langsung berhenti.
                     if not _upload_error_transient(pesan_error) or upload_attempt >= UPLOAD_MAX_ATTEMPTS:
@@ -6461,7 +6977,11 @@ def get_channels():
     # None = belum dicek) supaya panel bisa menandai channel yang tokennya
     # belum punya scope yt-analytics.readonly ("perlu taut ulang").
     _scope_cache = _load_video_stats_cache()
-    safe_c = [{"id": c["id"], "name": c["name"], "yt_id": c["yt_id"], "thumbnail": c["thumbnail"], "status": c["status"], "title_bank": c.get("title_bank", []), "title_weights": c.get("title_weights", {}), "paused": c.get("paused", False), "autopilot": c.get("autopilot", "approval"), "rpm_usd": c.get("rpm_usd"), "monetized": c.get("monetized", False), "auto_shorts": _auto_shorts_cfg(c), "analytics_scope": _analytics_scope_state(_scope_cache, c.get("yt_id"))} for c in database_channel]
+    safe_c = [{"id": c["id"], "name": c["name"], "yt_id": c["yt_id"], "thumbnail": c["thumbnail"], "status": c["status"], "title_bank": c.get("title_bank", []), "title_weights": c.get("title_weights", {}), "paused": c.get("paused", False), "autopilot": c.get("autopilot", "approval"), "rpm_usd": c.get("rpm_usd"), "monetized": c.get("monetized", False), "auto_shorts": _auto_shorts_cfg(c), "analytics_scope": _analytics_scope_state(_scope_cache, c.get("yt_id")),
+               # 🔥 v1.2.25: pemetaan OAuth — client utama + project mana saja
+               # channel ini punya tokennya (metadata saja, tanpa secret).
+               "oauth_client_id": _oauth_channel_primary_client_id(c),
+               "token_projects": [_oauth_project_of_client_id(x) for x in _oauth_channel_cred_client_ids(c) if x]} for c in database_channel]
     return jsonify(safe_c)
 
 @app.route('/api/get_project_quotas')
@@ -6498,6 +7018,9 @@ def _sanitize_channel_for_export(c):
             "auto_shorts": _auto_shorts_cfg(c),
             "last_scheduled_date": c.get("last_scheduled_date"),
             "daily_uploads": c.get("daily_uploads", {}),
+            "daily_uploads_by_project": c.get("daily_uploads_by_project", {}),
+            "oauth_client_id": _oauth_channel_primary_client_id(c),
+            "token_projects": [_oauth_project_of_client_id(x) for x in _oauth_channel_cred_client_ids(c) if x],
             "cooldown_until": c.get("cooldown_until", 0)}
 
 # Field kredensial yang WAJIB ditolak dari file import (#4).
@@ -7836,55 +8359,142 @@ def operator_backup_status():
 
 @app.route('/api/check_secret')
 def check_secret():
-    # Mengembalikan info file yang terupload agar Settings bisa menampilkannya
+    # Mengembalikan info client UTAMA agar Settings bisa menampilkannya
     # (nama file, client_id, tipe client, ukuran, waktu upload). client_secret
-    # TIDAK PERNAH dikembalikan ke browser.
-    if not os.path.exists(CLIENT_SECRETS_FILE):
+    # TIDAK PERNAH dikembalikan ke browser. 🔥 v1.2.25: sumbernya registry
+    # multi-client (client utama), bukan lagi file tunggal.
+    primary = _oauth_primary_client()
+    if not primary:
         return jsonify({"exists": False})
     try:
-        size = os.path.getsize(CLIENT_SECRETS_FILE)
-        modified = datetime.fromtimestamp(os.path.getmtime(CLIENT_SECRETS_FILE), tz=timezone.utc).isoformat()
-        with open(CLIENT_SECRETS_FILE, 'r') as f:
-            secret_data = json.load(f)
-        client_type = None
-        client_config = {}
-        for _key in ('installed', 'web'):
-            if isinstance(secret_data.get(_key), dict):
-                client_type = _key
-                client_config = secret_data[_key]
-                break
+        path = _oauth_client_secret_path(primary)
+        size = os.path.getsize(path) if path else None
+        modified = datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc).isoformat() if path else None
         return jsonify({
             "exists": True,
             "filename": "client_secret.json",
-            "client_id": client_config.get('client_id'),
-            "client_type": client_type or 'other',
-            "project_id": client_config.get('project_id'),
+            "client_id": primary.get('client_id'),
+            "client_type": primary.get('type') or 'other',
+            "project_id": primary.get('project_id'),
+            "name": primary.get('name'),
             "size_bytes": size,
-            "modified_iso": modified,
+            "modified_iso": modified or primary.get('uploaded_at'),
         })
     except Exception:
         return jsonify({"exists": True, "parse_error": True})
 
+
+@app.route('/api/oauth_clients')
+def oauth_clients_api():
+    # 🔥 v1.2.25: daftar semua client OAuth (metadata saja — TANPA secret)
+    # + pemetaan tiap channel (client utama + client mana saja channel itu
+    # punya tokennya). Dipakai Settings untuk daftar client & pemetaan.
+    clients = []
+    for e in _oauth_client_entries():
+        clients.append({
+            "client_id": e.get('client_id'),
+            "project_id": e.get('project_id'),
+            "type": e.get('type'),
+            "name": e.get('name'),
+            "uploaded_at": e.get('uploaded_at'),
+            "primary": bool(e.get('primary')),
+        })
+    channels = []
+    for c in database_channel:
+        cids = _oauth_channel_cred_client_ids(c)
+        channels.append({
+            "yt_id": c.get('yt_id'),
+            "name": c.get('name', c.get('yt_id', '')),
+            "primary_client_id": _oauth_channel_primary_client_id(c),
+            "token_client_ids": cids,
+            "token_projects": [_oauth_project_of_client_id(x) for x in cids if x],
+        })
+    return jsonify({"status": "success", "clients": clients, "channels": channels})
+
+
+@app.route('/api/oauth_client_delete', methods=['POST'])
+def oauth_client_delete_api():
+    # 🔥 v1.2.25: hapus satu client dari registry (lihat _oauth_delete_client).
+    data = request.get_json(silent=True) or {}
+    cid = (data.get('client_id') or '').strip()
+    if not cid:
+        return jsonify({"status": "error", "message": "client_id wajib diisi."}), 400
+    ok, msg = _oauth_delete_client(cid)
+    return jsonify({"status": "success" if ok else "error", "message": msg}), (200 if ok else 400)
+
+
+@app.route('/api/oauth_client_primary', methods=['POST'])
+def oauth_client_primary_api():
+    # 🔥 v1.2.25: jadikan satu client sebagai utama (default device login).
+    data = request.get_json(silent=True) or {}
+    cid = (data.get('client_id') or '').strip()
+    if not cid:
+        return jsonify({"status": "error", "message": "client_id wajib diisi."}), 400
+    if _oauth_set_primary(cid):
+        return jsonify({"status": "success", "message": "Client utama diganti."})
+    return jsonify({"status": "error", "message": "Client tidak ditemukan."}), 404
+
+
+@app.route('/api/set_channel_client', methods=['POST'])
+def set_channel_client_api():
+    # 🔥 v1.2.25: pemetaan per-channel — jadikan token client tertentu
+    # sebagai UTAMA channel (dipindah ke index 0 creds_list). Channel
+    # HARUS sudah punya token untuk client itu (device login dulu);
+    # kalau belum, tolak dengan pesan yang jelas.
+    data = request.get_json(silent=True) or {}
+    yt_id = (data.get('yt_id') or '').strip()
+    cid = (data.get('client_id') or '').strip()
+    if not yt_id or not cid:
+        return jsonify({"status": "error", "message": "yt_id dan client_id wajib diisi."}), 400
+    entry = _oauth_client_by_id(cid)
+    if not entry:
+        return jsonify({"status": "error", "message": "Client tidak ditemukan di registry."}), 404
+    with db_lock:
+        channel = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+        if not channel:
+            return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
+        ok, err = _oauth_set_channel_primary_cred(channel, cid)
+        if not ok:
+            return jsonify({"status": "error",
+                            "message": f"Channel '{channel.get('name', yt_id)}' belum dihubungkan di client {entry.get('name') or entry.get('project_id')} — device login channel ini dengan client itu dulu."}), 400
+        try: save_channels(database_channel)
+        except Exception: pass
+    return jsonify({"status": "success",
+                    "message": f"Client utama channel '{channel.get('name', yt_id)}' diganti ke {entry.get('name') or entry.get('project_id')}."})
+
 @app.route('/api/delete_secret', methods=['POST'])
 def delete_secret():
-    # Hapus file client_secret.json yang terupload (CRUD: delete).
+    # Hapus client UTAMA yang terupload (CRUD: delete). 🔥 v1.2.25:
+    # didelegasikan ke registry — client terakhir tidak boleh dihapus.
     try:
-        if not os.path.exists(CLIENT_SECRETS_FILE):
+        primary = _oauth_primary_client()
+        if not primary:
             return jsonify({"status": "error", "message": "Tidak ada API key yang tersimpan."})
-        os.remove(CLIENT_SECRETS_FILE)
-        return jsonify({"status": "success", "message": "API key dihapus!"})
+        ok, msg = _oauth_delete_client(primary.get('client_id'))
+        return jsonify({"status": "success" if ok else "error", "message": msg}), (200 if ok else 400)
     except Exception as e:
         print(f"Gagal hapus client_secret: {e}", flush=True)
         return jsonify({"status": "error", "message": "Gagal menghapus API key."})
 
 @app.route('/api/upload_secret', methods=['POST'])
 def upload_secret():
+    # 🔥 v1.2.25: upload client_secret.json = DAFTARKAN ke registry
+    # multi-client (bukan lagi menimpa satu file). Upload ulang client
+    # yang sama = update, bukan ganda.
     try:
         file = request.files.get('secret_file')
-        if file and file.filename.endswith('.json'):
-            file.save(CLIENT_SECRETS_FILE)
-            return jsonify({"status": "success", "message": "API Key diunggah!"})
-        return jsonify({"status": "error", "message": "Harus .json!"})
+        if not file or not file.filename.endswith('.json'):
+            return jsonify({"status": "error", "message": "Harus .json!"})
+        name = (request.form.get('client_name') or '').strip() or None
+        entry, err = _oauth_register_client(file.read(), name=name)
+        if not entry:
+            return jsonify({"status": "error", "message": err or "File client tidak valid."}), 400
+        return jsonify({"status": "success",
+                        "message": f"API Key diunggah! Client {entry.get('name')} (project {entry.get('project_id')}) tersimpan.",
+                        "client": {"client_id": entry.get('client_id'),
+                                   "project_id": entry.get('project_id'),
+                                   "name": entry.get('name'),
+                                   "primary": bool(entry.get('primary'))}})
     except Exception as e:
         print(f"Gagal upload client_secret: {e}", flush=True)
         return jsonify({"status": "error", "message": "Gagal mengunggah API key."})
@@ -7896,22 +8506,22 @@ def device_code_json():
     ke Google dengan client TV + SCOPES, ikat device_code ke sesi login,
     kedaluwarsa 15 menit). WAJIB login panel (route ini TIDAK masuk
     allowed_routes) + CSRF (POST, dicek check_security). Polling tetap ke
-    /api/poll_device_token yang sudah ada. Bila client_secret.json belum
-    ada, kembalikan error jelas supaya modal mengarahkan ke Settings."""
-    if not os.path.exists(CLIENT_SECRETS_FILE):
+    /api/poll_device_token yang sudah ada. Bila client OAuth belum
+    ada, kembalikan error jelas supaya modal mengarahkan ke Settings.
+    🔥 v1.2.25: body boleh berisi client_id — client mana yang dipakai
+    device login (default: client utama). Client yang dipilih disimpan
+    di sesi untuk /api/poll_device_token."""
+    data = request.get_json(silent=True) or {}
+    _cid = (data.get('client_id') or '').strip() or None
+    entry = _oauth_client_by_id(_cid) if _cid else _oauth_primary_client()
+    if not entry:
         return jsonify({"status": "error",
-                        "message": "File client_secret.json belum ada. Upload dulu di Settings."}), 400
-    try:
-        with open(CLIENT_SECRETS_FILE, 'r') as f:
-            secret_data = json.load(f)
-        client_config = secret_data.get('installed', secret_data.get('web', {}))
-        client_id = client_config.get('client_id')
-        if not client_id:
-            return jsonify({"status": "error",
-                            "message": "client_secret.json tidak berisi client_id."}), 400
-    except Exception:
+                        "message": "Belum ada client OAuth. Upload dulu di Settings."}), 400
+    c_id, _c_sec = _oauth_client_conf(entry)
+    if not c_id:
         return jsonify({"status": "error",
-                        "message": "client_secret.json tidak bisa dibaca."}), 400
+                        "message": "Client OAuth tidak bisa dibaca. Upload ulang JSON-nya."}), 400
+    client_id = c_id
     try:
         res = requests.post('https://oauth2.googleapis.com/device/code',
                             data={'client_id': client_id, 'scope': ' '.join(SCOPES)}, timeout=20).json()
@@ -7922,6 +8532,7 @@ def device_code_json():
         return jsonify({"status": "error", "message": f"Error Google: {res['error']}"}), 400
     session['device_code'] = res['device_code']
     session['device_code_at'] = time.time()
+    session['device_client_id'] = entry.get('client_id')
     return jsonify({"status": "success",
                     "verification_url": res.get('verification_url', 'https://www.google.com/device'),
                     "user_code": res.get('user_code', ''),
@@ -7932,20 +8543,32 @@ def device_code_json():
 
 @app.route('/api/generate_tv_link')
 def generate_tv_link():
-    if not os.path.exists(CLIENT_SECRETS_FILE): return jsonify({"auth_url": "", "error": "File client_secret.json belum ada!"})
-    return jsonify({"auth_url": f"http://{request.host}/device_login"})
+    # 🔥 v1.2.25: ?client=<client_id> memilih client device login-nya.
+    _cid = (request.args.get('client') or '').strip() or None
+    entry = _oauth_client_by_id(_cid) if _cid else _oauth_primary_client()
+    if not entry:
+        return jsonify({"auth_url": "", "error": "File client OAuth belum ada! Upload dulu di Settings."})
+    _qs = f"?client={entry.get('client_id')}" if _cid else ""
+    return jsonify({"auth_url": f"http://{request.host}/device_login{_qs}"})
 
 @app.route('/device_login')
 def device_login():
     # 🔒 #3: route ini SUDAH TIDAK di allowed_routes — wajib login panel
     # (check_security). Device code diikat ke sesi login yang memintanya.
-    if not os.path.exists(CLIENT_SECRETS_FILE): return "File rahasia tidak ditemukan!"
-    with open(CLIENT_SECRETS_FILE, 'r') as f:
-        secret_data = json.load(f); client_config = secret_data.get('installed', secret_data.get('web', {})); client_id = client_config.get('client_id')
+    # 🔥 v1.2.25: ?client=<client_id> memilih client (default: utama).
+    _cid = (request.args.get('client') or '').strip() or None
+    entry = _oauth_client_by_id(_cid) if _cid else _oauth_primary_client()
+    if not entry:
+        return "File rahasia tidak ditemukan!"
+    c_id, _c_sec = _oauth_client_conf(entry)
+    if not c_id:
+        return "Client OAuth tidak bisa dibaca. Upload ulang JSON-nya di Settings."
+    client_id = c_id
     res = requests.post('https://oauth2.googleapis.com/device/code', data={'client_id': client_id, 'scope': ' '.join(SCOPES)}).json()
     if 'error' in res: return f"Error Google: {res['error']}"
     session['device_code'] = res['device_code']
     session['device_code_at'] = time.time()
+    session['device_client_id'] = entry.get('client_id')
     _csrf = _get_csrf_token()
     # Kode + URL di-escape HTML (datang dari Google, tapi jangan pernah
     # menaruh string luar mentah ke HTML).
@@ -8002,8 +8625,19 @@ def poll_device_token():
     ip = request.remote_addr or '?'
     if _poll_rate_limited(ip):
         return jsonify({"status": "error", "error": "Terlalu banyak percobaan poll. Tunggu sebentar."}), 429
-    with open(CLIENT_SECRETS_FILE, 'r') as f:
-        s_data = json.load(f); conf = s_data.get('installed', s_data.get('web', {})); c_id = conf.get('client_id'); c_sec = conf.get('client_secret')
+    # 🔥 v1.2.25: token diminta dengan client yang dipilih saat device
+    # login (disimpan di sesi); fallback file tunggal lama bila registry
+    # masih kosong (kompatibilitas).
+    _entry = _oauth_client_by_id(session.get('device_client_id')) if session.get('device_client_id') else _oauth_primary_client()
+    if _entry:
+        c_id, c_sec = _oauth_client_conf(_entry)
+    else:
+        c_id = c_sec = None
+    if not c_id:
+        if not os.path.exists(CLIENT_SECRETS_FILE):
+            return jsonify({"status": "error", "error": "Client OAuth tidak ditemukan. Upload dulu di Settings."}), 400
+        with open(CLIENT_SECRETS_FILE, 'r') as f:
+            s_data = json.load(f); conf = s_data.get('installed', s_data.get('web', {})); c_id = conf.get('client_id'); c_sec = conf.get('client_secret')
     res = requests.post('https://oauth2.googleapis.com/token', data={'client_id': c_id, 'client_secret': c_sec, 'device_code': device_code, 'grant_type': 'urn:ietf:params:oauth:grant-type:device_code'}).json()
     if 'error' in res:
         err = res['error']
@@ -8012,13 +8646,14 @@ def poll_device_token():
         else: return jsonify({"status": "error", "error": err})
     session.pop('device_code', None)
     session.pop('device_code_at', None)
+    session.pop('device_client_id', None)
     creds = Credentials(token=res['access_token'], refresh_token=res.get('refresh_token'), token_uri='https://oauth2.googleapis.com/token', client_id=c_id, client_secret=c_sec, scopes=SCOPES)
     youtube = build('youtube', 'v3', credentials=creds); chan_res = youtube.channels().list(part="snippet", mine=True).execute()
     if chan_res['items']:
         item = chan_res['items'][0]; global database_channel
         c_idx = next((i for i, c in enumerate(database_channel) if c['yt_id'] == item['id']), None)
         if c_idx is None:
-            new_c = {"id": len(database_channel)+1, "name": item['snippet']['title'], "yt_id": item['id'], "thumbnail": item['snippet']['thumbnails']['default']['url'], "status": "Connected 🟢 (1 Key)", "creds_list": [creds.to_json()]}
+            new_c = {"id": len(database_channel)+1, "name": item['snippet']['title'], "yt_id": item['id'], "thumbnail": item['snippet']['thumbnails']['default']['url'], "status": "Connected 🟢 (1 Key)", "creds_list": [creds.to_json()], "oauth_client_id": c_id}
             database_channel.append(new_c)
         else:
             if 'creds_list' not in database_channel[c_idx]:
@@ -8038,9 +8673,12 @@ def poll_device_token():
                     if 'invalid_grant' not in str(e).lower():
                         live_keys.append(ks)  # gagal non-invalid_grant: jangan hapus
             database_channel[c_idx]['creds_list'] = live_keys
-            if creds.to_json() not in database_channel[c_idx]['creds_list']:
-                database_channel[c_idx]['creds_list'].append(creds.to_json())
+            # 🔥 v1.2.25: dedup BERDASARKAN client_id — login ulang dengan
+            # client yang sama MENGGANTI token lama (bukan menumpuk);
+            # client baru ditambahkan sebagai cadangan.
+            _oauth_upsert_channel_cred(database_channel[c_idx], creds.to_json())
             database_channel[c_idx]['status'] = f"Connected 🟢 ({len(database_channel[c_idx]['creds_list'])} Keys)"
+            _oauth_channel_primary_client_id(database_channel[c_idx])
         # 🔥 FIX: taut ulang = token fresh → hapus cooldown lama channel ini
         try: clear_channel_cooldown(item['id'])
         except Exception: pass
@@ -8959,25 +9597,69 @@ def _playlist_research_youtube(channel, query):
             return hit.get('cands') or [], None, True
     except Exception:
         pass
-    youtube, err = _build_youtube_client_for_channel(channel)
-    if not youtube:
-        return None, err, False
+    youtube = None
+    res = None
+    vres = None
+    last_err = ''
+    tried_pids = []
+    switched_from = None
+    used_pid = None
     search_q = q if ('music' in q.lower() or 'musik' in q.lower()) else q + ' music'
-    try:
-        published_after = (datetime.now(timezone.utc) - timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%SZ')
-        res = youtube.search().list(
-            part='snippet', q=search_q, type='video', videoCategoryId='10',
-            order='viewCount', publishedAfter=published_after,
-            maxResults=10).execute()
-        ids = [it['id']['videoId'] for it in res.get('items', [])
-               if (it.get('id') or {}).get('videoId')]
-        if not ids:
-            return [], None, False
-        vres = youtube.videos().list(
-            part='statistics,snippet,contentDetails',
-            id=','.join(ids)).execute()
-    except Exception as e:
-        return None, f"Riset YouTube gagal: {str(e)[:120]}", False
+    # 🔥 v1.2.25: riset ikut auto-switch project — coba tiap kredensial
+    # channel berurutan; bila search().list kena quotaExceeded di satu
+    # project, lanjut ke project berikutnya (token cadangan). Error
+    # BUKAN kuota langsung dikembalikan (jangan bakar kuota cadangan
+    # untuk error lain). Pencarian memakai token OAuth channel, BUKAN
+    # API key — jadi tidak ada penyimpanan multi API key di sini.
+    creds_list = channel.get('creds_list', [channel.get('creds_json')]) or []
+    if not any(creds_list):
+        return None, "Tidak ada kredensial tersimpan — taut ulang channel.", False
+    for _idx, _cred_str in enumerate(creds_list):
+        if not _cred_str:
+            continue
+        try:
+            _creds = Credentials.from_authorized_user_info(json.loads(_cred_str))
+            if _creds.expired and _creds.refresh_token:
+                _creds.refresh(Request())
+            youtube = build('youtube', 'v3', credentials=_creds)
+        except Exception as e:
+            last_err = str(e)
+            continue
+        _pid = _oauth_project_of_cred_str(_cred_str)
+        if _pid and _pid not in tried_pids:
+            tried_pids.append(_pid)
+        try:
+            published_after = (datetime.now(timezone.utc) - timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%SZ')
+            res = youtube.search().list(
+                part='snippet', q=search_q, type='video', videoCategoryId='10',
+                order='viewCount', publishedAfter=published_after,
+                maxResults=10).execute()
+            ids = [it['id']['videoId'] for it in res.get('items', [])
+                   if (it.get('id') or {}).get('videoId')]
+            if not ids:
+                return [], None, False
+            vres = youtube.videos().list(
+                part='statistics,snippet,contentDetails',
+                id=','.join(ids)).execute()
+            used_pid = _pid
+            if _idx > 0:
+                switched_from = _oauth_project_of_cred_str(creds_list[0])
+            break
+        except Exception as e:
+            if _oauth_is_quota_error(e):
+                last_err = str(e)
+                continue
+            return None, f"Riset YouTube gagal: {str(e)[:120]}", False
+    if res is None or vres is None:
+        if tried_pids and _oauth_is_quota_error(last_err):
+            hint = _oauth_quota_failure_hint(channel, channel.get('name', ''))
+            pids = ", ".join(p for p in tried_pids if p)
+            return None, (f"Riset gagal: kuota pencarian project {pids} habis "
+                          f"hari ini.{hint}"), False
+        return None, f"Riset YouTube gagal: {(last_err or 'tidak ada kredensial tersimpan')[:120]}", False
+    if switched_from:
+        _oauth_notify_quota_switch(channel.get('name', channel.get('yt_id', '')),
+                                   'riset', switched_from, used_pid)
     cands = []
     for v in vres.get('items', []):
         try:

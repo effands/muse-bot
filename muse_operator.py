@@ -16,6 +16,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, 'config.json')
 CHANNELS_FILE = os.path.join(BASE_DIR, 'channels_db.json')
 TASKS_FILE = os.path.join(BASE_DIR, 'tasks_db.json')
+# 🔥 v1.2.25: registry multi-client OAuth (metadata saja — dibaca untuk
+# menampilkan project cadangan di /kuota; secret tidak pernah dibaca di sini).
+OAUTH_CLIENTS_FILE = os.path.join(BASE_DIR, 'oauth_clients.json')
 PLAYLIST_JOBS_FILE = os.path.join(BASE_DIR, 'playlist_jobs.json')
 
 
@@ -536,6 +539,43 @@ def get_channel_quota(ch):
     used = int(du.get('count', 0)) if du.get('date') == today else 0
     return used, max(0, MAX_UPLOADS_PER_DAY - used)
 
+
+def _oauth_registry_clients():
+    """Daftar client OAuth dari registry (metadata saja)."""
+    try:
+        if not os.path.exists(OAUTH_CLIENTS_FILE):
+            return []
+        with open(OAUTH_CLIENTS_FILE, 'r') as f:
+            store = json.load(f) or {}
+        clients = store.get('clients') or []
+        return [c for c in clients if isinstance(c, dict)]
+    except Exception:
+        return []
+
+
+def _project_uploads_today_op(channels, project_id):
+    """Total upload hari ini (WIB) di satu project — cerminan
+    _project_uploads_today() di app.py: pakai daily_uploads_by_project
+    (project yang benar-benar dipakai, termasuk setelah auto-switch);
+    channel lama tanpa catatan per-project dihitung dari counter legacy
+    dikurangi upload di project lain hari ini."""
+    if not project_id:
+        return 0
+    today = _wib_today_str()
+    total = 0
+    for c in channels or []:
+        byp = c.get('daily_uploads_by_project') or {}
+        ent = byp.get(str(project_id))
+        if ent and ent.get('date') == today:
+            total += int(ent.get('count', 0))
+        elif _project_id_of_channel(c) == project_id:
+            du = c.get('daily_uploads') or {}
+            if du.get('date') == today:
+                other = sum(int(v.get('count', 0)) for k, v in byp.items()
+                            if k != str(project_id) and v.get('date') == today)
+                total += max(0, int(du.get('count', 0)) - other)
+    return total
+
 def get_stock_days(ch):
     """Sisa stok jadwal channel dalam hari (bisa negatif = sudah habis).
     None kalau channel belum punya jadwal sama sekali."""
@@ -686,7 +726,9 @@ def build_status_report():
             pause_txt = " ⏸️ Dijeda" if ch.get('paused') else ""
             mode_txt = ' 🤖 Full-Auto' if _autopilot_of(ch) == 'auto' else ' 👀 Approval'
             lines.append(f"• *{_tg_escape(name)}* — {conn}{cd_txt}{pause_txt}{mode_txt}")
-            lines.append(f"  Upload hari ini: `{used}/{MAX_UPLOADS_PER_DAY}` (sisa `{left}`) • Stok: {stock_txt}")
+            # 🔥 v1.2.25: tampilkan project utama channel di /status.
+            _spid = _project_id_of_channel(ch) or '—'
+            lines.append(f"  Upload hari ini: `{used}/{MAX_UPLOADS_PER_DAY}` (sisa `{left}`) • Project `{_tg_escape(_spid)}` • Stok: {stock_txt}")
         lines.append(f"📈 *Total sisa kuota hari ini:* `{total_left} video`")
     lines += [
         "━━━━━━━━━━━━━━━━━━━━━━",
@@ -1616,9 +1658,17 @@ def build_quota_report():
         pid = _project_id_of_channel(ch) or 'tidak-diketahui'
         e = projects.setdefault(pid, {"channels": [], "used": 0})
         e["channels"].append(ch)
-        du = ch.get('daily_uploads') or {}
-        if du.get('date') == today:
-            e["used"] += int(du.get('count', 0))
+    # 🔥 v1.2.25: hitungan per project dari daily_uploads_by_project
+    # (benar setelah auto-switch); project cadangan di registry yang
+    # belum punya channel tetap ditampilkan (0 upload).
+    for pid in list(projects):
+        if pid != 'tidak-diketahui':
+            projects[pid]["used"] = _project_uploads_today_op(channels, pid)
+    for _c in _oauth_registry_clients():
+        _pid = str(_c.get('project_id') or '')
+        if _pid and _pid not in projects:
+            projects[_pid] = {"channels": [], "used": 0, "backup": True,
+                              "client_name": _c.get('name') or _pid}
     lines.append("☁️ *Per Project Google* (batas 100 upload/hari/project):")
     for pid in sorted(projects):
         e = projects[pid]
@@ -1626,9 +1676,12 @@ def build_quota_report():
         left = max(0, MAX_UPLOADS_PER_DAY - used)
         names = ", ".join(_channel_display_name(c) for c in e["channels"][:4])
         cd = any((c.get('cooldown_until') or 0) > time.time() for c in e["channels"])
-        lines.append(f"• Project `{_tg_escape(pid)}`: `{used}/{MAX_UPLOADS_PER_DAY}` (sisa `{left}`)"
+        _tag = " (cadangan)" if e.get("backup") else ""
+        _cname = f" — {e.get('client_name')}" if e.get("client_name") else ""
+        lines.append(f"• Project `{_tg_escape(pid)}`{_tag}{_tg_escape(_cname)}: `{used}/{MAX_UPLOADS_PER_DAY}` (sisa `{left}`)"
                      + (" ⏸️ cooldown sampai tengah malam" if cd else ""))
-        lines.append(f"  Channel: {_tg_escape(names)}")
+        if names:
+            lines.append(f"  Channel: {_tg_escape(names)}")
         if len(e["channels"]) > 4:
             lines.append(f"  _...dan {len(e['channels']) - 4} channel lainnya._")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━")
@@ -1637,7 +1690,8 @@ def build_quota_report():
         name = _channel_display_name(ch)
         used, left = get_channel_quota(ch)
         pause = " ⏸️ Dijeda" if ch.get('paused') else ""
-        lines.append(f"• *{_tg_escape(name)}*: `{used}/{MAX_UPLOADS_PER_DAY}` (sisa `{left}`){pause}")
+        _pid = _project_id_of_channel(ch) or '—'
+        lines.append(f"• *{_tg_escape(name)}* (project `{_tg_escape(_pid)}`): `{used}/{MAX_UPLOADS_PER_DAY}` (sisa `{left}`){pause}")
     if len(channels) > 8:
         lines.append(f"_...dan {len(channels) - 8} channel lainnya._")
     lines.append("Bos, kalau kuota project udah 100/100, upload baru nunggu reset tengah malam WIB ya 😌")

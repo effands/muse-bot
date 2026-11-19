@@ -5674,14 +5674,28 @@ function renderOAuthClients() {
   renderOAuthMapping();
 }
 
+// 🔥 v1.2.27: token_client_ids per channel HANYA ada di /api/oauth_clients
+// (disimpan di _oauthChannels, dicocokkan per yt_id) — /api/get_channels
+// (array `channels`) TIDAK mengembalikan field itu (hanya oauth_client_id
+// + token_projects), jadi membaca dari `channels` selalu menghasilkan []
+// dan semua channel tampil "belum ada token". Bila _oauthChannels belum
+// dimuat / tidak ada entri untuk channel ini, fallback ke data `channels`
+// apa adanya (jangan karang).
+function oauthChannelTokens(ch) {
+  const fromReg = _oauthChannels.find(x => x.yt_id === ch.yt_id);
+  if (fromReg) return { have: fromReg.token_client_ids || [], primary: fromReg.primary_client_id || ch.oauth_client_id || '' };
+  return { have: ch.token_client_ids || [], primary: ch.oauth_client_id || '' };
+}
+
 function renderOAuthMapping() {
   const el = document.getElementById('oauth-mapping-list');
   if (!el) return;
   if (!channels.length) { el.textContent = 'Belum ada channel tertaut.'; return; }
   if (!_oauthClients.length) { el.textContent = 'Upload client OAuth dulu.'; return; }
   el.innerHTML = channels.map(ch => {
-    const have = ch.token_client_ids || [];
-    const primary = ch.oauth_client_id || (have[0] || '');
+    const tk = oauthChannelTokens(ch);
+    const have = tk.have;
+    const primary = tk.primary || (have[0] || '');
     const opts = _oauthClients.filter(c => have.includes(c.client_id)).map(c =>
       `<option value="${escapeHtml(c.client_id)}"${c.client_id === primary ? ' selected' : ''}>${escapeHtml(_oauthClientLabel(c))}</option>`).join('');
     const missing = _oauthClients.filter(c => !have.includes(c.client_id));
@@ -5737,7 +5751,7 @@ function setChannelClient(ytId, cid) {
 
 function oauthLinkChannel(ytId) {
   const ch = channels.find(c => c.yt_id === ytId);
-  const have = (ch && ch.token_client_ids) || [];
+  const have = ch ? oauthChannelTokens(ch).have : [];
   const missing = _oauthClients.filter(c => !have.includes(c.client_id));
   const target = missing.length ? missing[0] : (_oauthClients.find(c => c.primary) || _oauthClients[0]);
   if (!target) { toast('Upload client OAuth dulu!', 'warn'); return; }

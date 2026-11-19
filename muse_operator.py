@@ -6326,9 +6326,14 @@ def _nlu_extract_pixabay_theme(clean):
 
 def _nlu_extract_playlist_theme(clean, channels):
     """Tema musik playlist: sisa kalimat setelah buang kata kerja, kata
-    'playlist', nama channel, segmen Pixabay, dan kata sambung.
+    'playlist', nama channel, segmen Pixabay, klausa cek-login, jumlah
+    channel, dan kata sambung.
     'buatkan playlist lagu malaysia lawas di aruya footage autumn'
-    → 'lagu malaysia lawas'. Kosong bila tema tidak disebut."""
+    → 'lagu malaysia lawas'.
+    'buatkan video playlist lagu nostalgia tahun 2000 an untuk ke 4
+    channel ku yang ada saat ini, cek dulu sebelumnya apakah semua
+    channel masih terlogin semua' → 'lagu nostalgia tahun 2000an'.
+    Kosong bila tema tidak disebut."""
     t = clean
     # Segmen durasi dibuang dulu supaya 'durasi 40-70 menit' tidak
     # nyangkut jadi tema.
@@ -6336,6 +6341,22 @@ def _nlu_extract_playlist_theme(clean, channels):
     m = re.search(r'(?:tema\s+pixabay|tema\s+footage|footage|pixabay)\s+[a-z0-9 ]*?(?:\s+(?:di|untuk|ke|pada|channel|tema)\b|$)', t)
     if m:
         t = (t[:m.start()] + ' ' + t[m.end():]).strip()
+    # 🔥 v1.3.2: klausa cek-login dibuang dulu (semua teks mulai dari
+    # 'cek'/'periksa'/'pastikan' bila mengandung 'login'/'terlogin'/
+    # 'masuk') — kalau tidak dibuang, seluruh kalimat perintah nyangkut
+    # jadi tema ("...cek dulu sebelumnya apakah masih terlogin semua").
+    _m_login = re.search(r'\b(cek|periksa|pastikan)\b', t)
+    if _m_login and re.search(r'\b(login|terlogin|masuk)\b', t[_m_login.start():]):
+        t = t[:_m_login.start()].strip()
+    # Jumlah channel ("ke 4 channel", "4 channel", "keempat") + sisa
+    # "ku yang ada saat ini" bukan tema — buang. 'video' juga bukan tema
+    # (itu jenis artefak: "buatkan video playlist ...").
+    t = re.sub(r'\bke\s*\d+\s*channel\b', ' ', t)
+    t = re.sub(r'\b\d+\s*channel\b', ' ', t)
+    t = re.sub(r'\b(keempat|ketiga|kedua|kelima|keenam|ketujuh|kedelapan|kesembilan|kesepuluh)\b', ' ', t)
+    t = re.sub(r'\byang ada saat ini\b', ' ', t)
+    t = re.sub(r'\bku\b', ' ', t)
+    t = re.sub(r'\bvideo\b', ' ', t)
     t = re.sub(r'\b(buatkan|bikin|buat|tolong|buatlah)\b', ' ', t)
     t = re.sub(r'\bmusik\s+playlist\b', ' ', t)
     t = re.sub(r'\bplaylist\b', ' ', t)
@@ -6350,6 +6371,8 @@ def _nlu_extract_playlist_theme(clean, channels):
                 if len(w) >= 3:
                     t = re.sub(r'\b' + re.escape(w) + r'\b', ' ', t)
     t = re.sub(r'\b(untuk|di|ke|pada|dari|channel|semua|tema)\b', ' ', t)
+    # "tahun 2000 an" → "tahun 2000an" (tahun + 'an' menyatu).
+    t = re.sub(r'\b(\d{2,4})\s+an\b', r'\1an', t)
     t = re.sub(r'\s+', ' ', t).strip()
     return t[:100] or None
 
@@ -6916,7 +6939,13 @@ def _nlu_describe(pending):
     Cozy Sax Relaxing.'"""
     slots = pending.get('slots') or {}
     intent = pending.get('intent')
-    names = _nlu_channel_names(slots.get('channels') or [])
+    # 🔥 v1.3.2: 'all' (dari "semua channel" / tombol Semua channel)
+    # diuraikan ke daftar nama supaya konfirmasi menyebut semua channel,
+    # bukan sekadar "semua channel".
+    _ch_ids = slots.get('channels')
+    if _ch_ids == 'all':
+        _ch_ids = [c.get('yt_id') for c in load_channels()]
+    names = _nlu_channel_names(_ch_ids or [])
     if names:
         ch = ', '.join(names)
         if slots.get('channel_count') and len(names) < slots['channel_count']:
@@ -7032,6 +7061,23 @@ def _nlu_describe(pending):
     return intent or 'sesuatu'
 
 
+def _nlu_check_channels_login(channels):
+    """Cek login per channel via channels().list (1 unit kuota/channel,
+    refresh token bila perlu — _fetch_channel_stats_api yang sama seperti
+    laporan). Kembalikan {yt_id: True/False}: True = token masih jalan
+    (login hidup), False = token mati / tidak bisa dipakai. 🔥 v1.3.2."""
+    out = {}
+    for ch in (channels or []):
+        yt = ch.get('yt_id')
+        if not yt:
+            continue
+        try:
+            out[yt] = _fetch_channel_stats_api(ch) is not None
+        except Exception:
+            out[yt] = False
+    return out
+
+
 def _nlu_ask_channel(token, chat_id, pending, multi=True):
     """Tanya channel mana lewat tombol inline. Bila diminta N channel,
     tombol ditekan satu per satu sampai N terkumpul (progres ditampilkan)."""
@@ -7115,17 +7161,20 @@ def _nlu_advance(token, chat_id, pending):
                   'atur_jadwal'):
         if slots.get('channels') == 'all':
             slots['channels'] = [c.get('yt_id') for c in chans]
-        if not slots.get('channels') and slots.get('channel_unknown'):
+        if not slots.get('channels') and slots.get('channel_unknown') \
+                and not slots.get('channel_count'):
+            # 🔥 v1.3.2: 'channel_unknown' JANGAN menahan bila channel
+            # disebut lewat JUMLAH ("ke 4 channel" → channel_count) —
+            # nama memang tidak disebut, tapi maksudnya jelas.
             send_message(token, chat_id,
                          "Saya nggak nemu channel yang Bos sebut 😅 — channel yang "
                          "terdaftar: " + ", ".join(_channel_display_name(c) for c in chans)
                          + ". Coba sebut namanya lagi ya Bos.")
             _clear_nlu_pending(chat_id)
             return
-        if intent in ('buat_long', 'buat_playlist'):
-            # Video long & playlist hanya 1 channel sekali proses (sesuai
-            # /buatlong & /buatplaylist): bila disebut lebih dari 1 channel,
-            # minta pilih satu saja.
+        if intent == 'buat_long':
+            # Video long hanya 1 channel sekali proses (sesuai /buatlong):
+            # bila disebut lebih dari 1 channel, minta pilih satu saja.
             slots.pop('channel_count', None)
             if len(slots.get('channels') or []) > 1:
                 slots['channels'] = []
@@ -7134,6 +7183,57 @@ def _nlu_advance(token, chat_id, pending):
                 _save_nlu_pending(chat_id, pending)
                 _nlu_ask_channel(token, chat_id, pending, multi=False)
                 return
+        elif intent == 'buat_playlist':
+            # 🔥 v1.3.2: playlist BOLEH multi-channel (riset + auto-pick
+            # per channel di eksekusi). Angka yang sama dengan jumlah
+            # channel yang ada ("ke 4 channel" / "4 channel") = semua.
+            if slots.get('channel_count') and slots['channel_count'] >= len(chans):
+                slots['channels'] = [c.get('yt_id') for c in chans]
+                slots.pop('channel_count', None)
+            if not slots.get('channels'):
+                pending['awaiting'] = 'channel'
+                _save_nlu_pending(chat_id, pending)
+                _nlu_ask_channel(token, chat_id, pending, multi=True)
+                return
+            need = slots.get('channel_count') or 0
+            if need and len(slots.get('channels') or []) < need:
+                pending['awaiting'] = 'channel'
+                _save_nlu_pending(chat_id, pending)
+                _nlu_ask_channel(token, chat_id, pending, multi=True)
+                return
+            slots.pop('channel_count', None)
+            # Cek login semua channel SEBELUM konfirmasi (hanya bila
+            # multi-channel; 1 channel tetap ikut alur terpandu lama).
+            if len(slots.get('channels') or []) > 1 and not slots.get('login_checked'):
+                slots['login_checked'] = True
+                _save_nlu_pending(chat_id, pending)
+                _target = [c for c in chans
+                           if c.get('yt_id') in (slots.get('channels') or [])]
+                _res = _nlu_check_channels_login(_target)
+                _live = [c for c in _target if _res.get(c.get('yt_id'))]
+                _dead = [c for c in _target if not _res.get(c.get('yt_id'))]
+                if not _live:
+                    send_message(token, chat_id,
+                                 "Semua channel loginnya mati Bos — tidak ada playlist yang dibuat.\n"
+                                 "Tautkan ulang dari panel (Settings → Tambah Channel, device login), lalu coba lagi ya.")
+                    _clear_nlu_pending(chat_id)
+                    return
+                if _dead:
+                    slots['login_dead'] = [_channel_display_name(c) for c in _dead]
+                    slots['channels'] = [c.get('yt_id') for c in _live]
+                    _save_nlu_pending(chat_id, pending)
+                    send_message(token, chat_id,
+                                 "Cek login: "
+                                 + ", ".join(_channel_display_name(c) for c in _live)
+                                 + " masih terlogin. "
+                                 + ", ".join(_channel_display_name(c) for c in _dead)
+                                 + " loginnya mati — saya keluarkan dulu dari daftar ya. "
+                                 "Tautkan ulang dari panel (Settings → Tambah Channel, device login) supaya bisa dipakai lagi.")
+                else:
+                    send_message(token, chat_id,
+                                 "Cek login: "
+                                 + ", ".join(_channel_display_name(c) for c in _live)
+                                 + " — masih terlogin semua.")
         else:
             need = slots.get('channel_count') or 1
             have = len(slots.get('channels') or [])
@@ -7451,12 +7551,16 @@ def _execute_nlu_destructive(token, chat_id, pending):
 
 
 def _execute_nlu_create_playlist(token, chat_id, pending):
-    """NLU 'buatkan playlist ...' — masuk ke alur tanya-jawab yang SAMA
-    seperti /playlist: slot yang sudah diketahui (channel, tema, footage)
-    diisi ke draft, sisanya ditanyakan satu per satu (tidak ditebak)."""
+    """NLU 'buatkan playlist ...' — 1 channel: masuk ke alur tanya-jawab
+    yang SAMA seperti /playlist (draft + pilih kandidat manual).
+    Multi-channel (🔥 v1.3.2): riset + auto-pick + buat langsung per
+    channel, tanpa alur terpandu."""
     slots = pending.get('slots') or {}
     chs = [c for c in load_channels()
            if c.get('yt_id') in (slots.get('channels') or [])]
+    if len(chs) > 1:
+        _execute_nlu_create_playlist_multi(token, chat_id, pending, chs)
+        return
     ch = chs[0] if chs else None
     if not ch:
         send_message(token, chat_id,
@@ -7490,6 +7594,73 @@ def _execute_nlu_create_playlist(token, chat_id, pending):
                  f"🎵 *Siap Bos, kita buat Playlist buat channel {_tg_escape(data['channel_name'])} ya!* 😎\n"
                  "Jawab tiap langkah satu per satu — ketik /batal kapan saja untuk berhenti.")
     _make_ask_step(token, chat_id, draft)
+
+
+def _execute_nlu_create_playlist_multi(token, chat_id, pending, chs):
+    """NLU playlist multi-channel (🔥 v1.3.2): untuk SETIAP channel —
+    riset tema yang sama, auto-pick kandidat terbaik (aturan Auto v1.2.10:
+    views >=20rb, terbit 30 hari terakhir, views tertinggi), lalu buat job
+    di slot berikutnya channel itu. Channel yang riset / kandidat /
+    create-nya gagal dilewati + dilaporkan jujur; channel lain tetap
+    jalan. Login dicek dulu; yang mati dikeluarkan (bila semua mati,
+    tidak ada yang dibuat)."""
+    slots = pending.get('slots') or {}
+    theme = slots.get('playlist_theme') or ''
+    # Login — pengaman bila _nlu_advance belum sempat cek.
+    if not slots.get('login_checked'):
+        _res = _nlu_check_channels_login(chs)
+        _live = [c for c in chs if _res.get(c.get('yt_id'))]
+        _dead = [c for c in chs if not _res.get(c.get('yt_id'))]
+        slots['login_checked'] = True
+        if _dead:
+            slots['login_dead'] = [_channel_display_name(c) for c in _dead]
+        chs = _live
+        if not chs:
+            send_message(token, chat_id,
+                         "Semua channel loginnya mati Bos — tidak ada playlist yang dibuat.\n"
+                         "Tautkan ulang dari panel (Settings → Tambah Channel, device login), lalu coba lagi ya.")
+            return
+    dead_names = slots.get('login_dead') or []
+    send_message(token, chat_id,
+                 f"Siap Bos, saya buatkan playlist tema *{_tg_escape(theme)}* untuk {len(chs)} channel ya — riset satu per satu, yang lolos langsung dibuat.")
+    lines = []
+    for ch in chs:
+        name = _channel_display_name(ch)
+        yt = ch.get('yt_id')
+        ok, msg, data = _operator_post('/api/operator/playlist_research',
+                                       {'yt_id': yt, 'theme': theme,
+                                        'min_duration_sec': slots.get('duration_min_sec'),
+                                        'max_duration_sec': slots.get('duration_max_sec')})
+        if not ok:
+            lines.append(f"• *{_tg_escape(name)}*: riset gagal — {_tg_escape(msg)} (dilewati)")
+            continue
+        cands = (data or {}).get('candidates') or []
+        best = _playlist_pick_best(cands, slots.get('duration_min_sec'),
+                                   slots.get('duration_max_sec'))
+        if not best:
+            lines.append(f"• *{_tg_escape(name)}*: tidak ada kandidat yang lolos (views ≥20rb, 30 hari terakhir) — dilewati, coba tema lain")
+            continue
+        if slots.get('publish_date'):
+            pub = slots['publish_date']
+        elif slots.get('publish_now'):
+            pub = _playlist_publish_now_date()
+        else:
+            pub = _next_slot_for_channel(ch)
+        ok2, info2, _resp2 = _operator_post('/api/operator/playlist_create',
+                                            {'job_id': (data or {}).get('job_id', ''),
+                                             'video_id': best.get('video_id'),
+                                             'publish_date': pub, 'privacy': 'public',
+                                             'pixabay_theme': slots.get('pixabay_theme') or ''})
+        if not ok2:
+            lines.append(f"• *{_tg_escape(name)}*: gagal dibuat — {_tg_escape(info2)} (dilewati)")
+            continue
+        views_txt = f"{best.get('views') or 0:,}".replace(',', '.')
+        lines.append(f"• *{_tg_escape(name)}*: dibuat — *{_tg_escape((best.get('title') or '')[:60])}* ({views_txt} views) — tayang {pub}")
+    if dead_names:
+        lines.append("")
+        lines.append("Yang loginnya mati (tidak dibuatkan): " + ", ".join(_tg_escape(n) for n in dead_names)
+                     + " — tautkan ulang dari panel (Settings → Tambah Channel, device login).")
+    send_message(token, chat_id, "\n".join(lines) or "Tidak ada playlist yang dibuat Bos.")
 
 
 def _execute_nlu_create_zumo(token, chat_id, pending):

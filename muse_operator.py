@@ -134,11 +134,16 @@ def save_monitor_state(state):
 _LAST_BOT_MESSAGE = {}  # chat_id (str) -> teks pesan bot terakhir (konteks "yang tadi")
 
 
-def _bridge_forward(token, chat_id, message_id, text):
-    """Teruskan chat bebas ke kotak masuk Muse. Tulis 1 baris JSONL
-    (status 'new', source 'nlu_fallback') + catat message_id di
-    monitor_state (dedupe, cap 200). Kembalikan True bila baru diteruskan,
-    False bila message_id sudah pernah diteruskan / gagal tulis."""
+def _bridge_forward(token, chat_id, message_id, text, source='nlu_fallback', context_extra=None):
+    """Teruskan pesan ke kotak masuk Muse (telegram_inbox.jsonl).
+    Tulis 1 baris JSONL (status 'new') + catat message_id di monitor_state
+    (dedupe, cap 200). Kembalikan True bila baru diteruskan, False bila
+    message_id sudah pernah diteruskan / gagal tulis. source default
+    'nlu_fallback'; pemanggil eskalasi (v1.3.5) bisa mengisi source lain
+    (mis. 'playlist_no_candidate') + context_extra (dict) supaya cron
+    bridge tahu konteks kegagalannya. message_id boleh None (tanpa
+    dedupe) untuk eskalasi yang dibuat operator sendiri — pemanggil
+    WAJIB memastikan hanya forward SEKALI per order gagal."""
     try:
         state = load_monitor_state()
         forwarded = state.get('bridge_forwarded_ids') or []
@@ -155,11 +160,12 @@ def _bridge_forward(token, chat_id, message_id, text):
             "unix_time": int(now),
             "timestamp_wib": _wib_now().strftime('%Y-%m-%d %H:%M:%S'),
             "status": "new",
-            "source": "nlu_fallback",
+            "source": source,
             "context": {
                 "draft_step": (draft or {}).get('step') if isinstance(draft, dict) else None,
                 "pending_nlu": (pending or {}).get('intent') if isinstance(pending, dict) else None,
                 "last_bot_message": _LAST_BOT_MESSAGE.get(str(chat_id), '')[:200],
+                **((context_extra or {}) if isinstance(context_extra, dict) else {}),
             },
             "attempts": 0,
             "muse_reply_message_id": None,
@@ -4218,13 +4224,17 @@ def _start_make_long(token, chat_id, raw_cmd):
 # alur yang SAMA; slot yang belum lengkap ditanyakan, bukan digagalkan.
 # Mode AUTO: tombol '🤖 Auto — pilih yang terbaik' di langkah pilih,
 # ketik 'auto' di langkah pilih, segmen 'auto' di one-shot, atau kata
-# 'auto'/'otomatis' di NLU → _playlist_pick_best memilih views
-# tertinggi di antara yang lolos kriteria (views ≥20rb, 30 hari
-# terakhir, durasi dalam rentang filter bila ada); bila tidak ada yang
+# 'auto'/'otomatis' di NLU → _playlist_pick_best memilih bertingkat
+# (v1.3.5 koreksi: tier berbasis UMUR saja — 30 hari, 90 hari, 1 tahun,
+# evergreen, lalu 'link'; TANPA filter views, views berapa pun boleh).
+# Di tiap tier pemenangnya views tertinggi (seri → durasi terpanjang;
+# tier 'link': durasi terpanjang). Durasi filter tetap berlaku bila
+# user mengisi rentang, KECUALI tier 'link'. Bila tidak ada yang
 # lolos → pesan jelas + pilihan manual, tidak asal pilih.
 def _parse_playlist_duration(text):
     """Parse jawaban durasi playlist → (min_sec, max_sec, note) atau None.
     '40-70' / '40 - 70 menit' / '40 sampai 70 menit' → (2400, 4200).
+    'durasi minimal 40 menit' → (2400, None, 'minimal 40 menit').
     '1 jam' → sekitar 60 menit: (3000, 4200) + note menyebutkannya
     (TIDAK ditebak diam-diam jadi 40-70). Angka tunggal '60' / '60 menit'
     → sekitar 60 menit: (3300, 3900). 'lewati'/'semua' → (None, None, '')
@@ -4234,6 +4244,18 @@ def _parse_playlist_duration(text):
     t = re.sub(r'\s+', ' ', t)
     if not t or t in ('lewati', '-', 'skip', 'semua', 'bebas', 'auto', 'default'):
         return (None, None, '')
+    # v1.3.5 koreksi: 'minimal 40 menit' -> min saja (2400, None);
+    # 'maksimal 40 menit' -> max saja (None, 2400).
+    m = re.match(r'^(minimal|minimum|paling tidak|setidaknya)\s+(\d+(?:[.,]\d+)?)\s*(jam|menit|mnt)?\b', t)
+    if m:
+        x = float(m.group(2).replace(',', '.'))
+        mult = 3600 if m.group(3) == 'jam' else 60
+        return (int(x * mult), None, f"minimal {m.group(2).replace(',', '.')} {'jam' if m.group(3) == 'jam' else 'menit'}")
+    m = re.match(r'^(maksimal|maksimum|paling banyak)\s+(\d+(?:[.,]\d+)?)\s*(jam|menit|mnt)?\b', t)
+    if m:
+        x = float(m.group(2).replace(',', '.'))
+        mult = 3600 if m.group(3) == 'jam' else 60
+        return (None, int(x * mult), f"maksimal {m.group(2).replace(',', '.')} {'jam' if m.group(3) == 'jam' else 'menit'}")
     # Rentang: 40-70 / 40 - 70 / 40 sampai 70 / 40 s/d 70 (+ satuan opsional).
     m = re.search(r'(\d+(?:[.,]\d+)?)\s*(?:-|–|—|sampai|s/d|sd|hingga)\s*(\d+(?:[.,]\d+)?)\s*(jam|menit|mnt)?\b', t)
     if m:
@@ -4265,7 +4287,7 @@ def _playlist_next_step(d):
     """Langkah pertama yang masih kosong untuk Playlist."""
     if not d.get('yt_id'):
         return 'channel'
-    if not d.get('theme'):
+    if not d.get('theme') and not d.get('source_url'):
         return 'theme'
     if 'pixabay_theme' not in d:
         return 'pixabay'
@@ -4334,39 +4356,127 @@ def _make_playlist_summary(d):
     return "\n".join(lines)
 
 
-def _playlist_pick_best(cands, min_sec=None, max_sec=None):
-    """Pilih kandidat terbaik (mode Auto): views >= 20rb, terbit 30 hari
-    terakhir, durasi dalam rentang filter (bila ada). Pemenang = views
-    tertinggi. Kembalikan kandidat atau None bila tidak ada yang lolos
-    kriteria (pemanggil JANGAN asal pilih di luar kriteria)."""
-    best = None
-    today = _wib_now().date()
-    for c in (cands or []):
+def _playlist_should_escalate(made):
+    """Eskalasi ke Muse (v1.3.5): True bila order playlist tidak
+    menghasilkan SATU PUN job (semua channel 0 kandidat / gagal).
+    `made` = list bool per channel (True = job berhasil dibuat).
+    Bila >=1 berhasil, JANGAN forward — operator sudah bekerja."""
+    return not any(made or [])
+
+
+def _playlist_escalation_text(theme, channel_names, publish_date, tier_label, source_url=None):
+    """Teks konteks kegagalan playlist untuk _bridge_forward: tema, channel,
+    jadwal, tier terakhir yang dicoba. Dibaca Muse dari telegram_inbox."""
+    lines = [
+        "[ESKALASI PLAYLIST — 0 kandidat di semua channel]",
+        f"Tema: {theme or '(tidak ada)'}",
+        f"Channel: {', '.join(channel_names) if channel_names else '(tidak ada)'}",
+        f"Jadwal diminta: {publish_date or '(slot berikutnya)'}",
+        f"Tier terakhir dicoba: {tier_label or 'evergreen (tier 4, semua umur video)'}",
+    ]
+    if source_url:
+        lines.append(f"Link kiriman Bos: {source_url} (mode jiplak, juga gagal dibaca/dibuat)")
+    lines.append("Tidak ada kandidat sama sekali setelah filter bertingkat — tolong bantu cari solusi: longgarkan lagi, ganti tema, atau minta link YouTube untuk dijiplak.")
+    return "\n".join(lines)
+
+
+def _extract_youtube_link(text):
+    """Ambil URL YouTube pertama dari teks (atau None)."""
+    m = re.search(r'https?://(?:www\.|music\.)?(?:youtube\.com|youtu\.be)\S+', (text or ''))
+    if not m:
+        return None
+    return m.group(0).rstrip('.,);]>"\'')
+
+
+def _extract_youtube_ids_from_url(url):
+    """Ekstrak (video_id, playlist_id) dari link YouTube (cermin app.py)."""
+    text = (url or '').strip()
+    if not text:
+        return None, None
+    m_list = re.search(r'[?&]list=([A-Za-z0-9_-]+)', text)
+    playlist_id = m_list.group(1) if m_list else None
+    video_id = None
+    for pat in (r'youtu\.be/([A-Za-z0-9_-]{11})',
+                r'[?&]v=([A-Za-z0-9_-]{11})',
+                r'/shorts/([A-Za-z0-9_-]{11})',
+                r'/embed/([A-Za-z0-9_-]{11})',
+                r'/live/([A-Za-z0-9_-]{11})',
+                r'/v/([A-Za-z0-9_-]{11})'):
+        m = re.search(pat, text)
+        if m:
+            video_id = m.group(1)
+            break
+    return video_id, playlist_id
+
+
+_PLAYLIST_TIER_LABELS = {1: "30 hari", 2: "90 hari",
+                        3: "1 tahun", 4: "evergreen",
+                        "link": "link kiriman Bos"}
+
+
+def _playlist_tier_key(c):
+    """Tier kandidat (1/2/3/4/'link'), atau None bila tidak ada video_id /
+    tidak ada data sama sekali. v1.3.5 koreksi: TANPA filter views —
+    tier hanya dari UMUR terbit; kandidat lama tanpa field 'tier' ditebak
+    dari umur saja. Views 0 pun lolos."""
+    if not c or not c.get('video_id'):
+        return None
+    t = c.get('tier')
+    if t in (1, 2, 3, 4, 'link'):
+        return t
+    pub = (c.get('published_at') or '')[:10]
+    age = None
+    if pub:
         try:
-            views = int(c.get('views') or 0)
+            age = (_wib_now().date() - datetime.strptime(pub, '%Y-%m-%d').date()).days
         except Exception:
-            views = 0
-        if views < 20000:
+            age = None
+    if age is not None and age <= 30:
+        return 1
+    if age is not None and age <= 90:
+        return 2
+    if age is not None and age <= 365:
+        return 3
+    return 4
+
+
+def _playlist_pick_best(cands, min_sec=None, max_sec=None):
+    """Pilih kandidat terbaik, BERTINGKAT (v1.3.5) — kembalikan
+    (best, tier_label). Tier 1 dulu, lalu 2, 3, 4, lalu 'link'; di tiap
+    tier pemenang = views tertinggi, seri → durasi terpanjang (bila
+    semua 0 views, yang terpilih = pertama / durasi terpanjang).
+    v1.3.5 koreksi: TIDAK ADA filter views — hanya kandidat tanpa
+    video_id / tanpa data yang ditolak. Filter durasi (min/max_sec)
+    TETAP berlaku bila user mengisi rentang, KECUALI untuk tier 'link'
+    (link kiriman Bos dikecualikan — link itu sumbernya, bukan hasil
+    riset). (None, None) bila tidak ada kandidat sama sekali."""
+    if not cands:
+        return None, None
+    groups = {}
+    for c in (cands or []):
+        key = _playlist_tier_key(c)
+        if key is None:
             continue
-        dur = c.get('duration_sec') or 0
-        if min_sec is not None or max_sec is not None:
+        if key != 'link' and (min_sec is not None or max_sec is not None):
+            dur = c.get('duration_sec') or 0
             if dur <= 0:
                 continue
             if min_sec is not None and dur < min_sec:
                 continue
             if max_sec is not None and dur > max_sec:
                 continue
-        pub = (c.get('published_at') or '')[:10]
-        if pub:
-            try:
-                pdate = datetime.strptime(pub, '%Y-%m-%d').date()
-                if (today - pdate).days > 30:
-                    continue
-            except Exception:
-                pass
-        if best is None or views > (best.get('views') or 0):
-            best = c
-    return best
+        groups.setdefault(key, []).append(c)
+    for key in (1, 2, 3, 4, 'link'):
+        lst = groups.get(key)
+        if not lst:
+            continue
+        if key == 'link':
+            best = max(lst, key=lambda c: ((c.get('duration_sec') or 0), (c.get('views') or 0)))
+        else:
+            best = max(lst, key=lambda c: ((c.get('views') or 0), (c.get('duration_sec') or 0)))
+        label = best.get('tier_label') or _PLAYLIST_TIER_LABELS.get(key, 'evergreen')
+        return best, label
+    return None, None
 
 
 def _pl_send_candidates(token, chat_id, draft):
@@ -4374,7 +4484,9 @@ def _pl_send_candidates(token, chat_id, draft):
     tombol Auto. Setiap baris: judul, channel, views, durasi."""
     d = draft.get('data') or {}
     cands = d.get('candidates') or []
-    lines = ["🎵 *Langkah 4: Pilih referensi*\n\nKandidat playlist (30 hari terakhir, views >20rb) — pencet salah satu ya Bos:\n"]
+    _tier_lbl = d.get('tier_label') or 'semua umur video'
+    _src_txt = (f"dari link Bos: {_tg_escape(d.get('source_title') or '')} — " if d.get('source_url') else '')
+    lines = ["🎵 *Langkah 4: Pilih referensi*\n\nKandidat playlist (" + _src_txt + "tier " + _tier_lbl + ") — pencet salah satu ya Bos:\n"]
     rows = []
     for i, c in enumerate(cands[:8]):
         views = c.get('views') or 0
@@ -4397,15 +4509,15 @@ def _pl_auto_pick(token, chat_id, draft):
     kriteria)."""
     d = draft.get('data') or {}
     cands = d.get('candidates') or []
-    best = _playlist_pick_best(cands, d.get('duration_min_sec'), d.get('duration_max_sec'))
+    best, _tier_lbl = _playlist_pick_best(cands, d.get('duration_min_sec'), d.get('duration_max_sec'))
     if not best:
         dur_txt = d.get('duration_note') or 'semua durasi'
         draft['step'] = 'pick'
         _save_make_draft(chat_id, draft)
         send_message(token, chat_id,
                      f"😅 *Tidak ada kandidat yang lolos kriteria Auto Bos* — "
-                     f"tidak ada video {dur_txt} dengan views ≥20rb dalam 30 hari terakhir.\n\n"
-                     "Silakan pilih manual dari daftar di bawah ya, atau ketik /batal lalu coba tema/rentang durasi lain.")
+                     f"tidak ada video {dur_txt} yang lolos, padahal sudah dicari sampai semua umur video (evergreen).\n\n"
+                     "Silakan pilih manual dari daftar di bawah ya, atau kirim link YouTube-nya dengan 'jiplak playlist ini'.")
         _pl_send_candidates(token, chat_id, draft)
         return
     d['video_id'] = best.get('video_id')
@@ -4423,8 +4535,7 @@ def _pl_auto_pick(token, chat_id, draft):
                  f"🤖 *Saya pilihkan yang terbaik Bos!* 😎\n"
                  f"🎬 *{_tg_escape((best.get('title') or '')[:80])}* — "
                  f"{_tg_escape(best.get('channel', ''))} ({views_txt} views · {dur_mnt} mnt)\n"
-                 f"Alasan: views tertinggi di antara kandidat {dur_txt} yang lolos kriteria "
-                 "(views ≥20rb, 30 hari terakhir).")
+                 f"Alasan: views tertinggi di antara kandidat {dur_txt} (tier {_tier_lbl or 'evergreen'}).")
     _make_ask_step(token, chat_id, draft)
 
 
@@ -4435,6 +4546,39 @@ def _pl_run_research(token, chat_id, draft):
     kembali ke langkah tema supaya Bos bisa coba tema lain; bila kosong
     karena filter durasi, kembali ke langkah durasi."""
     d = draft.get('data') or {}
+    if d.get('source_url'):
+        # v1.3.5 jiplak: link Bos = sumbernya, tanpa riset/filter.
+        send_message(token, chat_id, "🔍 *Mengambil daftar lagu dari link Bos...* 😎")
+        ok, msg, data = _operator_post('/api/operator/playlist_from_url',
+                                      {'yt_id': d.get('yt_id'), 'url': d.get('source_url')})
+        if not ok:
+            draft['step'] = 'theme'
+            _save_make_draft(chat_id, draft)
+            send_message(token, chat_id,
+                         f"⚠️ *Link-nya gagal dibaca Bos* 😅\n{_tg_escape(msg)}\nCoba kirim link YouTube lain, atau ketik tema musiknya ya.")
+            _make_ask_step(token, chat_id, draft)
+            return
+        _cands = (data or {}).get('candidates') or []
+        if not _cands:
+            draft['step'] = 'theme'
+            _save_make_draft(chat_id, draft)
+            send_message(token, chat_id,
+                         "😅 *Link itu tidak ada lagunya Bos* — playlist-nya kosong atau videonya tidak bisa dibaca. Coba link lain atau ketik tema musiknya ya.")
+            _make_ask_step(token, chat_id, draft)
+            return
+        d['job_id'] = (data or {}).get('job_id', '')
+        d['candidates'] = _cands
+        d['source_title'] = (data or {}).get('source_title') or ''
+        d['source_kind'] = (data or {}).get('source_kind') or ''
+        d['tier_label'] = 'link kiriman Bos'
+        draft['data'] = d
+        if d.get('auto_pick'):
+            _pl_auto_pick(token, chat_id, draft)
+            return
+        draft['step'] = 'pick'
+        _save_make_draft(chat_id, draft)
+        _pl_send_candidates(token, chat_id, draft)
+        return
     send_message(token, chat_id, "🔍 *Mencari kandidat playlist...* 😎")
     ok, msg, data = _operator_post('/api/operator/playlist_research',
                                   {'yt_id': d.get('yt_id'), 'theme': d.get('theme', ''),
@@ -4448,6 +4592,8 @@ def _pl_run_research(token, chat_id, draft):
         _make_ask_step(token, chat_id, draft)
         return
     cands = (data or {}).get('candidates') or []
+    d['research_tier'] = (data or {}).get('research_tier')
+    d['tier_label'] = (data or {}).get('tier_label') or ''
     if not cands:
         filter_note = (data or {}).get('filter_note') or ''
         if filter_note and (d.get('duration_min_sec') is not None
@@ -4461,8 +4607,20 @@ def _pl_run_research(token, chat_id, draft):
             return
         draft['step'] = 'theme'
         _save_make_draft(chat_id, draft)
+        # v1.3.5 eskalasi: riset 0 kandidat total (bukan filter durasi)
+        # -> teruskan SEKALI ke Muse lewat jembatan, lalu SATU pesan
+        # gabungan (hasil 0 + sudah diteruskan), bukan pesan menyerah.
+        _esc = _playlist_escalation_text(
+            d.get('theme'), [d.get('channel_name') or d.get('yt_id') or ''],
+            d.get('publish_date'), d.get('tier_label'))
+        _bridge_forward(token, chat_id, None, _esc,
+                        source='playlist_no_candidate',
+                        context_extra={'theme': d.get('theme'), 'channels': [d.get('yt_id')],
+                                       'publish_date': d.get('publish_date'),
+                                       'tier_label': d.get('tier_label')})
         send_message(token, chat_id,
-                     "😅 *Tidak ada kandidat di atas 20rb views untuk tema itu Bos* — coba tema musik yang lain ya.")
+                     "😅 *Tidak ada kandidat untuk tema itu Bos* — sudah dicari sampai semua umur video (evergreen).\n\n"
+                     "Saya teruskan ke Muse ya Bos, biar dicarikan solusinya — mis. longgarkan lagi, ganti tema, atau kirim link YouTube untuk dijiplak.")
         _make_ask_step(token, chat_id, draft)
         return
     d['job_id'] = (data or {}).get('job_id', '')
@@ -5522,9 +5680,17 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
         if step == 'theme':
             if not ans:
                 send_message(token, chat_id,
-                             "😅 *Temanya masih kosong Bos* — kirim tema musiknya ya (mis. `lagu malaysia lawas`).")
+                             "😅 *Temanya masih kosong Bos* — kirim tema musiknya ya (mis. `lagu malaysia lawas`), atau kirim link YouTube + 'jiplak playlist ini'.")
                 return True
-            d['theme'] = ans[:100]
+            _link = _extract_youtube_link(ans)
+            if _link:
+                # v1.3.5 jiplak: link = sumbernya, bukan tema teks.
+                d['source_url'] = _link
+                _vid, _plid = _extract_youtube_ids_from_url(_link)
+                d['source_kind'] = 'playlist' if _plid else 'video'
+                d['theme'] = 'Link YouTube'
+            else:
+                d['theme'] = ans[:100]
             draft['step'] = _playlist_next_step(d)
         elif step == 'pixabay':
             d['pixabay_theme'] = '' if low in ('lewati', '-', 'skip', 'auto') else ans[:100]
@@ -6307,7 +6473,8 @@ def _nlu_extract_mode(clean):
 # dipakai untuk mengekstrak slot durasi DAN membuang segmen itu dari
 # tema musik / tema footage supaya tidak nyangkut jadi tema.
 _NLU_PLAYLIST_DURATION_SEG = (
-    r'\bdurasi\s+\d+(?:[.,]\d+)?\s*'
+    r'\bdurasi\s+(?:(?:minimal|minimum|maksimal|maksimum|paling\s+tidak|setidaknya)\s+)?'
+    r'\d+(?:[.,]\d+)?\s*'
     r'(?:(?:-|–|—|sampai|s/d|sd|hingga)\s*\d+(?:[.,]\d+)?\s*)?'
     r'(?:jam|menit|mnt)?')
 
@@ -6328,15 +6495,41 @@ def _nlu_extract_playlist_duration(raw):
     return _parse_playlist_duration(seg)
 
 
+def _nlu_trailing_footage_theme(text):
+    """'tema X' di ujung perintah playlist = footage Pixabay (v1.3.5
+    koreksi), BILA tema musik sudah disebut di awal ('lagu ...') atau
+    setelah klausa durasi. Kembalikan X (1-2 kata) atau None.
+    Contoh: '... durasi minimal 40 menit tema pantai' -> 'pantai'.
+    'buatkan playlist tema lofi' -> None (tidak ada tema musik di awal,
+    jadi 'lofi' tetap tema musik, bukan footage)."""
+    m = re.search(r'\btema\s+([a-z][a-z0-9]*(?:\s+[a-z][a-z0-9]*)?)\s*(?:\s+(?:saja|aja|dong))?\s*$', (text or ''))
+    if not m:
+        return None
+    pre = text[:m.start()]
+    if not (re.search(r'\blagu\b', pre) or re.search(_NLU_PLAYLIST_DURATION_SEG, pre)):
+        return None
+    cap = re.sub(r'\s+(saja|aja|dong)$', '', m.group(1).strip())
+    return cap or None
+
+
 def _nlu_extract_pixabay_theme(clean):
     """Tema footage Pixabay dari kalimat ('... footage autumn' /
     '... tema pixabay autumn' / '... tema footage autumn'). Segmen
     durasi dibuang dulu supaya 'durasi 40-70 menit' tidak nyangkut."""
+    # v1.3.5 koreksi: 'tema X' di ujung = footage (lihat helper di atas).
+    _trail = _nlu_trailing_footage_theme(clean)
+    if _trail:
+        return _trail
     clean = re.sub(_NLU_PLAYLIST_DURATION_SEG, ' ', clean)
     m = re.search(r'(?:tema\s+pixabay|tema\s+footage|footage|pixabay)\s+([a-z0-9][a-z0-9 ]*?)(?:\s+(?:di|untuk|ke|pada|channel|tema)\b|$)', clean)
     if not m:
         return None
     return re.sub(r'\s+', ' ', m.group(1)).strip()[:50] or None
+
+
+# v1.3.5 koreksi: typo umum di tema musik dinormalisasi (malaysa -> malaysia).
+_NLU_THEME_TYPO_FIX = {'malaysa': 'malaysia', 'malaysya': 'malaysia',
+                      'malayasia': 'malaysia'}
 
 
 def _nlu_extract_playlist_theme(clean, channels):
@@ -6350,6 +6543,20 @@ def _nlu_extract_playlist_theme(clean, channels):
     channel masih terlogin semua' → 'lagu nostalgia tahun 2000an'.
     Kosong bila tema tidak disebut."""
     t = clean
+    # v1.3.5 koreksi: buang tanda baca dulu — "saya, cari" tanpa ini
+    # menyisakan koma menggantung (", lagu malaysia").
+    t = re.sub(r'[,;:.!?]+', ' ', t)
+    # v1.3.5: buang link YouTube (ditangani jalur jiplak, bukan tema)
+    # dan awalan instruksi ganti tema — "coba ganti tema X" artinya
+    # temanya diganti jadi X, bukan seluruh kalimat jadi tema.
+    t = re.sub(r'https?://\S+', ' ', t)
+    t = re.sub(r'^(coba\s+)?(ganti|ubah|gantiin)\s+(tema|temanya|lagu|lagunya)\s+', ' ', t)
+    t = re.sub(r'^(coba\s+)?(ganti|ubah|gantiin)\s+', ' ', t)
+    t = re.sub(r'^coba\s+', ' ', t)
+    # v1.3.5 koreksi: 'tema X' di ujung = footage Pixabay (lihat
+    # _nlu_trailing_footage_theme) — buang dari tema musik.
+    if _nlu_trailing_footage_theme(t):
+        t = re.sub(r'\btema\s+[a-z][a-z0-9]*(?:\s+[a-z][a-z0-9]*)?\s*(?:\s+(?:saja|aja|dong))?\s*$', ' ', t)
     # Segmen durasi dibuang dulu supaya 'durasi 40-70 menit' tidak
     # nyangkut jadi tema.
     t = re.sub(_NLU_PLAYLIST_DURATION_SEG, ' ', t)
@@ -6375,6 +6582,11 @@ def _nlu_extract_playlist_theme(clean, channels):
     t = re.sub(r'\b(buatkan|bikin|buat|tolong|buatlah)\b', ' ', t)
     t = re.sub(r'\bmusik\s+playlist\b', ' ', t)
     t = re.sub(r'\bplaylist\b', ' ', t)
+    # v1.3.5 koreksi: kata perintah/pengisi bukan tema — 'jadwalkan ke 4
+    # channel saya, cari lagu ... saja' -> sisanya cuma tema musiknya.
+    t = re.sub(r'\b(jadwalkan|jadwal|jadwalin|saya|aku|cari|carikan|saja|aja|dong|nih|deh)\b', ' ', t)
+    # Kata sisa durasi (bila segmen durasi lolos karena format aneh).
+    t = re.sub(r'\b(minimal|maksimal|minimum|maksimum|durasi|menit|mnt)\b', ' ', t)
     for c in (channels or []):
         nm = _nlu_norm_name(_channel_display_name(c))
         if nm:
@@ -6386,6 +6598,9 @@ def _nlu_extract_playlist_theme(clean, channels):
                 if len(w) >= 3:
                     t = re.sub(r'\b' + re.escape(w) + r'\b', ' ', t)
     t = re.sub(r'\b(untuk|di|ke|pada|dari|channel|semua|tema)\b', ' ', t)
+    # v1.3.5 koreksi: typo umum dinormalisasi (malaysa -> malaysia).
+    for _bad, _good in _NLU_THEME_TYPO_FIX.items():
+        t = re.sub(r'\b' + _bad + r'\b', _good, t)
     # "tahun 2000 an" → "tahun 2000an" (tahun + 'an' menyatu).
     t = re.sub(r'\b(\d{2,4})\s+an\b', r'\1an', t)
     t = re.sub(r'\s+', ' ', t).strip()
@@ -6786,6 +7001,16 @@ def parse_natural_command(text, channels):
         if create_verb:
             conf += 5
     elif intent == 'buat_playlist':
+        # v1.3.5 jiplak: link YouTube + kata jiplak/salin/copy/tiru
+        # ATAU kata playlist/lagu -> link = sumbernya, bukan tema.
+        _link = _extract_youtube_link(text)
+        if _link and re.search(r'\b(jiplak|salin|copy|tiru|playlist|lagu)\b', clean):
+            slots['playlist_source_url'] = _link
+            _vid, _plid = _extract_youtube_ids_from_url(_link)
+            slots['playlist_source_kind'] = 'playlist' if _plid else 'video'
+            conf += 10
+            clean = re.sub(r'https?://\S+', ' ', clean)
+            text = re.sub(r'https?://\S+', ' ', text)
         # Tema musik + tema footage Pixabay + durasi (bila disebut).
         # Yang belum disebut TIDAK ditebak — ditanyakan lewat alur
         # tanya-jawab.
@@ -7004,7 +7229,10 @@ def _nlu_describe(pending):
     if intent == 'buat_playlist':
         th = slots.get('playlist_theme') or 'musik (tanya dulu)'
         px = slots.get('pixabay_theme') or 'auto (dari tema musik)'
-        base = f"buatkan playlist tema {th} untuk {ch} (footage: {px})"
+        if slots.get('playlist_source_url'):
+            base = f"buatkan playlist dari link YouTube ({slots.get('playlist_source_kind') or 'video'}) untuk {ch} (footage: {px})"
+        else:
+            base = f"buatkan playlist tema {th} untuk {ch} (footage: {px})"
         if slots.get('duration_note'):
             base += f", durasi {slots['duration_note']}"
         if slots.get('auto_pick'):
@@ -7290,7 +7518,7 @@ def _nlu_advance(token, chat_id, pending):
     # --- Tema musik (buat playlist): bila belum disebut, tanyakan dulu
     # (tidak ditebak) — jawaban bebas ditangkap cabang 'theme' di
     # _nlu_try_complete_pending. ---
-    if intent == 'buat_playlist' and not slots.get('playlist_theme'):
+    if intent == 'buat_playlist' and not slots.get('playlist_theme') and not slots.get('playlist_source_url'):
         pending['awaiting'] = 'theme'
         _save_nlu_pending(chat_id, pending)
         send_message(token, chat_id,
@@ -7584,6 +7812,11 @@ def _execute_nlu_create_playlist(token, chat_id, pending):
     data = {'yt_id': ch.get('yt_id'),
             'channel_name': _channel_display_name(ch),
             'theme': slots.get('playlist_theme') or ''}
+    if slots.get('playlist_source_url'):
+        data['source_url'] = slots['playlist_source_url']
+        data['source_kind'] = slots.get('playlist_source_kind') or 'video'
+        if not data.get('theme'):
+            data['theme'] = 'Link YouTube'
     if slots.get('pixabay_theme'):
         data['pixabay_theme'] = slots['pixabay_theme']
     if slots.get('duration_min_sec') is not None:
@@ -7612,12 +7845,16 @@ def _execute_nlu_create_playlist(token, chat_id, pending):
 
 
 def _execute_nlu_create_playlist_multi(token, chat_id, pending, chs):
-    """NLU playlist multi-channel (🔥 v1.3.2): untuk SETIAP channel —
-    riset tema yang sama, auto-pick kandidat terbaik (aturan Auto v1.2.10:
-    views >=20rb, terbit 30 hari terakhir, views tertinggi), lalu buat job
-    di slot berikutnya channel itu. Channel yang riset / kandidat /
-    create-nya gagal dilewati + dilaporkan jujur; channel lain tetap
-    jalan. Login dicek dulu; yang mati dikeluarkan (bila semua mati,
+    """NLU playlist multi-channel (🔥 v1.3.2, v1.3.5): untuk SETIAP channel —
+    riset tema yang sama (bertingkat berbasis umur: 30 hari → 90 hari →
+    1 tahun → evergreen; TANPA filter views) atau, bila Bos mengirim link YouTube
+    ("jiplak playlist ini"), ambil daftar lagu dari link itu langsung
+    tanpa riset/filter; lalu auto-pick + buat job di slot berikutnya.
+    Channel yang riset / kandidat / create-nya gagal dilewati +
+    dilaporkan jujur; channel lain tetap jalan. Bila SEMUA channel 0 job
+    (v1.3.5): eskalasi SEKALI ke Muse lewat jembatan (_bridge_forward,
+    source playlist_no_candidate) — jangan berhenti begitu saja.
+    Login dicek dulu; yang mati dikeluarkan (bila semua mati,
     tidak ada yang dibuat)."""
     slots = pending.get('slots') or {}
     theme = slots.get('playlist_theme') or ''
@@ -7636,25 +7873,50 @@ def _execute_nlu_create_playlist_multi(token, chat_id, pending, chs):
                          "Tautkan ulang dari panel (Settings → Tambah Channel, device login), lalu coba lagi ya.")
             return
     dead_names = slots.get('login_dead') or []
-    send_message(token, chat_id,
-                 f"Siap Bos, saya buatkan playlist tema *{_tg_escape(theme)}* untuk {len(chs)} channel ya — riset satu per satu, yang lolos langsung dibuat.")
+    _src_url = slots.get('playlist_source_url') or ''
+    if _src_url:
+        send_message(token, chat_id,
+                     f"Siap Bos, saya buatkan playlist dari link Bos untuk {len(chs)} channel ya — ambil daftar lagunya langsung, yang berhasil langsung dibuat.")
+    else:
+        send_message(token, chat_id,
+                     f"Siap Bos, saya buatkan playlist tema *{_tg_escape(theme)}* untuk {len(chs)} channel ya — riset satu per satu, yang lolos langsung dibuat.")
     lines = []
+    made = []
+    _last_tier_label = None
     for ch in chs:
         name = _channel_display_name(ch)
         yt = ch.get('yt_id')
-        ok, msg, data = _operator_post('/api/operator/playlist_research',
-                                       {'yt_id': yt, 'theme': theme,
-                                        'min_duration_sec': slots.get('duration_min_sec'),
-                                        'max_duration_sec': slots.get('duration_max_sec')})
-        if not ok:
-            lines.append(f"• *{_tg_escape(name)}*: riset gagal — {_tg_escape(msg)} (dilewati)")
-            continue
-        cands = (data or {}).get('candidates') or []
-        best = _playlist_pick_best(cands, slots.get('duration_min_sec'),
-                                   slots.get('duration_max_sec'))
-        if not best:
-            lines.append(f"• *{_tg_escape(name)}*: tidak ada kandidat yang lolos (views ≥20rb, 30 hari terakhir) — dilewati, coba tema lain")
-            continue
+        if _src_url:
+            ok, msg, data = _operator_post('/api/operator/playlist_from_url',
+                                           {'yt_id': yt, 'url': _src_url})
+            if not ok:
+                lines.append(f"• *{_tg_escape(name)}*: link gagal dibaca — {_tg_escape(msg)} (dilewati)")
+                made.append(False)
+                continue
+            cands = (data or {}).get('candidates') or []
+            best, _tier_lbl = _playlist_pick_best(cands, None, None)
+            _last_tier_label = _tier_lbl
+            if not best:
+                lines.append(f"• *{_tg_escape(name)}*: link itu tidak ada lagunya — dilewati")
+                made.append(False)
+                continue
+        else:
+            ok, msg, data = _operator_post('/api/operator/playlist_research',
+                                           {'yt_id': yt, 'theme': theme,
+                                            'min_duration_sec': slots.get('duration_min_sec'),
+                                            'max_duration_sec': slots.get('duration_max_sec')})
+            if not ok:
+                lines.append(f"• *{_tg_escape(name)}*: riset gagal — {_tg_escape(msg)} (dilewati)")
+                made.append(False)
+                continue
+            cands = (data or {}).get('candidates') or []
+            best, _tier_lbl = _playlist_pick_best(cands, slots.get('duration_min_sec'),
+                                                  slots.get('duration_max_sec'))
+            _last_tier_label = _tier_lbl
+            if not best:
+                lines.append(f"• *{_tg_escape(name)}*: tidak ada kandidat yang lolos — sudah dicari sampai semua umur video (evergreen), coba kirim link YouTube-nya dengan 'jiplak playlist ini'")
+                made.append(False)
+                continue
         if slots.get('publish_date'):
             pub = slots['publish_date']
         elif slots.get('publish_now'):
@@ -7668,9 +7930,30 @@ def _execute_nlu_create_playlist_multi(token, chat_id, pending, chs):
                                              'pixabay_theme': slots.get('pixabay_theme') or ''})
         if not ok2:
             lines.append(f"• *{_tg_escape(name)}*: gagal dibuat — {_tg_escape(info2)} (dilewati)")
+            made.append(False)
             continue
         views_txt = f"{best.get('views') or 0:,}".replace(',', '.')
-        lines.append(f"• *{_tg_escape(name)}*: dibuat — *{_tg_escape((best.get('title') or '')[:60])}* ({views_txt} views) — tayang {pub}")
+        made.append(True)
+        if _src_url:
+            lines.append(f"• *{_tg_escape(name)}*: dibuat dari link Bos — *{_tg_escape((best.get('title') or '')[:60])}* ({views_txt} views) — tayang {pub}")
+        else:
+            lines.append(f"• *{_tg_escape(name)}*: dibuat — *{_tg_escape((best.get('title') or '')[:60])}* ({views_txt} views, tier {_tier_lbl or 'evergreen'}) — tayang {pub}")
+    # v1.3.5 eskalasi (SEKALI per order, bukan per channel): bila 0 job
+    # dibuat di semua channel, teruskan kegagalan ke Muse lewat jembatan
+    # (cron bridge 2 menit) — jangan biarkan order berhenti begitu saja.
+    if _playlist_should_escalate(made):
+        _esc_text = _playlist_escalation_text(
+            theme or 'Link YouTube (jiplak)',
+            [_channel_display_name(c) for c in chs],
+            slots.get('publish_date'), _last_tier_label, _src_url or None)
+        _bridge_forward(token, chat_id, None, _esc_text,
+                        source='playlist_no_candidate',
+                        context_extra={'theme': theme, 'channels': [c.get('yt_id') for c in chs],
+                                       'publish_date': slots.get('publish_date'),
+                                       'tier_label': _last_tier_label,
+                                       'source_url': _src_url or None})
+        lines.append("")
+        lines.append("Saya teruskan ke Muse ya Bos, biar dicarikan solusinya — mis. longgarkan lagi, ganti tema, atau kirim link YouTube untuk dijiplak.")
     if dead_names:
         lines.append("")
         lines.append("Yang loginnya mati (tidak dibuatkan): " + ", ".join(_tg_escape(n) for n in dead_names)
@@ -7976,6 +8259,15 @@ def _nlu_try_complete_pending(token, chat_id, raw_cmd, clean_cmd):
             return True
         return False
     if awaiting == 'theme':
+        # v1.3.5 jiplak: jawaban berupa link YouTube -> sumber playlist.
+        _link = _extract_youtube_link(raw_cmd)
+        if _link and pending.get('intent') == 'buat_playlist':
+            _vid, _plid = _extract_youtube_ids_from_url(_link)
+            slots['playlist_source_url'] = _link
+            slots['playlist_source_kind'] = 'playlist' if _plid else 'video'
+            _save_nlu_pending(chat_id, pending)
+            _nlu_advance(token, chat_id, pending)
+            return True
         # Jawaban tema playlist (bebas) — tapi jangan telan perintah
         # baca/aksi lain; biarkan di-parse ulang sebagai perintah segar.
         _READONLY_WORDS = {'status', 'laporan', 'kuota', 'stok', 'statistik',

@@ -345,7 +345,7 @@ _OPERATOR_ENDPOINTS = {'operator_retry_task', 'operator_approve_task',
                       'operator_pixabay_key_add', 'operator_pixabay_key_list',
                       'operator_pixabay_key_del', 'operator_backup_create',
                       'operator_backup_status', 'operator_playlist_research',
-                      'operator_playlist_create', 'operator_update_panel',
+                      'operator_playlist_create', 'operator_playlist_from_url', 'operator_update_panel',
                       'operator_restart_services', 'operator_set_channel_auto_shorts',
                       'operator_set_channel_publish_time', 'operator_kie_key_add',
                       'operator_kie_key_list', 'operator_kie_key_del',
@@ -1485,7 +1485,19 @@ ZUMO_BANK_DIR = os.path.join(BASE_UPLOAD, 'zumo_bank')
 PLAYLIST_MAX_CLIPS = 15               # klip footage Pixabay per video
 PLAYLIST_MIN_CLIPS = 5                # minimal klip agar render jalan
 PLAYLIST_RESEARCH_CACHE_SEC = 3600    # cache riset 1 jam (hemat kuota)
-PLAYLIST_MIN_VIEWS = 20000            # "meledak": minimal views referensi
+PLAYLIST_MIN_VIEWS = 0                # v1.3.5 koreksi: BUANG filter view
+# sepenuhnya — views berapa pun (termasuk 0) boleh jadi referensi; yang
+# penting videonya ada dan audionya bisa diunduh. Tier berbasis UMUR saja.
+# v1.3.5 — tier bertingkat (days, min_views=0, diabaikan): tier 1 video
+# terbit <=30 hari, tier 2 <=90 hari, tier 3 <=365 hari, tier 4 evergreen
+# (semua umur). Prinsip: jangan pulang tangan kosong cuma gara-gara
+# filter — lagu lawas (mis. Panbers) hampir tidak punya video BARU
+# 30 hari terakhir, padahal video lamanya jutaan views dan itu justru
+# yang dicari untuk nostalgia.
+PLAYLIST_TIERS = [(30, 0), (90, 0), (365, 0), (None, 0)]
+PLAYLIST_TIER_LABELS = ["30 hari", "90 hari", "1 tahun", "evergreen"]
+PLAYLIST_TIER_MAX_RESULTS = [10, 15, 25, 25]
+PLAYLIST_RESEARCH_MAX_RESULTS = 25  # hasil terbanyak per tier (tier 3-4)
 PLAYLIST_MAX_AUDIO_BYTES = 500 * 1024 * 1024   # batas audio referensi (500 MB)
 PLAYLIST_MAX_CLIP_BYTES = 300 * 1024 * 1024    # batas 1 klip footage (300 MB)
 SHORTS_MUSE_DURATIONS = (15, 30, 60)  # pilihan durasi target (detik)
@@ -9633,47 +9645,33 @@ def _playlist_iso_duration_sec(iso):
     return int(float(h or 0)) * 3600 + int(float(mn or 0)) * 60 + int(float(s or 0))
 
 
-def _playlist_research_youtube(channel, query):
-    """Riset video musik trending 30 hari terakhir (YouTube Data API).
-    Kuota hemat: search.list 100 unit (1x) + videos().list 1 unit,
-    hasil di-cache 1 jam per (channel, query). Kembalikan
-    (candidates, err, from_cache). Kandidat: views >= 20.000, urut desc."""
-    q = (query or '').strip()
-    if not q:
-        return None, 'Tema/kata kunci wajib diisi.', False
-    cache_key = f"{channel.get('yt_id')}|{q.lower()}"
-    try:
-        store = _playlist_jobs_load()
-        hit = (store.get('research_cache') or {}).get(cache_key)
-        if hit and time.time() - float(hit.get('at') or 0) < PLAYLIST_RESEARCH_CACHE_SEC:
-            return hit.get('cands') or [], None, True
-    except Exception:
-        pass
-    youtube = None
-    res = None
-    vres = None
+def _playlist_build_youtube_client(cred_str):
+    """Bangun client YouTube Data API dari satu cred OAuth (refresh bila perlu)."""
+    _creds = Credentials.from_authorized_user_info(json.loads(cred_str))
+    if _creds.expired and _creds.refresh_token:
+        _creds.refresh(Request())
+    return build('youtube', 'v3', credentials=_creds)
+
+
+def _playlist_try_creds(channel, fn):
+    """Jalankan fn(youtube) di tiap kredensial channel (v1.2.25 auto-switch).
+
+    quotaExceeded di satu project -> lanjut ke creds berikutnya; error BUKAN
+    kuota langsung dikembalikan (jangan bakar kuota cadangan untuk error lain).
+    Kembalikan (result, err, quota_exhausted, switched_from, used_pid, tried_pids).
+    """
+    creds_list = channel.get('creds_list', [channel.get('creds_json')]) or []
+    if not any(creds_list):
+        return None, 'Tidak ada kredensial tersimpan — taut ulang channel.', False, None, None, []
     last_err = ''
     tried_pids = []
     switched_from = None
     used_pid = None
-    search_q = q if ('music' in q.lower() or 'musik' in q.lower()) else q + ' music'
-    # 🔥 v1.2.25: riset ikut auto-switch project — coba tiap kredensial
-    # channel berurutan; bila search().list kena quotaExceeded di satu
-    # project, lanjut ke project berikutnya (token cadangan). Error
-    # BUKAN kuota langsung dikembalikan (jangan bakar kuota cadangan
-    # untuk error lain). Pencarian memakai token OAuth channel, BUKAN
-    # API key — jadi tidak ada penyimpanan multi API key di sini.
-    creds_list = channel.get('creds_list', [channel.get('creds_json')]) or []
-    if not any(creds_list):
-        return None, "Tidak ada kredensial tersimpan — taut ulang channel.", False
     for _idx, _cred_str in enumerate(creds_list):
         if not _cred_str:
             continue
         try:
-            _creds = Credentials.from_authorized_user_info(json.loads(_cred_str))
-            if _creds.expired and _creds.refresh_token:
-                _creds.refresh(Request())
-            youtube = build('youtube', 'v3', credentials=_creds)
+            youtube = _playlist_build_youtube_client(_cred_str)
         except Exception as e:
             last_err = str(e)
             continue
@@ -9681,45 +9679,66 @@ def _playlist_research_youtube(channel, query):
         if _pid and _pid not in tried_pids:
             tried_pids.append(_pid)
         try:
-            published_after = (datetime.now(timezone.utc) - timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%SZ')
-            res = youtube.search().list(
-                part='snippet', q=search_q, type='video', videoCategoryId='10',
-                order='viewCount', publishedAfter=published_after,
-                maxResults=10).execute()
-            ids = [it['id']['videoId'] for it in res.get('items', [])
-                   if (it.get('id') or {}).get('videoId')]
-            if not ids:
-                return [], None, False
-            vres = youtube.videos().list(
-                part='statistics,snippet,contentDetails',
-                id=','.join(ids)).execute()
+            result = fn(youtube)
             used_pid = _pid
             if _idx > 0:
                 switched_from = _oauth_project_of_cred_str(creds_list[0])
-            break
+            return result, None, False, switched_from, used_pid, tried_pids
         except Exception as e:
             if _oauth_is_quota_error(e):
                 last_err = str(e)
                 continue
-            return None, f"Riset YouTube gagal: {str(e)[:120]}", False
-    if res is None or vres is None:
-        if tried_pids and _oauth_is_quota_error(last_err):
+            return None, str(e)[:120], False, None, None, tried_pids
+    if tried_pids and _oauth_is_quota_error(last_err):
+        return None, last_err, True, None, None, tried_pids
+    return None, (last_err or 'tidak ada kredensial tersimpan'), False, None, None, tried_pids
+
+
+def _playlist_search_one_tier(channel, search_q, days, max_results, min_views,
+                              tier_no, tier_label):
+    """Satu tier riset: search.list (+ videos().list) dengan publishedAfter
+    sesuai tier. TANPA filter views (v1.3.5 koreksi) — views berapa pun
+    boleh, termasuk 0; min_views dipertahankan di signature demi
+    kompatibilitas tapi DIABAIKAN. Kembalikan (cands, err, quota_exhausted).
+    cands kosong (bukan error) bila tier ini tidak menemukan apa-apa —
+    pemanggil lanjut ke tier berikutnya yang lebih longgar."""
+    def _do(youtube):
+        kwargs = {'part': 'snippet', 'q': search_q, 'type': 'video',
+                  'videoCategoryId': '10', 'order': 'viewCount',
+                  'maxResults': max_results}
+        if days is not None:
+            kwargs['publishedAfter'] = (datetime.now(timezone.utc)
+                                        - timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        res = youtube.search().list(**kwargs).execute()
+        ids = [it['id']['videoId'] for it in res.get('items', [])
+               if (it.get('id') or {}).get('videoId')]
+        if not ids:
+            return {'empty': True}
+        vres = youtube.videos().list(
+            part='statistics,snippet,contentDetails',
+            id=','.join(ids)).execute()
+        return {'res': res, 'vres': vres}
+
+    out, err, quota, switched, used_pid, tried_pids = _playlist_try_creds(channel, _do)
+    if err:
+        if quota:
             hint = _oauth_quota_failure_hint(channel, channel.get('name', ''))
-            pids = ", ".join(p for p in tried_pids if p)
-            return None, (f"Riset gagal: kuota pencarian project {pids} habis "
-                          f"hari ini.{hint}"), False
-        return None, f"Riset YouTube gagal: {(last_err or 'tidak ada kredensial tersimpan')[:120]}", False
-    if switched_from:
+            pids = ', '.join(p for p in tried_pids if p)
+            return None, (f'Riset gagal: kuota pencarian project {pids} habis '
+                          f'hari ini.{hint}'), True
+        return None, f'Riset YouTube gagal: {err}', False
+    if not out or out.get('empty'):
+        return [], None, False
+    if switched:
         _oauth_notify_quota_switch(channel.get('name', channel.get('yt_id', '')),
-                                   'riset', switched_from, used_pid)
+                                   'riset', switched, used_pid)
     cands = []
-    for v in vres.get('items', []):
+    for v in (out.get('vres') or {}).get('items', []):
         try:
             views = int((v.get('statistics') or {}).get('viewCount') or 0)
         except Exception:
             views = 0
-        if views < PLAYLIST_MIN_VIEWS:
-            continue
+        # v1.3.5 koreksi: TIDAK ada filter views di sini lagi.
         sn = v.get('snippet') or {}
         thumbs = sn.get('thumbnails') or {}
         thumb_url = ((thumbs.get('maxres') or thumbs.get('high')
@@ -9734,15 +9753,86 @@ def _playlist_research_youtube(channel, query):
             'thumbnail_url': thumb_url,
             'description': sn.get('description', '') or '',
             'tags': list(sn.get('tags') or []),
+            'tier': tier_no, 'tier_label': tier_label,
         })
-    cands.sort(key=lambda c: -c['views'])
+    cands.sort(key=lambda c: (-c['views'], -(c.get('duration_sec') or 0)))
+    return cands, None, False
+
+
+def _extract_youtube_ids_from_url(url):
+    """Ekstrak (video_id, playlist_id) dari link YouTube apa pun.
+
+    Dukung youtu.be/<id>, youtube.com/watch?v=<id>, /shorts/<id>,
+    /embed/<id>, /live/<id>, music.youtube.com/watch?v=<id>, dan playlist
+    via list=PL.../UU.../RD.../OL... Kembalikan (None, None) bila tidak
+    ada ID valid. video_id divalidasi 11 karakter [A-Za-z0-9_-]{11}."""
+    text = (url or '').strip()
+    if not text:
+        return None, None
+    m_list = re.search(r'[?&]list=([A-Za-z0-9_-]+)', text)
+    playlist_id = m_list.group(1) if m_list else None
+    video_id = None
+    for pat in (r'youtu\.be/([A-Za-z0-9_-]{11})',
+                r'[?&]v=([A-Za-z0-9_-]{11})',
+                r'/shorts/([A-Za-z0-9_-]{11})',
+                r'/embed/([A-Za-z0-9_-]{11})',
+                r'/live/([A-Za-z0-9_-]{11})',
+                r'/v/([A-Za-z0-9_-]{11})'):
+        m = re.search(pat, text)
+        if m:
+            video_id = m.group(1)
+            break
+    return video_id, playlist_id
+
+
+def _playlist_research_youtube(channel, query):
+    """Riset video musik bertingkat (v1.3.5, YouTube Data API).
+
+    Mencoba PLAYLIST_TIERS berurutan dalam satu panggilan: tier 1 (video terbit <=30 hari) dulu; bila 0 kandidat,
+    tier 2 (<=90 hari); lalu tier 3 (<=365 hari); lalu tier 4 evergreen
+    (semua umur, tanpa batas terbit). TANPA filter views — views berapa
+    pun boleh, termasuk 0. Berhenti di tier pertama yang menemukan kandidat — jadi lagu
+    lawas yang video barunya sepi tetap dapat lewat tier evergreen.
+    Cache 1 jam hanya menyimpan hasil AKHIR (kandidat tier yang lolos),
+    bukan hasil kosong tier awal. Kuota: ~101 unit per tier yang dicoba
+    (search 100 + detail 1); tier berikutnya hanya bila tier sebelumnya
+    kosong, jadi kasus normal tetap 1 tier. Kembalikan
+    (candidates, err, from_cache, tier_no, tier_label); tier_no None bila
+    tidak ada kandidat sama sekali."""
+    q = (query or '').strip()
+    if not q:
+        return None, 'Tema/kata kunci wajib diisi.', False, None, None
+    cache_key = f"{channel.get('yt_id')}|{q.lower()}"
     try:
         store = _playlist_jobs_load()
-        store.setdefault('research_cache', {})[cache_key] = {'at': time.time(), 'cands': cands}
-        _playlist_jobs_save(store)
+        hit = (store.get('research_cache') or {}).get(cache_key)
+        if hit and time.time() - float(hit.get('at') or 0) < PLAYLIST_RESEARCH_CACHE_SEC:
+            cached = hit.get('cands') or []
+            if cached:
+                _t = cached[0].get('tier') or 1
+                _l = cached[0].get('tier_label') or PLAYLIST_TIER_LABELS[0]
+                return cached, None, True, _t, _l
+            return cached, None, True, None, None
     except Exception:
         pass
-    return cands, None, False
+    search_q = q if ('music' in q.lower() or 'musik' in q.lower()) else q + ' music'
+    for _i, (_days, _min_views) in enumerate(PLAYLIST_TIERS):
+        _tier_no = _i + 1
+        _label = PLAYLIST_TIER_LABELS[_i]
+        _max = PLAYLIST_TIER_MAX_RESULTS[_i]
+        cands, err, _quota = _playlist_search_one_tier(
+            channel, search_q, _days, _max, _min_views, _tier_no, _label)
+        if err:
+            return None, err, False, None, None
+        if cands:
+            try:
+                store = _playlist_jobs_load()
+                store.setdefault('research_cache', {})[cache_key] = {'at': time.time(), 'cands': cands}
+                _playlist_jobs_save(store)
+            except Exception:
+                pass
+            return cands, None, False, _tier_no, _label
+    return [], None, False, None, None
 
 
 def _playlist_download_audio(video_id, out_dir):
@@ -12266,7 +12356,7 @@ def _playlist_do_research(yt_id, theme, min_duration_sec=None, max_duration_sec=
     mx = _playlist_duration_sec_param(max_duration_sec)
     if mn is not None and mx is not None and mn > mx:
         mn, mx = mx, mn
-    cands, err, from_cache = _playlist_research_youtube(channel, q)
+    cands, err, from_cache, tier_no, tier_label = _playlist_research_youtube(channel, q)
     if err:
         return False, {"status": "error", "message": err}, 500
     all_cands = cands or []
@@ -12279,15 +12369,25 @@ def _playlist_do_research(yt_id, theme, min_duration_sec=None, max_duration_sec=
                  and (mn is None or c['duration_sec'] >= mn)
                  and (mx is None or c['duration_sec'] <= mx)]
         if not cands and all_cands:
-            filter_note = (f"Tidak ada video {dur_txt} dengan views ≥20rb untuk tema ini — "
-                           "coba ubah tema atau rentang durasi.")
+            filter_note = (f"Tidak ada video {dur_txt} pada tier {tier_label or 'yang dipakai'} untuk tema ini — "
+                           "coba ubah tema atau rentang durasi, atau kirim link YouTube dengan 'jiplak playlist ini'.")
     else:
         cands = all_cands
+    if not all_cands:
+        # Semua tier sudah dicoba (sampai evergreen >=1rb) dan tetap
+        # kosong — gagal jujur, bukan karang video. Arahkan ke jiplak link.
+        filter_note = ("Tidak ada video sama sekali untuk tema ini — sudah dicari "
+                       "sampai semua umur video (evergreen). "
+                       "Coba tema lain, atau kirim link YouTube-nya dengan 'jiplak playlist ini'.")
+    elif tier_no and tier_no > 1 and not filter_note:
+        filter_note = (f"Tidak ada video terbit ≤30 hari, dipakai tier {tier_no} "
+                       f"({tier_label}) — {len(all_cands)} kandidat ditemukan.")
     job_id = f"pl{int(time.time() * 1000)}-{secrets.token_hex(3)}"
     _playlist_job_add({
         'job_id': job_id, 'yt_id': yt_id,
         'channel_name': channel.get('name', ''), 'theme': q,
         'status': 'researched', 'candidates': cands or [],
+        'research_tier': tier_no, 'tier_label': tier_label,
         'min_duration_sec': mn, 'max_duration_sec': mx,
         'created_at': _wib_now().strftime('%Y-%m-%d %H:%M'),
         'progress': (filter_note if filter_note else
@@ -12298,8 +12398,9 @@ def _playlist_do_research(yt_id, theme, min_duration_sec=None, max_duration_sec=
     return True, {"status": "success", "job_id": job_id, "candidates": cands or [],
                   "min_duration_sec": mn, "max_duration_sec": mx,
                   "filter_note": filter_note,
+                  "research_tier": tier_no, "tier_label": tier_label,
                   "quota_note": ("Riset dari cache (0 unit kuota)." if from_cache
-                                 else "Riset memakai ~101 unit kuota YouTube Data API (search 100 + detail 1).")}, 200
+                                 else "Riset memakai ~101 unit kuota per tier yang dicoba (tier berikutnya hanya bila tier sebelumnya kosong).")}, 200
 
 
 def _playlist_do_create(job_id, video_id, publish_date='', privacy='public',
@@ -12348,6 +12449,154 @@ def _playlist_do_create(job_id, video_id, publish_date='', privacy='public',
     return True, "Membangun playlist — audio & footage sedang diunduh. Pantau progres di daftar job.", 200
 
 
+
+
+def _playlist_from_youtube_url(channel, url):
+    """Mode 'jiplak playlist' (v1.3.5): ambil daftar lagu dari link YouTube
+    yang dikirim Bos — TANPA riset dan TANPA filter views/tanggal/durasi.
+    Link yang dilampirkan = sumbernya. Bila link berisi playlist (list=),
+    ambil video-video playlist itu berurutan (maks 50, 2 halaman x 25);
+    bila hanya video, ambil video itu saja. Urutan playlist dipertahankan
+    (field 'playlist_position'). Kembalikan (candidates, err, source_info);
+    source_info = {'kind': 'playlist'|'video', 'title': ..., 'count': ...}."""
+    video_id, playlist_id = _extract_youtube_ids_from_url(url)
+    if not video_id and not playlist_id:
+        return None, 'Link YouTube tidak dikenali — kirim link video/playlist YouTube.', None
+    ids = []
+    title = None
+    kind = 'video'
+    if playlist_id:
+        kind = 'playlist'
+
+        def _items(youtube):
+            out = []
+            page = None
+            for _ in range(2):
+                if page:
+                    resp = youtube.playlistItems().list(
+                        part='contentDetails', playlistId=playlist_id,
+                        maxResults=25, pageToken=page).execute()
+                else:
+                    resp = youtube.playlistItems().list(
+                        part='contentDetails', playlistId=playlist_id,
+                        maxResults=25).execute()
+                for it in resp.get('items', []):
+                    vid = ((it.get('contentDetails') or {}).get('videoId')
+                           or (it.get('snippet') or {}).get('resourceId', {}).get('videoId'))
+                    if vid:
+                        out.append(vid)
+                page = resp.get('nextPageToken')
+                if not page:
+                    break
+            return out
+
+        ids, err, quota, _sw, _up, tried = _playlist_try_creds(channel, _items)
+        if err:
+            if quota:
+                hint = _oauth_quota_failure_hint(channel, channel.get('name', ''))
+                pids = ', '.join(p for p in tried if p)
+                return None, (f'Riset gagal: kuota pencarian project {pids} habis '
+                              f'hari ini.{hint}'), None
+            return None, f'Gagal membaca playlist: {err}', None
+        if not ids:
+            return None, 'Playlist YouTube itu kosong / tidak bisa dibaca (privat?).', None
+
+        def _pl_title(youtube):
+            return youtube.playlists().list(part='snippet', id=playlist_id).execute()
+
+        _tres, _terr, _tq, _tsw, _tup, _ttried = _playlist_try_creds(channel, _pl_title)
+        if _tres:
+            _items2 = _tres.get('items') or []
+            if _items2:
+                title = ((_items2[0].get('snippet') or {}).get('title') or '').strip() or None
+    else:
+        ids = [video_id]
+
+    def _details(youtube):
+        return youtube.videos().list(
+            part='statistics,snippet,contentDetails',
+            id=','.join(ids[:50])).execute()
+
+    vres, err, quota, _sw2, _up2, tried2 = _playlist_try_creds(channel, _details)
+    if err:
+        if quota:
+            hint = _oauth_quota_failure_hint(channel, channel.get('name', ''))
+            pids = ', '.join(p for p in tried2 if p)
+            return None, (f'Riset gagal: kuota pencarian project {pids} habis '
+                          f'hari ini.{hint}'), None
+        return None, f'Gagal membaca video: {err}', None
+    items = (vres or {}).get('items') or []
+    if not items:
+        return None, 'Video tidak ditemukan / tidak bisa diakses (privat atau dihapus?).', None
+    by_id = {v.get('id'): v for v in items}
+    cands = []
+    for _pos, _vid in enumerate(ids):
+        v = by_id.get(_vid)
+        if not v:
+            continue
+        try:
+            views = int((v.get('statistics') or {}).get('viewCount') or 0)
+        except Exception:
+            views = 0
+        sn = v.get('snippet') or {}
+        thumbs = sn.get('thumbnails') or {}
+        thumb_url = ((thumbs.get('maxres') or thumbs.get('high')
+                      or thumbs.get('medium') or thumbs.get('default') or {}).get('url', ''))
+        cands.append({
+            'video_id': v.get('id', ''), 'title': sn.get('title', ''),
+            'channel': sn.get('channelTitle', ''), 'views': views,
+            'published_at': sn.get('publishedAt', ''),
+            'duration': (v.get('contentDetails') or {}).get('duration', ''),
+            'duration_sec': _playlist_iso_duration_sec(
+                (v.get('contentDetails') or {}).get('duration', '')),
+            'thumbnail_url': thumb_url,
+            'description': sn.get('description', '') or '',
+            'tags': list(sn.get('tags') or []),
+            'tier': 'link', 'tier_label': 'link kiriman Bos',
+            'playlist_position': _pos,
+        })
+    if not cands:
+        return None, 'Video tidak ditemukan / tidak bisa diakses (privat atau dihapus?).', None
+    if not title:
+        title = cands[0].get('title') or 'Link YouTube'
+    source_info = {'kind': kind, 'title': title, 'count': len(cands),
+                   'playlist_id': playlist_id, 'video_id': video_id}
+    return cands, None, source_info
+
+
+def _playlist_do_from_url(yt_id, url):
+    """Buat job riset dari link YouTube (mode jiplak, v1.3.5). Kembalikan
+    (ok, payload, http); payload berisi job_id + candidates + source info.
+    Job dicatat seperti hasil riset biasa (status 'researched') supaya
+    langkah berikutnya (_playlist_do_create) bisa memakai job_id-nya."""
+    if not _valid_yt_id(yt_id):
+        return False, {"status": "error", "message": "Channel tidak valid."}, 400
+    channel = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+    if not channel:
+        return False, {"status": "error", "message": "Channel tidak ditemukan."}, 404
+    u = (url or '').strip()
+    if not u:
+        return False, {"status": "error", "message": "Link YouTube wajib diisi."}, 400
+    cands, err, source_info = _playlist_from_youtube_url(channel, u)
+    if err:
+        return False, {"status": "error", "message": err}, 500
+    title = (source_info or {}).get('title') or 'Link YouTube'
+    job_id = f"pl{int(time.time() * 1000)}-{secrets.token_hex(3)}"
+    _playlist_job_add({
+        'job_id': job_id, 'yt_id': yt_id,
+        'channel_name': channel.get('name', ''), 'theme': title,
+        'status': 'researched', 'candidates': cands or [],
+        'research_tier': 'link', 'tier_label': 'link kiriman Bos',
+        'source_url': u, 'source_kind': (source_info or {}).get('kind'),
+        'source_title': title,
+        'created_at': _wib_now().strftime('%Y-%m-%d %H:%M'),
+        'progress': (f"Dari link Bos: {title} — {len(cands or [])} lagu, tanpa filter."),
+    })
+    return True, {"status": "success", "job_id": job_id, "candidates": cands or [],
+                  "source_kind": (source_info or {}).get('kind'),
+                  "source_title": title, "count": len(cands or []),
+                  "research_tier": "link", "tier_label": "link kiriman Bos"}, 200
+
 # --- Endpoint panel: Musik Playlist (butuh login; CSRF via check_security) ---
 @app.route('/api/playlist_research', methods=['POST'])
 def playlist_research():
@@ -12378,6 +12627,29 @@ def operator_playlist_research():
     ok, payload, http = _playlist_do_research(
         (data.get('yt_id') or '').strip(), (data.get('theme') or '').strip(),
         data.get('min_duration_sec'), data.get('max_duration_sec'))
+    return jsonify(payload), http
+
+
+@app.route('/api/playlist_from_url', methods=['POST'])
+def playlist_from_url():
+    """Buat job playlist dari link YouTube (mode jiplak, v1.3.5).
+    Body: {yt_id, url}. Tanpa riset/filter — link = sumbernya."""
+    data = request.get_json(silent=True) or {}
+    ok, payload, http = _playlist_do_from_url(
+        (data.get('yt_id') or '').strip(), (data.get('url') or '').strip())
+    return jsonify(payload), http
+
+
+@app.route('/api/operator/playlist_from_url', methods=['POST'])
+def operator_playlist_from_url():
+    """Buat job playlist dari link YouTube via Telegram — auth HMAC operator_key.
+    Body: {key, yt_id, url}. Route ini masuk _OPERATOR_ENDPOINTS di check_security."""
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    ok, payload, http = _playlist_do_from_url(
+        (data.get('yt_id') or '').strip(), (data.get('url') or '').strip())
     return jsonify(payload), http
 
 

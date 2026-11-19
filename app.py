@@ -339,7 +339,8 @@ _OPERATOR_ENDPOINTS = {'operator_retry_task', 'operator_approve_task',
                       'operator_pixabay_key_del', 'operator_backup_create',
                       'operator_backup_status', 'operator_playlist_research',
                       'operator_playlist_create', 'operator_update_panel',
-                      'operator_restart_services'}
+                      'operator_restart_services', 'operator_set_channel_auto_shorts',
+                      'operator_set_channel_publish_time'}
 _CSRF_EXEMPT_ENDPOINTS = {'login', 'setup', 'static'} | _OPERATOR_ENDPOINTS
 
 @app.before_request
@@ -885,9 +886,16 @@ def clear_channel_cooldown(yt_id):
 
 load_cooldowns()
 
-# 🔥 BARU v1.4: batas upload harian per channel — 6 video/hari, lanjut otomatis besok.
+# 🔥 v1.2.20: batas upload harian per project Google — 100 video/hari.
+# Dulu 6 (asumsi lama: 10.000 unit ÷ 1.600 unit/upload). Dicek LIVE di
+# Google Cloud Console 2026-11-19 (project-musik-1): kuota "Video Uploads
+# per day" limit 100/hari (baru 7 terpakai), sementara "Queries per day"
+# (10.000 unit) baru 136 terpakai padahal 6 video sudah naik — upload
+# TIDAK memakan kuota unit seperti asumsi lama. Konstanta ini dipakai
+# sebagai batas PER PROJECT (gate worker + get_project_quotas) dan juga
+# sebagai batas per channel di track_daily_upload; keduanya 100.
 # Counter disimpan di channels_db.json per channel → tahan restart.
-MAX_UPLOADS_PER_CHANNEL_PER_DAY = 6
+MAX_UPLOADS_PER_CHANNEL_PER_DAY = 100
 
 # 🔥 FASE 5: QC gate pra-upload + self-healing + bersih disk (audit F9a/F8)
 QC_MIN_FILE_BYTES = 100_000          # file render < 100 KB dianggap gagal
@@ -1047,8 +1055,9 @@ def track_daily_upload(yt_id):
     return count, count >= MAX_UPLOADS_PER_CHANNEL_PER_DAY
 
 # 🔥 FASE 6: KUOTA PER PROJECT GOOGLE + AUTOPILOT
-# Kuota YouTube dihitung PER PROJECT Google (~6 upload/hari), bukan per
-# channel. Project diidentifikasi dari prefix client_id kredensial utama
+# Kuota YouTube dihitung PER PROJECT Google (100 upload/hari — kuota
+# "Video Uploads per day" di Cloud Console, dicek live 2026-11-19),
+# bukan per channel. Project diidentifikasi dari prefix client_id kredensial utama
 # channel (angka sebelum '-' — BUKAN secret, hanya nomor project).
 def _project_id_of_channel(channel_data):
     """Nomor project Google dari kredensial utama channel, atau None kalau
@@ -1083,7 +1092,7 @@ def _project_uploads_today(project_id):
 
 def get_project_quotas():
     """Ringkasan kuota per project Google untuk panel: project_id, daftar
-    channel, upload hari ini, batas (6), dan sisa. Channel tanpa kredensial
+    channel, upload hari ini, batas (100), dan sisa. Channel tanpa kredensial
     dikelompokkan sebagai 'tidak-diketahui' (kuota tidak terlacak)."""
     today = _wib_now().strftime("%Y-%m-%d")
     projects = {}
@@ -1103,6 +1112,38 @@ def get_project_quotas():
         out.append(e)
     return out
 
+def _heal_stale_quota_cooldowns():
+    """🔥 v1.2.20: bersihkan cooldown kuota yang sudah tidak berlaku.
+    Cooldown kuota (sampai tengah malam) hanya sah bila kuota project
+    memang habis. Aturan lama (batas 6/hari) memasang cooldown padahal
+    kuota Google masih longgar (100/hari, dicek live 2026-11-19) —
+    cooldown seperti itu harus dilepas saat startup supaya task yang
+    tertahan (mis. 2 task 2026-11-19, "Cooldown YT 649 mnt") bisa jalan
+    lagi setelah deploy, bukan menunggu tengah malam. Channel tanpa
+    project yang bisa dihitung dibiarkan apa adanya. Tidak pernah raise."""
+    try:
+        now = time.time()
+        cleared = []
+        for c in list(database_channel):
+            yt_id = c.get('yt_id')
+            cd = c.get('cooldown_until') or 0
+            if not yt_id or not cd or cd <= now:
+                continue
+            pid = _project_id_of_channel(c)
+            if not pid:
+                continue
+            if _project_uploads_today(pid) < MAX_UPLOADS_PER_CHANNEL_PER_DAY:
+                try:
+                    clear_channel_cooldown(yt_id)
+                except Exception:
+                    continue
+                cleared.append(c.get('name') or yt_id)
+        if cleared:
+            print(f"🔥 v1.2.20: cooldown kuota lama dibersihkan untuk: {', '.join(cleared)}", flush=True)
+    except Exception as e:
+        print(f"Gagal heal cooldown kuota lama: {e}", flush=True)
+
+
 def _cooldown_project_channels(project_id):
     """Pasang cooldown sampai tengah malam WIB untuk SEMUA channel di project
     ini (dipakai saat kuota project habis). Mengembalikan nama channel yang
@@ -1119,6 +1160,13 @@ def _cooldown_project_channels(project_id):
             try: persist_cooldown(c.get('yt_id'))
             except Exception: pass
     return names
+
+
+# 🔥 v1.2.20: jalankan saat startup (setelah load_cooldowns di atas) —
+# cooldown kuota dari aturan lama (batas 6/hari) dilepas bila kuota
+# project hari ini masih longgar (batas baru 100/hari).
+_heal_stale_quota_cooldowns()
+
 
 def _autopilot_of(channel_data):
     """Mode autopilot channel: 'auto' (full-auto, lewati approval) atau
@@ -3110,7 +3158,7 @@ def background_worker():
                 except Exception: pass
                 continue
 
-            # 🔥 FASE 6: kuota PROJECT Google sudah habis (6 upload/hari per
+            # 🔥 FASE 6: kuota PROJECT Google sudah habis (100 upload/hari per
             # project, bukan per channel) → pasang cooldown untuk SEMUA
             # channel di project ini sampai tengah malam WIB, lalu task
             # diperlakukan seperti cooldown biasa (ditunda, bukan dibuang)
@@ -3728,7 +3776,7 @@ def background_worker():
                             # video final + folder kerja job (audio + thumbnail).
                             if task.get('kind') == PLAYLIST_KIND:
                                 _playlist_cleanup_after_upload(task)
-                            # 🔥 BARU v1.4: batas 6 upload/hari/channel → cooldown sampai tengah malam WIB,
+                            # 🔥 v1.2.20: batas 100 upload/hari/channel → cooldown sampai tengah malam WIB,
                             # besok lanjut otomatis. Task antre tetap aman menunggu.
                             try:
                                 cnt, capped = track_daily_upload(yt_id)
@@ -3740,11 +3788,11 @@ def background_worker():
                                                  f"Udah {cnt} video tayang hari ini (batas {MAX_UPLOADS_PER_CHANNEL_PER_DAY}/hari) 😌 Saya jeda dulu, besok lanjut otomatis.")
                                 elif cnt == MAX_UPLOADS_PER_CHANNEL_PER_DAY - 1:
                                     # 🔥 FASE 1 MONITORING: peringatan kuota menipis — hanya
-                                    # sekali, tepat saat counter menjadi 5/6 (tinggal 1 video).
+                                    # sekali, tepat saat counter menjadi 99/100 (tinggal 1 video).
                                     notify_event("⚠️", f"Kuota hampir habis {ch_name}",
                                                  f"Udah {cnt}/{MAX_UPLOADS_PER_CHANNEL_PER_DAY} video hari ini, sisa 1 lagi 😌 Saya irit-irit dulu ya, reset tengah malam WIB.")
                                 # 🔥 FASE 6: kuota dihitung PER PROJECT Google.
-                                # Kalau total upload project ini sudah 6 hari ini,
+                                # Kalau total upload project ini sudah 100 hari ini,
                                 # cooldown semua channel di project yang sama
                                 # (channel yang barusan upload sudah di-cooldown
                                 # di atas; saudara satu project ikut dijeda).
@@ -6311,7 +6359,7 @@ def get_project_quotas_api():
     """🔥 FASE 6: sisa kuota upload per project Google (butuh login panel —
     route ini TIDAK masuk allowed_routes, jadi check_security mewajibkan
     login). Kuota dihitung dari upload hari ini (WIB) semua channel di
-    project yang sama; batas 6/hari/project."""
+    project yang sama; batas 100/hari/project."""
     return jsonify({"status": "success", "projects": get_project_quotas()})
 
 from flask import send_file # Pastikan send_file di-import di baris paling atas jika belum ada
@@ -7960,7 +8008,7 @@ def _stagger_publish_date(v_date_str, yt_id):
     """🔥 FASE 6: geser jam tayang +1 jam bila bentrok persis dengan task
     aktif channel LAIN di project Google yang sama (maks 5 geseran).
     Tujuannya: channel-channel satu project tidak upload berbarengan
-    (kuota project 6/hari, hindari burst/rate-limit). Tanpa bentrok,
+    (kuota project 100/hari, hindari burst/rate-limit). Tanpa bentrok,
     tanggal dikembalikan apa adanya."""
     try:
         dt = datetime.strptime(v_date_str, '%Y-%m-%d %H:%M')
@@ -10012,6 +10060,22 @@ def _last_scheduled_info(yt_id):
     return best_dt, best_title
 
 
+def _channel_default_publish_time(channel):
+    """Jam tayang default channel ("HH:MM") untuk /perpanjang & batch baru.
+    Disimpan di channels_db.json field `default_publish_time` (diatur dari
+    Telegram /aturjadwal, v1.2.20). Kembalikan (hour, minute) atau None
+    bila belum diatur / tidak valid — pemanggil pakai jam jadwal terakhir
+    atau 19:00."""
+    try:
+        s = str((channel or {}).get('default_publish_time') or '').strip()
+        m = re.match(r'^([01]\d|2[0-3]):([0-5]\d)$', s)
+        if not m:
+            return None
+        return int(m.group(1)), int(m.group(2))
+    except Exception:
+        return None
+
+
 def _extend_schedule(yt_id, days, start=None):
     """Perpanjang jadwal channel sebanyak `days` hari (1–90). Logika inti
     dipakai endpoint operator Telegram (dan panel bila ada nanti).
@@ -10039,8 +10103,11 @@ def _extend_schedule(yt_id, days, start=None):
                 "message": "Bank judul channel ini kosong — isi Bank Judul di panel dulu, baru jadwalnya bisa diperpanjang.",
                 "http": 400}
     last_dt, last_title = _last_scheduled_info(yt_id)
-    # Jam tayang: ikut jam jadwal terakhir; bila belum ada jadwal, 19:00.
-    hour, minute = (last_dt.hour, last_dt.minute) if last_dt else (19, 0)
+    # Jam tayang (v1.2.20): default_publish_time channel bila diatur
+    # (lewat /aturjadwal), kalau tidak ikut jam jadwal terakhir, kalau
+    # belum ada jadwal 19:00.
+    _dpt = _channel_default_publish_time(channel_rec)
+    hour, minute = _dpt if _dpt else ((last_dt.hour, last_dt.minute) if last_dt else (19, 0))
     if start is not None:
         # start eksplisit dipakai apa adanya, tapi tidak boleh menabrak
         # jadwal yang sudah ada (geser ke sehari setelah jadwal terakhir).
@@ -10293,6 +10360,51 @@ def operator_set_paused():
     return jsonify({"status": "success", "paused": False, "resumed_count": resumed,
                     "channel_name": name,
                     "message": f"Channel {name} dilanjutkan. {resumed} task masuk antrean."})
+
+
+@app.route('/api/operator/set_channel_auto_shorts', methods=['POST'])
+def operator_set_channel_auto_shorts():
+    """Ubah konfigurasi Jadwal Otomatis Short dari Telegram (/aturjadwal).
+    Keamanan: wajib `key` == operator_key (HMAC). Logika SAMA dengan
+    panel /api/set_channel_auto_shorts (merge + validasi penuh) —
+    panggil view panel langsung supaya tidak ada duplikasi logika."""
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    return set_channel_auto_shorts()
+
+
+@app.route('/api/operator/set_channel_publish_time', methods=['POST'])
+def operator_set_channel_publish_time():
+    """Ubah jam tayang default channel dari Telegram (/aturjadwal).
+    Disimpan di channels_db.json field `default_publish_time` ("HH:MM");
+    dipakai /perpanjang untuk jam video-video berikutnya. Keamanan:
+    wajib `key` == operator_key (HMAC)."""
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    yt_id = (data.get('yt_id') or '').strip()
+    publish_time = str(data.get('publish_time') or '').strip()
+    if not _valid_yt_id(yt_id):
+        return jsonify({"status": "error", "message": "Channel tidak valid."}), 400
+    if not re.match(r'^([01]\d|2[0-3]):([0-5]\d)$', publish_time):
+        return jsonify({"status": "error", "message": "Jam tidak valid — pakai format HH:MM (00:00–23:59)."}), 400
+    with db_lock:
+        target = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+        if target is None:
+            return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
+        target['default_publish_time'] = publish_time
+        name = target.get('name', yt_id)
+        try:
+            save_channels(database_channel)
+        except Exception as e:
+            print(f"Gagal simpan publish_time {yt_id} (operator): {e}", flush=True)
+            return jsonify({"status": "error", "message": "Gagal menyimpan perubahan."}), 500
+    return jsonify({"status": "success", "publish_time": publish_time,
+                    "message": f"Jam tayang {name} diubah jadi {publish_time} WIB (berlaku untuk jadwal baru)."})
+
 
 
 @app.route('/uploads/<path:filename>')

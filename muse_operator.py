@@ -43,7 +43,7 @@ BRIDGE_STATE_FILE = os.path.join(BASE_DIR, 'telegram_inbox_state.json')
 BRIDGE_STALE_SECONDS = 600  # 10 menit — record 'new' lebih tua dari ini dianggap basi
 _BRIDGE_FORWARDED_CAP = 200  # dedupe: simpan 200 message_id terakhir
 # Batas upload harian per channel — cerminan MAX_UPLOADS_PER_CHANNEL_PER_DAY di app.py.
-MAX_UPLOADS_PER_DAY = 6
+MAX_UPLOADS_PER_DAY = 100  # 🔥 v1.2.20: batas upload per project Google — 100/hari (kuota "Video Uploads per day" di Cloud Console, dicek live 2026-11-19). Dulu 6 (asumsi lama 10.000 ÷ 1.600).
 DAILY_REPORT_HOUR_WIB = 7  # laporan harian otomatis tiap pagi 07:00 WIB
 EVENING_REPORT_HOUR_WIB = 17  # laporan sore otomatis tiap 17:00 WIB
 # TTL cache statistik channel (cerminan VIDEO_STATS_CACHE_TTL di app.py):
@@ -1502,7 +1502,7 @@ def _stats_by_channel():
 
 
 def build_quota_report():
-    """Kuota upload: per project Google (batas 6/hari/project) + per channel."""
+    """Kuota upload: per project Google (batas 100/hari/project) + per channel."""
     channels = load_channels()
     today = _wib_today_str()
     lines = [
@@ -1522,7 +1522,7 @@ def build_quota_report():
         du = ch.get('daily_uploads') or {}
         if du.get('date') == today:
             e["used"] += int(du.get('count', 0))
-    lines.append("☁️ *Per Project Google* (batas 6 upload/hari/project):")
+    lines.append("☁️ *Per Project Google* (batas 100 upload/hari/project):")
     for pid in sorted(projects):
         e = projects[pid]
         used = e["used"]
@@ -1543,7 +1543,7 @@ def build_quota_report():
         lines.append(f"• *{_tg_escape(name)}*: `{used}/{MAX_UPLOADS_PER_DAY}` (sisa `{left}`){pause}")
     if len(channels) > 8:
         lines.append(f"_...dan {len(channels) - 8} channel lainnya._")
-    lines.append("Bos, kalau kuota project udah 6/6, upload baru nunggu reset tengah malam WIB ya 😌")
+    lines.append("Bos, kalau kuota project udah 100/100, upload baru nunggu reset tengah malam WIB ya 😌")
     return "\n".join(lines)
 
 
@@ -2057,6 +2057,301 @@ def build_schedule_report(days=7):
     lines.append("Bos, ketik /status buat cek kuota & antrean terkini 😎")
     return "\n".join(lines)
 
+
+# ==========================================
+# 🔥 v1.2.20 — FITUR PENDUKUNG TELEGRAM
+# /jadwalbulan, /laporan detail, /channel (baca saja, tidak mengubah data).
+# FORMAT (sesuai permintaan user 13:31 WIB — "tampilan database yang rapi"):
+# semua builder di sini memakai format yang SAMA dengan laporan lama:
+# judul bagian tebal + stempel waktu, pemisah ━━━, blok per channel
+# "📺 *Nama*" + baris berindentasi 3 spasi, angka lewat _fmt_num,
+# tanggal "Senin, 19 Nov" / "19 Nov 19:00". Data dari database yang SUDAH
+# ADA (channels_db.json, tasks_db.json, cache channel_stats) — TIDAK ADA
+# file database baru.
+# ==========================================
+def _split_long_message(text, limit=3800):
+    """Pecah pesan panjang per baris supaya tiap kiriman ≤ limit karakter
+    (batas Telegram 4096 — sisakan ruang untuk aman)."""
+    lines = str(text or '').split("\n")
+    chunks, cur = [], ""
+    for ln in lines:
+        if cur and len(cur) + 1 + len(ln) > limit:
+            chunks.append(cur)
+            cur = ln
+        else:
+            cur = (cur + "\n" + ln) if cur else ln
+    if cur:
+        chunks.append(cur)
+    return chunks or [""]
+
+
+def build_month_schedule_blocks(channel_arg=None, days=30):
+    """Jadwal 30 hari ke depan — kembalikan LIST pesan (1 pesan per channel).
+    Format hari SAMA dengan /jadwal: `  📅 *Hari, Tgl*` + `  • `HH:MM`
+    Judul — label`. Hari terisi tampil judul + jam; hari kosong digabung
+    jadi rentang ('21–24 Nov — kosong'). Hari yang sudah lewat (terlambat)
+    ditandai ⚠️. Stok jadwal tersisa di akhir tiap channel."""
+    tasks_data = load_tasks()
+    active = tasks_data.get('active', [])
+    channels = load_channels()
+    now = _wib_now()
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=days)
+
+    def _task_yt(t):
+        return t.get('yt_id') or (t.get('blueprint') or {}).get('yt_id') or ''
+
+    def _task_dt(t):
+        return _parse_schedule_dt(t.get('time') or (t.get('blueprint') or {}).get('publish_date') or '')
+
+    def _day_label(dt):
+        return f"{_DAYS_ID[dt.weekday()]}, {dt.day} {_MONTHS_ID[dt.month - 1]}"
+
+    if channel_arg:
+        matched, _all = _nlu_match_channels(_nlu_clean(channel_arg), channels)
+        if matched:
+            channels = matched
+        else:
+            return [f"😅 *Saya nggak nemu channel '{_tg_escape(channel_arg)}' Bos* — yang terdaftar: "
+                    + ", ".join(_channel_display_name(c) for c in load_channels()) + "."]
+    if not channels:
+        return ["📺 Belum ada channel terhubung nih Bos 😅\nTautkan dulu dari panel, baru jadwal bisa ditampilkan."]
+    blocks = []
+    for ch in channels:
+        name = _channel_display_name(ch)
+        yt = ch.get('yt_id', '')
+        paused = bool(ch.get('paused'))
+        by_day = {}
+        overdue = []
+        for t in active:
+            if _task_yt(t) != yt:
+                continue
+            dt = _task_dt(t)
+            if dt is None:
+                continue
+            if dt < now:
+                overdue.append((dt, t))
+            elif dt <= end:
+                by_day.setdefault(dt.strftime('%Y-%m-%d'), []).append((dt, t))
+        lines = [
+            f"🗓️ *Jadwal 30 Hari — {_tg_escape(name)}* 👀" + (" — ⏸️ *DIJEDA*" if paused else ""),
+            f"_{start.strftime('%d %b')} – {end.strftime('%d %b %Y')} WIB_",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+        ]
+        if overdue:
+            lines.append(f"⚠️ *Terlambat: `{len(overdue)} task` belum tayang*")
+            for dt, t in sorted(overdue, key=lambda x: x[0])[:3]:
+                lines.append(f"  • {dt.strftime('%d %b %H:%M')} — {_tg_escape((t.get('title') or '?')[:40])}")
+        filled = 0
+        gap_start = None
+        gap_len = 0
+
+        def _flush_gap(last_gap_day):
+            nonlocal gap_start, gap_len
+            if gap_start is None:
+                return
+            if gap_len == 1:
+                lines.append(f"  📅 *{_day_label(gap_start)}* — _kosong_")
+            else:
+                lines.append(f"  📅 *{_day_label(gap_start)} – {_day_label(last_gap_day)}* — _kosong ({gap_len} hari)_")
+            gap_start = None
+            gap_len = 0
+
+        for i in range(days):
+            day = start + timedelta(days=i)
+            items = by_day.get(day.strftime('%Y-%m-%d'))
+            if items:
+                _flush_gap(day - timedelta(days=1))
+                filled += 1
+                lines.append(f"  📅 *{_day_label(day)}*")
+                for dt, t in sorted(items, key=lambda x: x[0]):
+                    label = _task_schedule_label(t, paused)
+                    lines.append(f"  • `{dt.strftime('%H:%M')}` {_tg_escape((t.get('title') or '?')[:40])} — {label}")
+            else:
+                if gap_start is None:
+                    gap_start = day
+                gap_len += 1
+        _flush_gap(end - timedelta(days=1))
+        stock = get_stock_days(ch)
+        last = ch.get('last_scheduled_date', '-') or '-'
+        if stock is None:
+            stock_txt = "belum ada jadwal"
+        elif stock < 0:
+            stock_txt = "⚠️ stok HABIS"
+        else:
+            stock_txt = f"sisa ~{int(stock)} hari"
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"📦 Stok jadwal: {stock_txt} (terakhir: `{_tg_escape(last)}`) • `{filled}/{days} hari terisi`")
+        blocks.append("\n".join(lines))
+    return blocks
+
+
+def _channel_monet_compact(st, cache, history, today_str):
+    """Satu baris progres monetisasi: 'Subs 12/1.000 • ~123 jam/8.000 jam
+    (est.)'. '—' bila data belum bisa dihitung. Memakai helper yang sama
+    dengan _build_channel_stats_section (snapshot 90 hari + durasi
+    rata-rata video long)."""
+    try:
+        rule = _monetization_rule_for(today_str)
+        if st.get("monetized"):
+            return "💰 Monetisasi Aktif"
+        subs = int(st.get("subs") or 0)
+        yt_id = st.get("yt_id")
+        ch_snaps = cache.get('channel_snapshots') or []
+        ch_totals = {}
+        for s in ch_snaps:
+            if s.get('yt_id') == yt_id:
+                ch_totals[s.get('date')] = int(s.get('views', 0) or 0)
+        v90, _, _ = _snapshot_delta(ch_totals, 90)
+        avg_h = _avg_long_duration_hours(history, yt_id)
+        watch90 = round(v90 * avg_h, 1) if (v90 is not None and avg_h) else None
+        cached_videos = cache.get('videos', {}) or {}
+        vid_snaps = {}
+        for s in cache.get('snapshots', []) or []:
+            vid_snaps.setdefault(s.get('video_id'), {})[s.get('date')] = int(s.get('views', 0) or 0)
+        ref_date = max(ch_totals) if ch_totals else today_str
+        shorts_v, shorts_ok = _shorts_views_90d(yt_id, history, cached_videos, vid_snaps, ref_date)
+        ready = _channel_monetization_readiness(subs=subs, watch_90d_est_hours=watch90,
+                                                shorts_views_90d=shorts_v, shorts_complete=shorts_ok,
+                                                monetized=False, today_str=today_str)
+        if ready["status"] == "ready":
+            via = "jam tayang" if ready.get("via") == "hours" else "views Shorts"
+            return f"💰 ✅ Siap Monet (est.) — lewat {via}"
+        watch_txt = f"~{_fmt_num(round(watch90))} jam" if watch90 is not None else "jam tayang —"
+        return (f"💰 Subs {_fmt_num(subs)}/{_fmt_num(rule['subs'])} • "
+                f"{watch_txt}/{_fmt_num(rule['watch_hours'])} jam (est.)")
+    except Exception:
+        return "💰 Monetisasi: —"
+
+
+def build_channel_list_report():
+    """Daftar semua channel tertaut — 'tampilan database channel' yang rapi:
+    nama, subs, videos, mode, dijeda, stok jadwal, progres monetisasi.
+    Format blok per channel SAMA dengan laporan lain: '📺 *Nama*' +
+    baris berindentasi 3 spasi. Untuk /channel (dan NLU 'list channel')."""
+    channels = load_channels()
+    now = _wib_now()
+    lines = [
+        "📺 *Channel Buat Bos* 😎",
+        f"_{now.strftime('%d %b %Y, %H:%M')} WIB_",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+    if not channels:
+        lines.append("Belum ada channel yang tertaut, Bos 😌")
+        lines.append("Tautkan dulu dari panel (Settings → ➕ Tambah Channel).")
+        return "\n".join(lines)
+    stats = _get_report_channel_stats(channels)
+    cache = _load_video_stats_cache()
+    history = load_tasks().get('history', [])
+    today_str = _wib_today_str()
+    for ch, st in zip(channels, stats):
+        name = _channel_display_name(ch)
+        mode = 'Full-Auto 🤖' if _autopilot_of(ch) == 'auto' else 'Approval 👀'
+        paused = " ⏸️ *DIJEDA*" if ch.get('paused') else ""
+        lines.append(f"📺 *{_tg_escape(name)}*{paused}")
+        if st["ok"]:
+            lines.append(f"   👥 {_fmt_num(int(st['subs'] or 0))} subs • 📹 {_fmt_num(int(st['videos'] or 0))} video • 👁️ {_fmt_num(int(st['views']))} views")
+        else:
+            lines.append("   👥 subs — • 📹 video — • 👁️ views — (data belum bisa diambil)")
+        lines.append(f"   Mode: {mode}")
+        stock = get_stock_days(ch)
+        last = ch.get('last_scheduled_date', '-') or '-'
+        if stock is None:
+            stock_txt = "belum ada jadwal"
+        elif stock < 0:
+            stock_txt = "⚠️ stok HABIS"
+        elif stock <= 2:
+            stock_txt = f"⚠️ sisa ~{max(0, int(stock))} hari"
+        else:
+            stock_txt = f"sisa ~{int(stock)} hari"
+        lines.append(f"   📦 Stok: {stock_txt} (terakhir: `{_tg_escape(last)}`)")
+        lines.append(f"   {_channel_monet_compact(st, cache, history, today_str)}")
+        lines.append("")
+    lines.append(f"Total: `{len(channels)} channel` tertaut.")
+    return "\n".join(lines)
+
+
+def build_detail_report():
+    """Laporan terperinci (/laporan detail): per channel views/subs/videos +
+    delta, 3 video terbaik, upload hari ini, kuota project x/100, gagal hari
+    ini, progres monetisasi. Format blok per channel SAMA dengan /channel.
+    /laporan biasa TIDAK berubah. Kembalikan (teks, new_snapshot) seperti
+    build_daily_report — pemanggil menyimpan snapshot SETELAH pesan terkirim."""
+    tasks_data = load_tasks()
+    active = tasks_data.get('active', [])
+    history = tasks_data.get('history', [])
+    channels = load_channels()
+    now = _wib_now()
+    today = _wib_today_str()
+    ok_today, fail_today, _ok_t, fail_titles = _count_history_for_date(history, today)
+    cache = _load_video_stats_cache()
+    stats = _get_report_channel_stats(channels)
+    prev = load_monitor_state().get("channel_report_snapshot") or {}
+    new_snapshot = {}
+    per_ch = _stats_by_channel()
+    lines = [
+        "🔍 *LAPORAN DETAIL BUAT BOS* 🔍",
+        f"_{now.strftime('%d %b %Y, %H:%M')} WIB_",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"✅ *Upload sukses hari ini:* `{ok_today}`",
+        f"❌ *Gagal hari ini:* `{fail_today}`",
+    ]
+    if fail_titles:
+        lines.append("Gagal: " + "; ".join("• " + _tg_escape(t) for t in fail_titles[:5]))
+    projects = {}
+    for ch in channels:
+        pid = _project_id_of_channel(ch) or 'tidak-diketahui'
+        e = projects.setdefault(pid, {"used": 0})
+        du = ch.get('daily_uploads') or {}
+        if du.get('date') == today:
+            e["used"] += int(du.get('count', 0))
+    for pid in sorted(projects):
+        used = projects[pid]["used"]
+        lines.append(f"🎯 Kuota project `{_tg_escape(pid)}`: `{used}/{MAX_UPLOADS_PER_DAY}` (sisa `{max(0, MAX_UPLOADS_PER_DAY - used)}`)")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    if not channels:
+        lines.append("📺 Belum ada channel terhubung.")
+    for st in stats[:8]:
+        name = st["name"]
+        lines.append(f"📺 *{_tg_escape(name)}*")
+        if not st["ok"]:
+            lines.append("   Data belum bisa diambil 😌 (coba lagi nanti)")
+            lines.append("")
+            continue
+        views, subs, videos = int(st["views"]), int(st["subs"] or 0), int(st["videos"] or 0)
+        new_snapshot[st["yt_id"]] = {"views": views, "subs": subs, "videos": videos,
+                                     "at": now.strftime("%Y-%m-%d %H:%M")}
+        lines.append(f"   👁️ {_fmt_num(views)} views • 👥 {_fmt_num(subs)} subs • 📹 {_fmt_num(videos)} video")
+        base = prev.get(st["yt_id"]) or {}
+        if base.get('views') is not None and base.get('subs') is not None:
+            dv = views - int(base['views'])
+            ds = subs - int(base['subs'])
+            when = _fmt_snapshot_time(base.get('at', ''))
+            when_txt = f" ({when})" if when else ""
+            lines.append(f"   📈 Sejak laporan terakhir{when_txt}: 👁️ {'+' if dv >= 0 else ''}{_fmt_num(dv)} • 👥 {'+' if ds >= 0 else ''}{_fmt_num(ds)}")
+        else:
+            lines.append("   📈 Delta mulai terlihat dari laporan berikutnya.")
+        lines.append(f"   {_channel_monet_compact(st, cache, history, today)}")
+        top = sorted((per_ch.get(st["yt_id"]) or {}).get("videos", []),
+                     key=lambda v: v.get("views", 0), reverse=True)[:3]
+        if top:
+            lines.append("   🏆 *3 video terbaik:*")
+            for i, v in enumerate(top, 1):
+                lines.append(f"      {i}. {_tg_escape(str(v.get('title') or '?')[:45])} — 👁️ {_fmt_num(v.get('views', 0))}")
+        else:
+            lines.append("   🏆 Video terbaik: belum ada data (video tayang belum tercatat di statistik).")
+        lines.append("")
+    if len(stats) > 8:
+        lines.append(f"_...dan {len(stats) - 8} channel lainnya (cek di panel)._")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"🏭 *Antrean tersisa:* `{len(active)} task`")
+    _pend_lines = _pending_approval_lines(active, channels, limit=5)
+    if _pend_lines:
+        lines += _pend_lines
+    lines.append("Bos, ketik /laporan buat ringkasan harian biasa 😎")
+    return "\n".join(lines), new_snapshot
+
+
 def _tg_escape(text):
     """Escape karakter Markdown Telegram supaya nama channel / judul video
     (yang bisa mengandung *, _, `, [ dll.) tidak merusak format pesan.
@@ -2517,6 +2812,60 @@ def handle_callback_query(token, chat_id, callback_query):
         _save_make_draft(chat_id, draft)
         answer_callback(token, cq_id, "Sip, kandidat dipilih!")
         _make_ask_step(token, chat_id, draft)
+        return
+    # --- ⚙️ ATUR JADWAL (v1.2.20): tombol alur /aturjadwal ---
+    # aj:ch:<idx> pilih channel → aj:field:<key> pilih yang diubah →
+    # aj:theme:<niche> pilih tema → aj:yes / aj:no konfirmasi simpan.
+    if data.startswith('aj:'):
+        draft = _load_aturjadwal_draft(chat_id)
+        if not draft or draft.get('expired'):
+            answer_callback(token, cq_id,
+                            "Pengaturannya sudah hangus / selesai — ketik /aturjadwal lagi ya Bos 😌")
+            return
+        if data.startswith('aj:ch:'):
+            try:
+                idx = int(data[len('aj:ch:'):])
+                ch = load_channels()[idx]
+            except Exception:
+                answer_callback(token, cq_id, "Eh, channel-nya nggak valid nih 😅")
+                return
+            draft['yt_id'] = ch.get('yt_id')
+            draft['step'] = 'field'
+            _save_aturjadwal_draft(chat_id, draft)
+            answer_callback(token, cq_id, "Sip!")
+            _aturjadwal_ask_field(token, chat_id, draft)
+            return
+        if data.startswith('aj:field:'):
+            key = data[len('aj:field:'):]
+            if key not in _AJ_FIELD_LABEL:
+                answer_callback(token, cq_id, "Eh, pilihannya nggak valid nih 😅")
+                return
+            draft['field'] = key
+            draft['step'] = 'value'
+            _save_aturjadwal_draft(chat_id, draft)
+            answer_callback(token, cq_id, "Sip!")
+            _aturjadwal_ask_value(token, chat_id, draft)
+            return
+        if data.startswith('aj:theme:'):
+            key = data[len('aj:theme:'):]
+            if key not in _NICHES:
+                answer_callback(token, cq_id, "Eh, temanya nggak valid nih 😅")
+                return
+            draft['value'] = key
+            draft['step'] = 'confirm'
+            _save_aturjadwal_draft(chat_id, draft)
+            answer_callback(token, cq_id, "Sip!")
+            _aturjadwal_ask_confirm(token, chat_id, draft)
+            return
+        if data == 'aj:yes':
+            answer_callback(token, cq_id, "Siap, saya simpan!")
+            _aturjadwal_save(token, chat_id, draft)
+            return
+        if data == 'aj:no':
+            _clear_aturjadwal_draft(chat_id)
+            answer_callback(token, cq_id, "Dibatalkan.")
+            send_message(token, chat_id, "😌 *Sip Bos, dibatalkan* — tidak ada yang diubah.")
+            return
         return
     # --- 🧠 NLU: jawaban tombol klarifikasi (channel / niche / mode /
     # Short-vs-Long / Ya-Bukan). ---
@@ -3212,83 +3561,24 @@ def _make_ask_step(token, chat_id, draft):
                               {"text": "❌ Batal", "callback_data": "mkplaylist:no"}]]})
         return
     if kind == 'short':
-        if step == 'title':
+        if step == 'theme':
             send_message(token, chat_id,
-                         "🎬 *Buat Short — langkah 1 dari 7: Judul*\n\nKirim judul Shorts-nya, Bos. (mis. `Musik Tidur Nyenyak 30 Detik`)")
-        elif step == 'hook':
-            send_message(token, chat_id,
-                         "🪝 *Langkah 2 dari 7: Hook (4 detik pertama)*\n\nKirim kalimat pembuka yang bikin orang berhenti scroll.\nKetik `lewati` kalau mau kosongkan (nanti pakai naskah saja).")
-        elif step == 'script':
-            send_message(token, chat_id,
-                         "📝 *Langkah 3 dari 7: Naskah*\n\nKirim naskah Shorts-nya (ditampilkan berurutan di video).\nKetik `lewati` kalau sudah cukup dengan Hook saja.")
-        elif step == 'cta':
-            send_message(token, chat_id,
-                         "📣 *Langkah 4 dari 7: CTA (kartu akhir 5 detik)*\n\nKirim teks ajakannya (mis. `Subscribe`).\nKetik `lewati` untuk pakai CTA standar (`Subscribe`).")
-        elif step == 'duration':
-            send_message(token, chat_id,
-                         "⏱️ *Langkah 5 dari 7: Durasi*\n\nBalas `15`, `30`, atau `60` (detik).\nKetik `lewati` untuk 30 detik.")
+                         "🎬 *Buat Short — langkah 2 dari 3: Tema atau judul*\n\n"
+                         "Tema atau judulnya apa, Bos? (mis. `anak-anak`, `tidur`, atau ketik judul sendiri)")
         elif step == 'publish':
             nxt = _next_slot_for_channel(next((c for c in load_channels()
                                               if c.get('yt_id') == d.get('yt_id')), None))
             send_message(token, chat_id,
-                         "🗓️ *Langkah 6 dari 7: Jadwal tayang*\n\nTulis jamnya — mis. `hari ini jam 9`, `besok jam 7 malam`, atau `2026-11-20 19:00`.\n"
+                         "🗓️ *Langkah 3 dari 3: Jadwal tayang*\n\nTulis jamnya — mis. `hari ini jam 9`, `besok jam 7 malam`, atau `2026-11-20 19:00`.\n"
                          f"Ketik `lewati` untuk jadwal berikutnya (`{nxt}`).")
-        elif step == 'bg':
-            opts = d.get('bg_options') or []
-            if not opts:
-                lines = ["🖼️ *Langkah 7 dari 7: Background*\n\nGaleri channel ini masih kosong — nanti saya buatkan background gradien otomatis, Bos. 🎨\n\nBalas `lewati` untuk lanjut (atau upload gambar sendiri di panel bila mau yang lebih bagus)."]
-                send_message(token, chat_id, "\n".join(lines))
-                return
-            lines = ["🖼️ *Langkah 7 dari 7: Background*\n"]
-            vids = d.get('bg_video_count') or 0
-            imgs = len(opts) - vids
-            counts = []
-            if vids:
-                counts.append(f"{vids} video")
-            if imgs:
-                counts.append(f"{imgs} gambar")
-            lines.append(f"Galeri punya {' + '.join(counts)}. Mau pakai yang mana, Bos?")
-            lines.append("• Balas `lewati` → " + ("semua video dipakai berurutan" if vids else "pakai gambar acak"))
-            lines.append("• Balas angkanya → pakai 1 file itu saja (mis. balas `2`)\n")
-            vid_no = 0
-            for i, f in enumerate(opts[:10], 1):
-                ext = os.path.splitext(f)[1].lower()
-                kind = 'video' if ext in ('.mp4', '.mov', '.webm') else 'image'
-                if kind == 'video':
-                    vid_no += 1
-                    lines.append(f"{i}. {_friendly_gallery_label(f, kind, vid_no)}")
-                else:
-                    lines.append(f"{i}. {_friendly_gallery_label(f, kind)}")
-            if len(opts) > 10:
-                lines.append(f"_…dan {len(opts) - 10} file lainnya_")
-            send_message(token, chat_id, "\n".join(lines))
-        elif step == 'bgm':
-            opts = _gallery_files(d.get('yt_id', ''), 'audios', _AUDIO_EXTS)
-            d['bgm_options'] = opts
-            _save_make_draft(chat_id, draft)
-            if not opts:
-                d['bgm_file'] = 'none'
-                draft['step'] = 'confirm'
-                _save_make_draft(chat_id, draft)
-                send_message(token, chat_id, _make_short_summary(d),
-                             reply_markup={"inline_keyboard": [
-                                 [{"text": "✅ Buat", "callback_data": "mkshort:yes"},
-                                  {"text": "❌ Batal", "callback_data": "mkshort:no"}]]})
-                return
-            lines = ["🎵 *Terakhir: Musik latar*\n"]
-            lines.append(f"Galeri punya {len(opts)} musik. Mau pakai yang mana, Bos?")
-            lines.append("• Balas `0` atau `lewati` → musik bawaan")
-            lines.append("• Balas angkanya → pakai 1 file itu saja (mis. balas `2`)\n")
-            for i, f in enumerate(opts[:10], 1):
-                lines.append(f"{i}. {_friendly_gallery_label(f, 'audio')}")
-            if len(opts) > 10:
-                lines.append(f"_…dan {len(opts) - 10} file lainnya_")
-            send_message(token, chat_id, "\n".join(lines))
         elif step == 'confirm':
             send_message(token, chat_id, _make_short_summary(d),
                          reply_markup={"inline_keyboard": [
                              [{"text": "✅ Buat", "callback_data": "mkshort:yes"},
                               {"text": "❌ Batal", "callback_data": "mkshort:no"}]]})
+        else:
+            # Langkah lama dari draft sebelum v1.2.19 — mulai ulang alur pendek.
+            _short_restart_legacy(token, chat_id)
     else:  # long
         if step == 'count':
             send_message(token, chat_id,
@@ -3310,23 +3600,91 @@ def _make_ask_step(token, chat_id, draft):
                              [{"text": "✅ Buat", "callback_data": "mklong:yes"},
                               {"text": "❌ Batal", "callback_data": "mklong:no"}]]})
 
-def _short_next_step(d):
-    """Langkah pertama yang masih kosong untuk Short (dipakai lompatan
-    sekali kirim — bagian yang sudah diisi tidak ditanya lagi)."""
-    if not d.get('title'):
-        return 'title'
-    if not d.get('hook') and not d.get('script'):
-        return 'hook'
+# --- v1.2.19: alur /buatshort dipersingkat jadi 3 pertanyaan ---
+# Langkah lama (title/hook/script/cta/duration/bg/bgm) — draft yang masih
+# menyimpan salah satunya (dibuat sebelum v1.2.19) dimulai ulang ramah.
+_SHORT_LEGACY_STEPS = ('title', 'hook', 'script', 'cta', 'duration', 'bg', 'bgm')
+_SHORT_THEME_FILLERS = ('tema', 'temanya', 'buat', 'buatkan', 'bikin', 'short',
+                        'video', 'yang', 'tentang', 'niche', 'tolong', 'dong')
+
+
+def _short_detect_theme(ans):
+    """Kunci niche dari jawaban tema, atau None bila jawabannya judul custom.
+    Hanya jawaban PENDEK (≤2 kata setelah buang kata pengisi) yang dianggap
+    tema — judul custom seperti 'Musik Tidur Nyenyak' (3 kata) tidak
+    tertangkap jadi tema. Urutan _NLU_NICHE_ORDER supaya 'asmr buat tidur'
+    jadi asmr, bukan sleep."""
+    words = [re.sub(r'[^\w]', '', w)
+             for w in (ans or '').lower().strip().split()]
+    words = [w for w in words if w and w not in _SHORT_THEME_FILLERS]
+    if not words or len(words) > 2:
+        return None
+    joined = ' '.join(words)
+    for niche in _NLU_NICHE_ORDER:
+        for w in _NLU_NICHE_WORDS.get(niche, ()):
+            if w in joined:
+                return niche
+    return None
+
+
+def _short_fallback_bank(d):
+    """(bank, kunci_niche) untuk hook/naskah/CTA bila judulnya custom:
+    tema auto-shorts channel bila diset di panel, sonst 'sleep' — tema
+    default di semua tempat (panel, NLU, _parse_niche_arg). Bukan 'anak':
+    bank anak (lagu ceria + ajakan subscribe anak) hanya dipakai bila Bos
+    memang meminta tema anak."""
+    ch_theme = None
+    try:
+        ch = next((c for c in load_channels()
+                   if c.get('yt_id') == d.get('yt_id')), None)
+        raw = (ch or {}).get('auto_shorts') or {}
+        if isinstance(raw, dict):
+            ch_theme = str(raw.get('theme') or '').strip().lower()
+    except Exception:
+        ch_theme = None
+    niche = ch_theme if ch_theme in _NLU_SHORTS_BANK else 'sleep'
+    return _NLU_SHORTS_BANK[niche], niche
+
+
+def _short_fill_from_bank(d):
+    """Isi hook/naskah/CTA yang masih kosong dari bank tema — dipakai bila
+    judul datang dari one-shot /buatshort tanpa hook/naskah, dan sebagai
+    jaring pengaman sebelum task dibuat. Tidak menimpa yang sudah ada."""
+    niche = d.get('theme') if d.get('theme') in _NLU_SHORTS_BANK else None
+    if niche:
+        bank = _NLU_SHORTS_BANK[niche]
+    else:
+        bank, niche = _short_fallback_bank(d)
+    day_idx = _wib_now().timetuple().tm_yday
+    if not d.get('theme'):
+        d['theme'] = niche
+    if not d.get('hook'):
+        d['hook'] = bank['hooks'][day_idx % len(bank['hooks'])]
+    if not d.get('script'):
+        d['script'] = bank['scripts'][day_idx % len(bank['scripts'])]
     if not d.get('cta'):
-        return 'cta'
-    if not d.get('duration_sec'):
-        return 'duration'
+        d['cta'] = bank['ctas'][day_idx % len(bank['ctas'])]
+    return d
+
+
+def _short_restart_legacy(token, chat_id):
+    """Draft lama (langkah 7+ dari sebelum v1.2.19) → mulai ulang alur
+    pendek dengan pesan sopan, tanpa crash."""
+    _clear_make_draft(chat_id)
+    send_message(token, chat_id,
+                 "😌 *Eh Bos, alur buat Short sekarang sudah lebih singkat — cuma 3 pertanyaan aja* 🎬\n"
+                 "Draft lamanya saya mulai ulang ya, biar nggak bingung.")
+    _start_make_short(token, chat_id, '')
+
+
+def _short_next_step(d):
+    """Langkah pertama yang masih kosong untuk Short — alur pendek v1.2.19:
+    channel → tema/judul → jadwal → konfirmasi. Judul dari one-shot
+    sekali kirim langsung lompat ke jadwal."""
+    if not d.get('title'):
+        return 'theme'
     if not d.get('publish_date'):
         return 'publish'
-    if not d.get('bg_file'):
-        return 'bg'
-    if not d.get('bgm_file'):
-        return 'bgm'
     return 'confirm'
 
 def _long_next_step(d):
@@ -3366,13 +3724,13 @@ def _start_make_short(token, chat_id, raw_cmd):
         if len(parts) > 3 and parts[3]:
             pre['cta'] = parts[3][:100]
     ch, ask_msg = _make_pick_channel(channels)
-    draft = {"kind": "short", "step": "title", "data": dict(pre)}
+    draft = {"kind": "short", "step": "theme", "data": dict(pre)}
     if ch is None:
         draft['step'] = 'channel'
         _save_make_draft(chat_id, draft)
         send_message(token, chat_id,
                      "🎬 *Siap Bos, kita buat Short bareng-bareng ya!* 😎\n"
-                     "Jawab tiap langkah satu per satu — ketik /batal kapan saja untuk berhenti.\n\n" + ask_msg)
+                     "Cuma 3 pertanyaan aja — sisanya saya atur otomatis 😎\nKetik /batal kapan saja untuk berhenti.\n\n" + ask_msg)
         return
     draft['data']['yt_id'] = ch.get('yt_id')
     draft['data']['channel_name'] = _channel_display_name(ch)
@@ -3383,7 +3741,7 @@ def _start_make_short(token, chat_id, raw_cmd):
     _save_make_draft(chat_id, draft)
     send_message(token, chat_id,
                  f"🎬 *Siap Bos, kita buat Short buat channel {_tg_escape(draft['data']['channel_name'])} ya!* 😎\n"
-                 "Jawab tiap langkah satu per satu — ketik /batal kapan saja untuk berhenti.")
+                 "Cuma 3 pertanyaan aja — sisanya saya atur otomatis 😎\nKetik /batal kapan saja untuk berhenti.")
     _make_ask_step(token, chat_id, draft)
 
 def _start_make_long(token, chat_id, raw_cmd):
@@ -3888,37 +4246,46 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
         _make_ask_step(token, chat_id, draft)
         return True
     if kind == 'short':
-        if step == 'title':
+        if step in _SHORT_LEGACY_STEPS:
+            # Draft dari sebelum v1.2.19 (alur 7 langkah) — mulai ulang alur pendek.
+            _short_restart_legacy(token, chat_id)
+            return True
+        if step == 'theme':
             if not ans:
-                send_message(token, chat_id, "😅 *Judulnya masih kosong Bos* — kirim judul Shorts-nya ya.")
-                return True
-            d['title'] = ans[:200]
-            draft['step'] = 'hook'
-        elif step == 'hook':
-            d['hook'] = '' if low in ('lewati', '-', 'skip') else ans[:500]
-            draft['step'] = 'script'
-        elif step == 'script':
-            d['script'] = '' if low in ('lewati', '-', 'skip') else ans[:2000]
-            if not (d.get('hook') or d.get('script')):
                 send_message(token, chat_id,
-                             "😅 *Hook dan Naskah tidak boleh dua-duanya kosong Bos* — "
-                             "isi salah satunya ya. Kirim Hook-nya dulu:")
-                draft['step'] = 'hook'
-                _save_make_draft(chat_id, draft)
+                             "😅 *Temanya masih kosong Bos* — kirim temanya (mis. `anak-anak`, `tidur`) atau judulnya ya.")
                 return True
-            draft['step'] = 'cta'
-        elif step == 'cta':
-            d['cta'] = 'Subscribe' if low in ('lewati', '-', 'skip') else ans[:100]
-            draft['step'] = 'duration'
-        elif step == 'duration':
+            day_idx = _wib_now().timetuple().tm_yday
             if low in ('lewati', '-', 'skip'):
-                d['duration_sec'] = 30
-            elif ans in ('15', '30', '60'):
-                d['duration_sec'] = int(ans)
+                # Lewati = pakai bank tema channel (atau 'sleep') untuk semuanya.
+                bank, niche = _short_fallback_bank(d)
+                d['theme'] = niche
+                d['title'] = bank['titles'][day_idx % len(bank['titles'])]
+                d['hook'] = bank['hooks'][day_idx % len(bank['hooks'])]
+                d['script'] = bank['scripts'][day_idx % len(bank['scripts'])]
+                d['cta'] = bank['ctas'][day_idx % len(bank['ctas'])]
             else:
-                send_message(token, chat_id,
-                             "😅 *Durasi harus 15, 30, atau 60 detik Bos* — balas salah satunya ya.")
-                return True
+                niche = _short_detect_theme(ans)
+                if niche:
+                    bank = _NLU_SHORTS_BANK[niche]
+                    d['theme'] = niche
+                    d['title'] = bank['titles'][day_idx % len(bank['titles'])]
+                    d['hook'] = bank['hooks'][day_idx % len(bank['hooks'])]
+                    d['script'] = bank['scripts'][day_idx % len(bank['scripts'])]
+                    d['cta'] = bank['ctas'][day_idx % len(bank['ctas'])]
+                else:
+                    # Judul custom — hook/naskah/CTA dari bank tema channel (atau 'sleep').
+                    d['title'] = ans[:200]
+                    bank, niche = _short_fallback_bank(d)
+                    d['theme'] = niche
+                    d['hook'] = bank['hooks'][day_idx % len(bank['hooks'])]
+                    d['script'] = bank['scripts'][day_idx % len(bank['scripts'])]
+                    d['cta'] = bank['ctas'][day_idx % len(bank['ctas'])]
+            # Otomatis, tanpa ditanya: durasi 30 detik, background semua
+            # klip video (atau gradien bila galeri kosong), musik bawaan.
+            d['duration_sec'] = 30
+            d['bg_file'] = ''
+            d['bgm_file'] = 'none'
             draft['step'] = 'publish'
         elif step == 'publish':
             if low in ('lewati', '-', 'skip'):
@@ -3937,41 +4304,6 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
                     d['publish_note'] = note
                 else:
                     d.pop('publish_note', None)
-            draft['step'] = 'bg'
-        elif step == 'bg':
-            opts = d.get('bg_options') or []
-            if low in ('lewati', '-', 'skip'):
-                # Tanpa pilihan eksplisit → panel yang memutuskan: semua klip
-                # video disambung bila ada, gambar acak bila tidak ada video,
-                # gradien otomatis bila galeri kosong.
-                d['bg_file'] = ''
-            else:
-                try:
-                    idx = int(ans) - 1
-                    picked = opts[idx] if 0 <= idx < len(opts) else None
-                except Exception:
-                    picked = None
-                if not picked:
-                    send_message(token, chat_id,
-                                 f"😅 *Pilihannya nggak ada Bos* — balas angkanya 1–{len(opts)} ya.")
-                    return True
-                d['bg_file'] = picked
-            draft['step'] = 'bgm'
-        elif step == 'bgm':
-            opts = d.get('bgm_options') or []
-            if low in ('lewati', '-', 'skip', '0', 'tanpa musik', 'none'):
-                d['bgm_file'] = 'none'
-            else:
-                try:
-                    idx = int(ans) - 1
-                    picked = opts[idx] if 0 <= idx < len(opts) else None
-                except Exception:
-                    picked = None
-                if not picked:
-                    send_message(token, chat_id,
-                                 f"😅 *Pilihannya nggak ada Bos* — balas angkanya 1–{len(opts)}, atau `0` musik bawaan.")
-                    return True
-                d['bgm_file'] = picked
             draft['step'] = 'confirm'
         elif step == 'confirm':
             if low in ('ya', 'buat', '✅', 'ok', 'oke', 'lanjut'):
@@ -3984,6 +4316,10 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
             send_message(token, chat_id,
                          "👆 *Tinggal pencet tombol di atas ya Bos* — ✅ Buat atau ❌ Batal. "
                          "Atau balas `ya` / `batal`.")
+            return True
+        else:
+            # Langkah tidak dikenal — mulai ulang alur pendek.
+            _short_restart_legacy(token, chat_id)
             return True
         draft['data'] = d
         _save_make_draft(chat_id, draft)
@@ -4157,6 +4493,10 @@ def _confirm_make_create(token, chat_id, draft):
     retry_cmd = {'short': '/buatshort', 'long': '/buatlong',
                  'playlist': '/playlist'}.get(kind, '/buatshort')
     if kind == 'short':
+        # Jaring pengaman (alur pendek v1.2.19): judul dari one-shot tanpa
+        # hook/naskah → isi dari bank tema; tema ikut dikirim supaya panel
+        # memilih suara voiceover + gradien sesuai tema.
+        _short_fill_from_bank(d)
         ok, info, resp = request_create_shorts({
             "yt_id": d.get('yt_id'), "title": d.get('title'),
             "hook": d.get('hook', ''), "script": d.get('script', ''),
@@ -4166,6 +4506,7 @@ def _confirm_make_create(token, chat_id, draft):
             "text_color": "#FFFFFF",
             "bg_file": d.get('bg_file', ''),
             "bgm_file": d.get('bgm_file', 'none'),
+            "theme": d.get('theme', ''),
         })
     elif kind == 'playlist':
         ok, info, resp = _operator_post('/api/operator/playlist_create', {
@@ -4691,12 +5032,127 @@ def _nlu_extract_playlist_theme(clean, channels):
     return t[:100] or None
 
 
+# ==========================================
+# 🔥 v1.2.20 — SINONIM + TOLERANSI TYPO perintah baru Bagian B
+# Satu helper bersama untuk kata-kata perintah BARU saja (NLU lama tidak
+# dirombak). Sinonim alami per perintah + toleransi salah ketik ringan:
+# kata cocok bila sama persis, substring salah satu arah (kata tergabung
+# "jadwalbuln", kependekan "jadwa"), atau kemiripan difflib ≥ 0.8.
+# Bila cocoknya lewat typo (fuzzy), confidence lebih rendah (55) supaya
+# bot menanyakan "Maksud Bos ...?" dulu — tidak pernah langsung
+# "nggak ngerti" tanpa tawaran.
+# ==========================================
+_CMD_SYNONYMS = {
+    # intent: (daftar frasa sinonim, confidence bila cocok persis)
+    'jadwal_bulan': (["jadwal bulan", "jadwal sebulan", "kalender",
+                      "jadwal 30 hari", "jadwal bulanan"], 85),
+    'atur_jadwal': (["atur jadwal", "ubah jadwal", "ganti jam tayang",
+                     "setting jadwal", "pengaturan jadwal", "ganti jadwal"], 85),
+    'laporan_detail': (["laporan lengkap", "laporan rinci", "report detail",
+                        "laporan detail", "laporan terperinci"], 85),
+    'channel_list': (["list channel", "daftar channel", "channel saya",
+                      "info channel", "channelku"], 85),
+}
+# Kata tunggal yang bila salah ketik ringan tetap dikenali (teks hanya
+# 1 kata): "chnnel" → channel_list, "jadwaal" → jadwal, dst. Kata yang
+# ejaannya sudah benar TIDAK lewat sini (biar jatuh ke cabang lama).
+_FUZZY_SINGLE_WORDS = {
+    'kalender': 'jadwal_bulan',
+    'channel': 'channel_list',
+    'jadwal': 'jadwal',
+    'laporan': 'laporan',
+}
+
+
+def _fuzzy_word_match(word, target, cutoff=0.8):
+    """Satu kata cocok dengan toleransi typo ringan? Sama persis, salah
+    satu mengandung yang lain (min. 2 huruf — supaya 'a' tidak cocok
+    ke mana-mana), atau kemiripan difflib ≥ cutoff."""
+    import difflib
+    w, t = (word or '').lower(), (target or '').lower()
+    if not w or not t:
+        return False
+    if w == t:
+        return True
+    short = w if len(w) <= len(t) else t
+    if len(short) >= 2 and (w in t or t in w):
+        return True
+    return difflib.SequenceMatcher(None, w, t).ratio() >= cutoff
+
+
+def _fuzzy_phrase_in(clean, phrase, cutoff=0.8):
+    """Apakah frasa (1+ kata) ada di teks dengan toleransi typo per kata?
+    Kata-katanya harus berurutan (boleh ada 1 kata lain di antaranya).
+    Kata tergabung ('jadwalbuln' ≈ 'jadwal bulan') ditangkap lewat
+    perbandingan frasa-utuh vs satu token."""
+    import difflib
+    words = (clean or '').split()
+    pwords = (phrase or '').split()
+    if not pwords or not words:
+        return False
+    joined = ''.join(pwords)
+    for w in words:
+        # Arah "frasa di dalam token" (token lebih panjang) bebas; arah
+        # "token di dalam frasa" hanya bila token hampir sepanjang frasa
+        # (kata tergabung utuh) — supaya "channel" saja tidak ikut cocok
+        # ke frasa "channel saya" (itu urusan cabang lama).
+        if len(w) >= 4 and (joined in w
+                            or (len(w) >= len(joined) - 2 and w in joined)
+                            or difflib.SequenceMatcher(None, w, joined).ratio() >= 0.85):
+            return True
+    for start in range(len(words)):
+        if not _fuzzy_word_match(words[start], pwords[0], cutoff):
+            continue
+        j = start
+        ok = True
+        for pw in pwords[1:]:
+            if _fuzzy_word_match(words[j], pw, cutoff):
+                continue
+            found = False
+            for k in range(j + 1, min(j + 3, len(words))):
+                if _fuzzy_word_match(words[k], pw, cutoff):
+                    j = k
+                    found = True
+                    break
+            if not found:
+                ok = False
+                break
+        if ok:
+            return True
+    return False
+
+
+def _match_new_command(clean):
+    """Cocokkan teks bebas ke perintah baru Bagian B (sinonim + typo).
+    Kembalikan (intent, confidence, fuzzy_bool) atau None. Dicek SEBELUM
+    intent baca-saja lama supaya 'laporan lengkap' tidak ditangkap
+    /laporan biasa dan 'jadwal bulan' tidak ditangkap /jadwal.
+    Exact = confidence 85 (langsung jalan, seperti intent baca-saja lain);
+    fuzzy = 55 + penanda slots['fuzzy_match'] (bot bertanya
+    'Maksud Bos ...?' dulu lewat alur konfirmasi NLU)."""
+    for intent, (phrases, conf) in _CMD_SYNONYMS.items():
+        for ph in phrases:
+            if ph in (clean or ''):
+                return (intent, conf, False)
+    for intent, (phrases, _c) in _CMD_SYNONYMS.items():
+        for ph in phrases:
+            if _fuzzy_phrase_in(clean, ph):
+                return (intent, 55, True)
+    words = (clean or '').split()
+    if len(words) == 1:
+        for kw, intent in _FUZZY_SINGLE_WORDS.items():
+            if words[0] != kw and _fuzzy_word_match(words[0], kw):
+                return (intent, 55, True)
+    return None
+
+
 def parse_natural_command(text, channels):
     """Terjemahkan pesan bebas → {intent, confidence 0-100, slots}.
     Intent: buat_short, buat_long, buat_playlist, status, laporan, kuota, stok, statistik,
     monetisasi, jadwal, gagal, channel_list, bantuan, jeda_channel,
     lanjutkan_channel, perpanjang_jadwal, ubah_mode, hapus,
-    hentikan_antrean, tidak_dikenali."""
+    hentikan_antrean, tidak_dikenali, jadwal_bulan, laporan_detail,
+    atur_jadwal (🔥 v1.2.20 — perintah baru Bagian B + sinonim/typo)."""
     clean = _nlu_clean(text)
     slots = {}
     conf = 0
@@ -4724,6 +5180,12 @@ def parse_natural_command(text, channels):
         return {"intent": "tidak_dikenali", "confidence": 0, "slots": slots}
 
     create_verb = bool(re.search(r'\b(buat|bikin|buatkan|tolong buat|tolong bikin)\b', clean))
+
+    # 🔥 v1.2.20: perintah baru Bagian B (sinonim + toleransi typo) —
+    # dihitung sekali di sini, dipakai cabang elif di bawah (sebelum
+    # intent baca-saja lama). fuzzy=True → slot penanda supaya
+    # _handle_nlu_message menanyakan "Maksud Bos ...?" dulu.
+    _new_cmd = _match_new_command(clean)
 
     # --- Destruktif: tidak pernah dieksekusi langsung (selalu konfirmasi). ---
     if re.search(r'\b(hapus|delete|buang)\b', clean):
@@ -4806,6 +5268,14 @@ def parse_natural_command(text, channels):
             or (create_verb and 'channel' in clean and not matched and not all_flag)):
         intent = 'tambah_channel'
         conf = 65
+    # --- 🔥 v1.2.20: perintah baru Bagian B (sinonim + toleransi typo). ---
+    # Dicek SEBELUM intent baca-saja lama supaya 'laporan lengkap' tidak
+    # ditangkap /laporan biasa, 'jadwal bulan' tidak ditangkap /jadwal,
+    # dan 'channel saya' tidak ditangkap cabang channel lama.
+    elif _new_cmd:
+        intent, conf = _new_cmd[0], _new_cmd[1]
+        if _new_cmd[2]:
+            slots['fuzzy_match'] = True
     # --- Baca saja. ---
     elif 'status' in clean:
         intent = 'status'
@@ -4940,7 +5410,8 @@ def parse_natural_command(text, channels):
                 slots['mode'] = mode
                 conf += 10
     elif intent in ('status', 'laporan', 'kuota', 'stok', 'statistik',
-                    'monetisasi', 'jadwal', 'gagal', 'channel_list', 'bantuan'):
+                    'monetisasi', 'jadwal', 'gagal', 'channel_list', 'bantuan',
+                    'jadwal_bulan', 'laporan_detail'):
         pass  # baca saja: skor dasar sudah cukup
     return {"intent": intent, "confidence": min(95, conf), "slots": slots}
 
@@ -5061,6 +5532,18 @@ def _nlu_describe(pending):
         return f"hapus {slots.get('target') or 'sesuatu'} {ch}"
     if intent == 'hentikan_antrean':
         return "hentikan antrean"
+    if intent == 'jadwal_bulan':
+        return f"tampilkan jadwal 30 hari untuk {ch}"
+    if intent == 'laporan_detail':
+        return "tampilkan laporan detail (views, video terbaik, kuota, gagal hari ini, monetisasi)"
+    if intent == 'atur_jadwal':
+        return f"atur jadwal {ch}"
+    if intent == 'channel_list':
+        return "tampilkan daftar channel"
+    if intent == 'jadwal':
+        return "tampilkan jadwal 7 hari"
+    if intent == 'laporan':
+        return "tampilkan laporan harian"
     return intent or 'sesuatu'
 
 
@@ -5143,7 +5626,8 @@ def _nlu_advance(token, chat_id, pending):
     chans = load_channels()
     # --- Channel: isi dari 'all' / cek apakah sudah ada. ---
     if intent in ('buat_short', 'buat_long', 'buat_playlist', 'perpanjang_jadwal', 'ubah_mode',
-                  'jeda_channel', 'lanjutkan_channel', 'hapus', 'hentikan_antrean'):
+                  'jeda_channel', 'lanjutkan_channel', 'hapus', 'hentikan_antrean',
+                  'atur_jadwal'):
         if slots.get('channels') == 'all':
             slots['channels'] = [c.get('yt_id') for c in chans]
         if not slots.get('channels') and slots.get('channel_unknown'):
@@ -5176,6 +5660,33 @@ def _nlu_advance(token, chat_id, pending):
                                                   'jeda_channel', 'lanjutkan_channel', 'ubah_mode')
                                         and not slots.get('channel_count')))
                 return
+    # --- 🔥 v1.2.20: perintah baru Bagian B. ---
+    # atur_jadwal butuh 1 channel (sudah ditanyakan di blok channel di
+    # atas bila belum ada). Bila cocoknya lewat typo (fuzzy) → konfirmasi
+    # "Maksud Bos ...?" dulu; bila sudah dikonfirmasi / cocok persis →
+    # langsung jalankan (baca saja / mulai alur atur jadwal).
+    if intent == 'atur_jadwal':
+        # Atur jadwal itu per-channel: bila disebut lebih dari 1 channel
+        # ("untuk semua channel"), minta pilih satu saja dulu.
+        if len(slots.get('channels') or []) > 1:
+            slots['channels'] = []
+            pending['awaiting'] = 'channel'
+            _save_nlu_pending(chat_id, pending)
+            _nlu_ask_channel(token, chat_id, pending, multi=False)
+            return
+        if slots.get('fuzzy_match') and not pending.get('confirmed'):
+            _nlu_ask_confirm(token, chat_id, pending)
+            return
+        _clear_nlu_pending(chat_id)
+        _aturjadwal_start(token, chat_id, (slots.get('channels') or [None])[0])
+        return
+    if intent in ('jadwal_bulan', 'laporan_detail', 'channel_list', 'jadwal', 'laporan'):
+        if slots.get('fuzzy_match') and not pending.get('confirmed'):
+            _nlu_ask_confirm(token, chat_id, pending)
+            return
+        _clear_nlu_pending(chat_id)
+        _nlu_run_readonly(token, chat_id, intent, slots)
+        return
     # --- Tema musik (buat playlist): bila belum disebut, tanyakan dulu
     # (tidak ditebak) — jawaban bebas ditangkap cabang 'theme' di
     # _nlu_try_complete_pending. ---
@@ -5504,7 +6015,7 @@ def _nlu_execute(token, chat_id, pending):
         _execute_nlu_destructive(token, chat_id, pending)
 
 
-def _nlu_run_readonly(token, chat_id, intent):
+def _nlu_run_readonly(token, chat_id, intent, slots=None):
     """Perintah baca saja dari NLU — memakai builder yang sama seperti
     perintah baku."""
     if intent == 'status':
@@ -5513,6 +6024,13 @@ def _nlu_run_readonly(token, chat_id, intent):
         kind = 'morning' if _wib_now().hour < 12 else 'evening'
         report = build_daily_report(kind)
         send_message(token, chat_id, report if report else "Belum ada data laporan hari ini, Bos.")
+    elif intent == 'laporan_detail':
+        # 🔥 v1.2.20: versi terperinci — snapshot disimpan SETELAH terkirim
+        # (sama seperti /laporan di handle_user_command).
+        text, snap = build_detail_report()
+        res = send_message(token, chat_id, text)
+        if res and res.get('ok'):
+            _update_report_snapshot(snap)
     elif intent == 'kuota':
         send_message(token, chat_id, build_quota_report())
     elif intent == 'stok':
@@ -5523,20 +6041,25 @@ def _nlu_run_readonly(token, chat_id, intent):
         send_message(token, chat_id, build_monetization_report())
     elif intent == 'jadwal':
         send_message(token, chat_id, build_schedule_report())
+    elif intent == 'jadwal_bulan':
+        # 🔥 v1.2.20: 1 pesan per channel (sudah ringkas per channel).
+        names = _nlu_channel_names((slots or {}).get('channels') or [])
+        blocks = []
+        if names:
+            for nm in names:
+                blocks += build_month_schedule_blocks(channel_arg=nm)
+        else:
+            blocks = build_month_schedule_blocks()
+        for blk in blocks:
+            for chunk in _split_long_message(blk):
+                send_message(token, chat_id, chunk)
     elif intent == 'gagal':
         send_message(token, chat_id, build_failed_report()[0])
     elif intent == 'channel_list':
-        chans = load_channels()
-        if not chans:
-            send_message(token, chat_id, "Belum ada channel yang tertaut, Bos.")
-            return
-        lines = ["📺 *Channel yang tertaut:*"]
-        for c in chans:
-            name = _channel_display_name(c)
-            mode = 'Full-Auto' if _autopilot_of(c) == 'auto' else 'Approval'
-            paused = ' ⏸️ Dijeda' if c.get('paused') else ''
-            lines.append(f"• *{name}* — Mode: {mode}{paused}")
-        send_message(token, chat_id, "\n".join(lines))
+        # 🔥 v1.2.20: tampilan database channel yang rapi (nama, subs,
+        # videos, mode, dijeda, stok jadwal, progres monetisasi) — builder
+        # yang sama dengan perintah /channel.
+        send_message(token, chat_id, build_channel_list_report())
     elif intent == 'bantuan':
         send_message(token, chat_id, build_help_message())
     elif intent == 'tambah_channel':
@@ -5560,6 +6083,9 @@ def _nlu_suggest(clean):
         '/statistik': ('statistik', 'stats', 'views'),
         '/monetisasi': ('monetisasi', 'penghasilan', 'uang', 'rpm'),
         '/jadwal': ('jadwal', 'schedule', 'kalender'),
+        '/jadwalbulan': ('jadwal', 'bulan', 'sebulan', 'kalender', '30'),
+        '/aturjadwal': ('atur', 'ubah', 'jadwal', 'setting', 'ganti'),
+        '/channel': ('channel', 'daftar', 'list', 'info'),
         '/gagal': ('gagal', 'error', 'gagal'),
         '/perpanjang': ('perpanjang', 'tambah', 'jadwal'),
         '/mode': ('mode', 'auto', 'approval', 'autopilot'),
@@ -5692,11 +6218,15 @@ def _handle_nlu_message(token, chat_id, raw_cmd, clean_cmd):
     if intent == 'tidak_dikenali':
         _nlu_audit_log(raw_cmd, parsed, 'fallback')
         return False
+    # 🔥 v1.2.20: perintah baru Bagian B ikut jalur baca-saja — KECUALI
+    # bila cocoknya lewat typo (fuzzy): jangan langsung jalan, tanyakan
+    # "Maksud Bos ...?" dulu lewat alur konfirmasi (confidence <60).
+    _fuzzy_new = (parsed.get('slots') or {}).get('fuzzy_match')
     if intent in ('status', 'laporan', 'kuota', 'stok', 'statistik',
                   'monetisasi', 'jadwal', 'gagal', 'channel_list', 'bantuan',
-                  'tambah_channel'):
+                  'tambah_channel', 'jadwal_bulan', 'laporan_detail') and not _fuzzy_new:
         _nlu_audit_log(raw_cmd, parsed, 'executed')
-        _nlu_run_readonly(token, chat_id, intent)
+        _nlu_run_readonly(token, chat_id, intent, parsed.get('slots') or {})
         return True
     if (parsed.get('confidence') or 0) < 60:
         # Ragu — konfirmasi tafsiran dulu, jangan bertindak.
@@ -5739,9 +6269,10 @@ _BOT_COMMANDS = [
     ('channel', 'Daftar channel YouTube terhubung', 'pantau', ''),
     ('antrean', 'Video yang sedang diproses', 'pantau', ''),
     ('jadwal', 'Jadwal publish 7 hari ke depan', 'pantau', ''),
+    ('jadwalbulan', 'Jadwal 30 hari ke depan per channel', 'pantau', '[channel]'),
     ('riwayat', '8 upload terakhir', 'pantau', ''),
     ('gagal', 'Task gagal + tombol Retry', 'pantau', ''),
-    ('laporan', 'Laporan harian (otomatis tiap pagi 07:00 & sore 17:00 WIB), kapan saja', 'pantau', ''),
+    ('laporan', 'Laporan harian (otomatis 07:00 & 17:00 WIB); tambah "detail" buat versi lengkap', 'pantau', ''),
     ('statistik', 'Views/likes/komentar + video terbaik & terburuk', 'hasil', ''),
     ('monetisasi', 'Estimasi penghasilan dari RPM manual', 'hasil', ''),
     ('judul', 'Judul SEO, mis. /judul lofi 15', 'konten', '[niche] [jumlah]'),
@@ -5750,12 +6281,13 @@ _BOT_COMMANDS = [
     ('cta', 'Ide teks CTA buat Shorts', 'konten', ''),
     ('ideashorts', 'Hook + naskah singkat Shorts', 'konten', '[niche]'),
     ('blueprint', 'Resep settingan video', 'konten', ''),
-    ('buatshort', 'Buat Shorts Muse terpandu (judul, hook, naskah, CTA)', 'buat', ''),
+    ('buatshort', 'Buat Shorts Muse terpandu — cuma 3 pertanyaan', 'buat', ''),
     ('buatlong', 'Buat batch video long 60–80 menit terpandu', 'buat', ''),
     ('playlist', 'Buat Playlist baru (bot bertanya satu per satu) atau /playlist status', 'buat', '[status]'),
     ('buatplaylist', 'Buat Musik Playlist (alias /playlist, sekali kirim pakai | )', 'buat', '<tema> | [channel] | [tema pixabay]'),
     ('batal', 'Batalkan draft yang sedang dibuat', 'buat', ''),
     ('perpanjang', 'Tambah jadwal, mis. /perpanjang Aruya 0089 30 atau /perpanjang semua 30', 'atur', '[channel] [hari]'),
+    ('aturjadwal', 'Ubah jam tayang / jadwal auto-shorts channel (cuma 3 pertanyaan)', 'atur', '[channel]'),
     ('mode', 'Ganti mode, mis. /mode Aruya 0089 auto', 'atur', '[channel] [auto|approval]'),
     ('jeda', 'Jeda channel (jadwal & antrean berhenti)', 'atur', '[channel]'),
     ('lanjutkan', 'Lanjutkan channel yang dijeda', 'atur', '[channel]'),
@@ -5832,6 +6364,234 @@ def register_bot_commands(token):
         return False
 
 
+# ==========================================
+# 🔥 v1.2.20 — /aturjadwal: ubah pengaturan jadwal channel (MAKS 3 pertanyaan)
+# Q1 channel → Q2 yang diubah → Q3 nilai baru → konfirmasi ✅/❌.
+# Draft di monitor_state.json key 'aturjadwal_drafts' (TTL 30 menit, sama
+# seperti draft buat video). TIDAK ADA file database baru — perubahan
+# disimpan ke channels_db.json lewat endpoint operator yang SAMA dengan
+# panel: /api/operator/set_channel_publish_time (jam tayang blueprint)
+# dan /api/operator/set_channel_auto_shorts (jam/tema auto-shorts).
+# ==========================================
+_AJ_FIELDS = [
+    ('publish_time', '🕖 Jam tayang blueprint'),
+    ('as_create', '🌅 Jam buat auto-shorts'),
+    ('as_publish', '🌇 Jam tayang auto-shorts'),
+    ('as_theme', '🎨 Tema auto-shorts'),
+]
+_AJ_FIELD_LABEL = dict(_AJ_FIELDS)
+_AJ_DRAFT_TTL = 1800  # 30 menit, sama seperti draft buat video
+
+
+def _load_aturjadwal_draft(chat_id):
+    try:
+        state = load_monitor_state()
+        d = (state.get('aturjadwal_drafts') or {}).get(str(chat_id))
+        if not d:
+            return None
+        if time.time() - float(d.get('created_at', 0)) > _AJ_DRAFT_TTL:
+            _clear_aturjadwal_draft(chat_id)
+            return {"expired": True}
+        return d
+    except Exception:
+        return None
+
+
+def _save_aturjadwal_draft(chat_id, draft):
+    try:
+        state = load_monitor_state()
+        state.setdefault('aturjadwal_drafts', {})[str(chat_id)] = draft
+        save_monitor_state(state)
+    except Exception as e:
+        print(f"Gagal simpan aturjadwal_draft: {e}", flush=True)
+
+
+def _clear_aturjadwal_draft(chat_id):
+    try:
+        state = load_monitor_state()
+        (state.get('aturjadwal_drafts') or {}).pop(str(chat_id), None)
+        save_monitor_state(state)
+    except Exception:
+        pass
+
+
+def _aturjadwal_current(draft):
+    """Nilai yang tersimpan saat ini untuk field yang sedang diubah
+    (dipakai di Q3 + pesan konfirmasi)."""
+    ch = next((c for c in load_channels() if c.get('yt_id') == draft.get('yt_id')), None)
+    if not ch:
+        return None
+    f = draft.get('field')
+    if f == 'publish_time':
+        return ((ch.get('blueprint') or {}).get('publish_time')
+                or ch.get('default_publish_time') or '19:00')
+    cfg = ch.get('auto_shorts') or {}
+    if f == 'as_create':
+        return cfg.get('create_time')
+    if f == 'as_publish':
+        return cfg.get('publish_time')
+    if f == 'as_theme':
+        return cfg.get('theme')
+    return None
+
+
+def _aturjadwal_start(token, chat_id, yt_id=None):
+    """Mulai alur /aturjadwal. Bila channel sudah disebut (argumen / NLU),
+    langsung ke Q2 (pilih yang diubah) — tetap maks 3 pertanyaan."""
+    chans = load_channels()
+    if not chans:
+        send_message(token, chat_id, "📺 Belum ada channel terhubung nih Bos 😌")
+        return
+    draft = {"step": "channel", "yt_id": yt_id, "field": None, "value": None,
+             "created_at": time.time()}
+    if yt_id and any(c.get('yt_id') == yt_id for c in chans):
+        draft["step"] = "field"
+        _save_aturjadwal_draft(chat_id, draft)
+        _aturjadwal_ask_field(token, chat_id, draft)
+        return
+    _save_aturjadwal_draft(chat_id, draft)
+    rows = [[{"text": _channel_display_name(c), "callback_data": f"aj:ch:{i}"}]
+            for i, c in enumerate(chans)]
+    send_message(token, chat_id, "⚙️ *Atur Jadwal* 😎\n\nChannel yang mana Bos?",
+                 reply_markup={"inline_keyboard": rows})
+
+
+def _aturjadwal_ask_field(token, chat_id, draft):
+    ch = next((c for c in load_channels() if c.get('yt_id') == draft.get('yt_id')), None)
+    name = _channel_display_name(ch) if ch else '?'
+    rows = [[{"text": label, "callback_data": f"aj:field:{key}"}]
+            for key, label in _AJ_FIELDS]
+    send_message(token, chat_id,
+                 f"⚙️ *Atur Jadwal — {_tg_escape(name)}*\n\nMau diubah yang mana Bos?",
+                 reply_markup={"inline_keyboard": rows})
+
+
+def _aturjadwal_ask_value(token, chat_id, draft):
+    field = draft.get('field')
+    if field == 'as_theme':
+        rows = []
+        keys = list(_NICHES.keys())
+        for i in range(0, len(keys), 2):
+            rows.append([{"text": _NICHES[k], "callback_data": f"aj:theme:{k}"}
+                         for k in keys[i:i + 2]])
+        send_message(token, chat_id, "🎨 *Tema auto-shorts yang baru?*",
+                     reply_markup={"inline_keyboard": rows})
+        return
+    label = _AJ_FIELD_LABEL.get(field, 'Jam')
+    cur = _aturjadwal_current(draft)
+    send_message(token, chat_id,
+                 f"🕖 *{label}* — jam barunya berapa Bos?\n"
+                 f"(saat ini: `{_tg_escape(cur) if cur else '-'}` — balas mis. `19:00`)")
+    if field == 'publish_time':
+        send_message(token, chat_id,
+                     "ℹ️ Jam ini dipakai /perpanjang untuk jam video-video berikutnya.")
+
+
+def _aturjadwal_ask_confirm(token, chat_id, draft):
+    ch = next((c for c in load_channels() if c.get('yt_id') == draft.get('yt_id')), None)
+    name = _channel_display_name(ch) if ch else '?'
+    label = _AJ_FIELD_LABEL.get(draft.get('field'), '?')
+    value = draft.get('value')
+    if draft.get('field') == 'as_theme':
+        val_txt = f"*{_tg_escape(_NICHES.get(value, value))}*"
+    else:
+        val_txt = f"`{_tg_escape(value)}` WIB"
+    cur = _aturjadwal_current(draft)
+    send_message(token, chat_id,
+                 f"⚙️ *Atur Jadwal — {_tg_escape(name)}*\n\n{label} diubah jadi {val_txt}?\n"
+                 f"(sebelumnya: `{_tg_escape(cur) if cur else '-'}`)",
+                 reply_markup={"inline_keyboard": [[
+                     {"text": "✅ Ya, simpan", "callback_data": "aj:yes"},
+                     {"text": "❌ Batal", "callback_data": "aj:no"},
+                 ]]})
+
+
+def _handle_aturjadwal_answer(token, chat_id, draft, raw_cmd):
+    """Jawaban teks untuk alur /aturjadwal (langkah channel/field/nilai).
+    Kembalikan True bila jawaban dipakai (draft maju / selesai)."""
+    clean = _nlu_clean(raw_cmd)
+    step = draft.get('step')
+    if step == 'channel':
+        matched, _all = _nlu_match_channels(clean, load_channels())
+        if matched:
+            draft['yt_id'] = matched[0].get('yt_id')
+            draft['step'] = 'field'
+            _save_aturjadwal_draft(chat_id, draft)
+            _aturjadwal_ask_field(token, chat_id, draft)
+            return True
+        return False
+    if step == 'field':
+        keys = [k for k, _l in _AJ_FIELDS]
+        m = re.match(r'^(\d+)$', clean)
+        if m and 1 <= int(m.group(1)) <= len(keys):
+            draft['field'] = keys[int(m.group(1)) - 1]
+        elif 'tema' in clean:
+            draft['field'] = 'as_theme'
+        elif 'buat' in clean:
+            draft['field'] = 'as_create'
+        elif 'tayang' in clean:
+            draft['field'] = 'as_publish' if ('auto' in clean or 'short' in clean) else 'publish_time'
+        else:
+            return False
+        draft['step'] = 'value'
+        _save_aturjadwal_draft(chat_id, draft)
+        _aturjadwal_ask_value(token, chat_id, draft)
+        return True
+    if step == 'value':
+        if draft.get('field') == 'as_theme':
+            niche, _unk = _nlu_detect_niche(clean)
+            if not niche:
+                return False
+            draft['value'] = niche
+        else:
+            m = re.search(r'(\d{1,2})[:.](\d{2})', raw_cmd)
+            if not m:
+                send_message(token, chat_id, "😅 Jamnya pakai format `HH:MM` ya Bos — mis. `19:00`.")
+                return True
+            hh, mm = int(m.group(1)), int(m.group(2))
+            if not (0 <= hh <= 23 and 0 <= mm <= 59):
+                send_message(token, chat_id, "😅 Jam tidak valid Bos — pakai 00:00 sampai 23:59 ya.")
+                return True
+            draft['value'] = f"{hh:02d}:{mm:02d}"
+        draft['step'] = 'confirm'
+        _save_aturjadwal_draft(chat_id, draft)
+        _aturjadwal_ask_confirm(token, chat_id, draft)
+        return True
+    return False
+
+
+def _aturjadwal_save(token, chat_id, draft):
+    """Simpan perubahan via endpoint operator yang SAMA dengan panel."""
+    yt_id = draft.get('yt_id')
+    field, value = draft.get('field'), draft.get('value')
+    if field == 'publish_time':
+        ok, msg, _d = _operator_post('/api/operator/set_channel_publish_time',
+                                    {'yt_id': yt_id, 'publish_time': value})
+    else:
+        key = {'as_create': 'create_time', 'as_publish': 'publish_time',
+               'as_theme': 'theme'}.get(field)
+        ok, msg, _d = _operator_post('/api/operator/set_channel_auto_shorts',
+                                    {'yt_id': yt_id, 'auto_shorts': {key: value}})
+    _clear_aturjadwal_draft(chat_id)
+    ch = next((c for c in load_channels() if c.get('yt_id') == yt_id), None)
+    name = _channel_display_name(ch) if ch else '?'
+    if not ok:
+        send_message(token, chat_id,
+                     f"😅 *Gagal menyimpan Bos* — {_tg_escape(msg or 'panel tidak merespons')}")
+        return
+    if field == 'as_theme':
+        val_txt = f"tema auto-shorts jadi *{_tg_escape(_NICHES.get(value, value))}*"
+    else:
+        val_txt = f"{_AJ_FIELD_LABEL.get(field, '?')} jadi `{_tg_escape(value)}` WIB"
+    extra = ""
+    if field in ('as_create', 'as_publish', 'as_theme'):
+        cfg = (ch.get('auto_shorts') or {}) if ch else {}
+        if not cfg.get('enabled'):
+            extra = "\nℹ️ Auto-shorts channel ini masih *nonaktif* — aktifkan dari panel (Settings → JADWAL OTOMATIS SHORT) bila mau jalan otomatis."
+    send_message(token, chat_id,
+                 f"✅ *Berhasil Bos!* 😎\n{val_txt} untuk channel *{_tg_escape(name)}*.{extra}")
+
+
 def handle_user_command(token, chat_id, text, message_id=None):
     try:
         raw_cmd = text.strip()
@@ -5849,12 +6609,18 @@ def handle_user_command(token, chat_id, text, message_id=None):
         # keyboard & perintah "/" lain tetap jalan, draft tersimpan.
         if first_word in ("/batal",) or clean_cmd in ("batal", "cancel"):
             _d0 = _load_make_draft(chat_id)
+            _aj0 = _load_aturjadwal_draft(chat_id)
             if _d0:
                 _clear_make_draft(chat_id)
                 _retry = {'short': '/buatshort', 'long': '/buatlong',
                           'playlist': '/playlist'}.get(_d0.get('kind'), '/buatshort')
                 send_message(token, chat_id,
                              f"😌 *Sip Bos, dibatalkan.* Tidak ada video yang dibuat.\nKetik {_retry} kalau mau mulai lagi ya Bos!")
+            elif _aj0:
+                # 🔥 v1.2.20: /batal juga membatalkan alur /aturjadwal.
+                _clear_aturjadwal_draft(chat_id)
+                send_message(token, chat_id,
+                             "😌 *Sip Bos, dibatalkan.* Tidak ada pengaturan jadwal yang diubah.\nKetik /aturjadwal kalau mau mulai lagi ya Bos!")
             else:
                 send_message(token, chat_id,
                              "😅 *Tidak ada yang sedang dibuat Bos* — ketik /buatshort, /buatlong, atau /playlist untuk mulai.")
@@ -5884,6 +6650,31 @@ def handle_user_command(token, chat_id, text, message_id=None):
             else:
                 _handle_make_answer(token, chat_id, _draft, raw_cmd)
                 return
+
+        # 🔥 v1.2.20 — DRAFT /aturjadwal: jawaban langkah ditangkap di sini
+        # (pola yang sama seperti draft buat video di atas). Perintah "/"
+        # lain & tombol keyboard tetap jalan, draft tersimpan.
+        _aj = _load_aturjadwal_draft(chat_id)
+        if isinstance(_aj, dict) and _aj.get("expired"):
+            send_message(token, chat_id,
+                         "⌛ *Eh Bos, pengaturan jadwalnya sudah hangus (>30 menit tidak ada kabar)* 😅\n"
+                         "Ketik /aturjadwal untuk mulai lagi ya Bos!")
+            return
+        if _aj:
+            if first_word in ("/start", "/help"):
+                _clear_aturjadwal_draft(chat_id)
+            elif first_word in ("/aturjadwal",):
+                _clear_aturjadwal_draft(chat_id)
+                # jatuh ke cabang /aturjadwal di bawah (mulai baru)
+            elif first_word.startswith("/"):
+                pass  # perintah lain tetap jalan, draft tersimpan
+            elif clean_cmd in _MAIN_BUTTON_TEXTS:
+                pass  # tombol keyboard tetap jalan, draft tersimpan
+            else:
+                if _handle_aturjadwal_answer(token, chat_id, _aj, raw_cmd):
+                    return
+                # Bukan jawaban atas langkah ini → biarkan cabang lain
+                # (NLU / perintah baca) yang menangani pesannya.
 
         # 1. MENU / START — teks dibangun dari _BOT_COMMANDS (satu sumber
         # dengan setMyCommands, supaya daftarnya tidak pernah beda).
@@ -5959,6 +6750,16 @@ def handle_user_command(token, chat_id, text, message_id=None):
                        "created_at": time.time()}
             _save_nlu_pending(chat_id, pending)
             _nlu_advance(token, chat_id, pending)
+            return
+
+        # --- ⚙️ ATUR JADWAL (v1.2.20): ubah jam tayang / auto-shorts,
+        # maks 3 pertanyaan + konfirmasi. Argumen channel opsional.
+        if first_word in ("/aturjadwal",):
+            rest = raw_cmd[len('/aturjadwal'):].strip()
+            clean_rest = _nlu_clean(rest)
+            matched, _all = _nlu_match_channels(clean_rest, load_channels())
+            yt = matched[0].get('yt_id') if matched else None
+            _aturjadwal_start(token, chat_id, yt)
             return
 
         # --- 🎵 MUSIK PLAYLIST: /playlist (pintu masuk utama, konversasional) ---
@@ -6133,6 +6934,17 @@ def handle_user_command(token, chat_id, text, message_id=None):
             send_message(token, chat_id, build_monetization_report())
             return
 
+        # 13b. LAPORAN DETAIL (v1.2.20): /laporan detail — dicek SEBELUM
+        # laporan biasa (14) karena mengandung kata "laporan".
+        if (("laporan" in clean_cmd or "report" in clean_cmd)
+                and ("detail" in clean_cmd or "lengkap" in clean_cmd
+                     or "rinci" in clean_cmd or "terperinci" in clean_cmd)):
+            _text, _snap = build_detail_report()
+            _res = send_message(token, chat_id, _text)
+            if _res and _res.get('ok'):
+                _update_report_snapshot(_snap)
+            return
+
         # 14. LAPORAN HARIAN (on-demand, pakai builder yang sudah ada)
         if "laporan" in clean_cmd or "report" in clean_cmd:
             _text, _snap = build_daily_report("ondemand")
@@ -6171,23 +6983,11 @@ def handle_user_command(token, chat_id, text, message_id=None):
             send_message(token, chat_id, build_status_report())
             return
 
-        # 3. CHANNEL LIST
+        # 3. CHANNEL LIST (🔥 v1.2.20: tampilan database channel yang rapi —
+        # nama, subs, videos, mode, dijeda, stok jadwal, progres monetisasi;
+        # builder yang sama dengan NLU 'list channel').
         if "channel" in clean_cmd:
-            channels = load_channels()
-            if not channels:
-                msg = (
-                    "📺 *DAFTAR CHANNEL YOUTUBE*\n"
-                    "Bos, belum ada channel yang terhubung nih 😅\n\n"
-                    "👉 Buka browser panel VPS di port 8000 (/factory)\n"
-                    "Lalu klik tombol *Connect* buat menautkan channel YouTube pertama."
-                )
-            else:
-                msg = f"📺 *Channel-nya Bos ({len(channels)})*\n━━━━━━━━━━━━━━━━━━━━━━\n"
-                for idx, ch in enumerate(channels, 1):
-                    name = _channel_display_name(ch)
-                    connected = "🟢 Terhubung" if _channel_connected(ch) else "🔴 Putus"
-                    msg += f"*{idx}. {_tg_escape(name)}*\nStatus: {connected}\nID: `{_tg_escape(ch.get('yt_id', '-'))}`\n\n"
-            send_message(token, chat_id, msg)
+            send_message(token, chat_id, build_channel_list_report())
             return
 
         # 4. ANTREAN RENDER
@@ -6211,6 +7011,15 @@ def handle_user_command(token, chat_id, text, message_id=None):
                 if len(active) > 8:
                     msg += f"_...dan {len(active)-8} video lainnya dalam antrean._"
             send_message(token, chat_id, msg)
+            return
+
+        # 4a. JADWAL 30 HARI (v1.2.20): /jadwalbulan [channel] — dicek
+        # SEBELUM /jadwal (4b) karena "jadwalbulan" mengandung kata "jadwal".
+        if first_word in ("/jadwalbulan",):
+            rest = raw_cmd[len('/jadwalbulan'):].strip()
+            for blk in build_month_schedule_blocks(channel_arg=rest or None):
+                for chunk in _split_long_message(blk):
+                    send_message(token, chat_id, chunk)
             return
 
         # 4b. JADWAL PUBLISH (FASE 3)
@@ -6253,7 +7062,7 @@ def handle_user_command(token, chat_id, text, message_id=None):
                 "• *Visualizer:* Waveform di bawah (pos_y 85%, opacity 100%)\n"
                 "• *Ending Special Song:* 1 lagu penutup di 2 menit terakhir\n"
                 "• *Batas Deskripsi YouTube:* Maksimal 5.000 karakter\n"
-                "• *Kapasitas Upload:* ~6 video per hari per project Google Cloud"
+                "• *Kapasitas Upload:* ~100 video per hari per project Google Cloud"
             )
             send_message(token, chat_id, msg)
             return

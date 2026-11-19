@@ -1258,7 +1258,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         <div class="card-head">
           <div>
             <span class="card-title">KUOTA PROJECT GOOGLE</span>
-            <div class="card-sub">Upload hari ini per project Google (batas 6/hari/project — channel satu project berbagi kuota)</div>
+            <div class="card-sub">Upload hari ini per project Google (batas 100/hari/project — channel satu project berbagi kuota)</div>
           </div>
           <button type="button" class="btn btn-sm" onclick="fetchProjectQuotas()" title="Muat ulang kuota project">↻ Refresh</button>
         </div>
@@ -5425,7 +5425,7 @@ function fetchProjectQuotas() {
       return;
     }
     box.innerHTML = projects.map(p => {
-      const used = p.uploads_today || 0, limit = p.limit || 6;
+      const used = p.uploads_today || 0, limit = p.limit || 100;
       const pct = Math.min(100, Math.round(used / Math.max(1, limit) * 100));
       const barColor = used >= limit ? 'var(--red,#f43f5e)' : (used >= limit - 1 ? 'var(--yellow,#f59e0b)' : 'var(--accent)');
       const names = (p.channels || []).map(c => escapeHtml(c.name)).join(', ') || '—';

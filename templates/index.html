@@ -1463,6 +1463,12 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         <div class="stat s4"><div class="stat-lbl">DONE</div><div class="stat-val" id="tm-done" style="color:var(--green)">0</div><div class="stat-note">History</div></div>
       </div>
 
+      <!-- 🔥 v1.3.28: ringkasan upload HARI INI (per channel) -->
+      <div class="card" style="margin-bottom:18px">
+        <div class="card-head"><span class="card-title">📅 HARI INI</span><span class="pill p-cyan" id="today-total">0 video</span></div>
+        <div class="card-body" style="padding:10px 16px"><div id="today-summary" style="font-size:12px;color:var(--muted)">Memuat…</div></div>
+      </div>
+
       <!-- 🔥 Nama channel tertaut (diambil dari array global `channels` yang sama dengan Settings) -->
       <div class="card" style="margin-bottom:18px">
         <div class="card-head"><span class="card-title">📺 CHANNEL TERHUBUNG</span><span class="pill p-cyan" id="tm-ch-count">0 channel</span></div>
@@ -5467,6 +5473,30 @@ function fetchServerTasks() {
   });
 }
 
+// 🔥 v1.3.28: ringkasan upload HARI INI di Task Monitor.
+// Aturan hitung SAMA seperti /status di Telegram (_count_history_for_date):
+// finished_date == tanggal WIB hari ini, status mengandung 'Tayang'/'Gagal'.
+function renderTodaySummary() {
+  const el = document.getElementById('today-summary'); if (!el) return;
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' });
+  const hist = (serverData.history || []);
+  let ok = 0, fail = 0;
+  const per = {};
+  (channels || []).forEach(c => { per[c.yt_id] = 0; });
+  hist.forEach(h => {
+    if (h.finished_date !== today) return;
+    const st = h.status || '';
+    if (st.includes('Tayang')) { ok++; if (per[h.yt_id] !== undefined) per[h.yt_id]++; }
+    else if (st.includes('Gagal')) fail++;
+  });
+  const totalEl = document.getElementById('today-total');
+  if (totalEl) totalEl.textContent = ok + ' video' + (fail ? ' • ' + fail + ' gagal' : '');
+  el.innerHTML = (channels || []).map(c => {
+    const n = per[c.yt_id] || 0;
+    const cls = n > 0 ? 'pill p-green' : 'pill p-muted';
+    return '<span class="' + cls + '" style="font-size:10px;padding:3px 8px;margin:0 6px 6px 0" title="' + escapeHtml(c.name) + ' — ' + n + ' video hari ini">' + escapeHtml(c.name) + ' <b>' + n + '</b></span>';
+  }).join('') || '<span style="color:var(--muted)">Belum ada channel tertaut.</span>';
+}
 function renderTasks() {
   const list = document.getElementById('taskList'); const hist = document.getElementById('historyTbl');
   const allActive = [...browserQueue, ...serverData.active];
@@ -5482,6 +5512,7 @@ function renderTasks() {
   if (allActive.length) { badge.style.display = 'inline'; badge.textContent = allActive.length; } else badge.style.display = 'none';
   document.getElementById('tm-ch').textContent = channels.length; document.getElementById('tm-act').textContent = allActive.length; document.getElementById('tm-done').textContent = (serverData.history || []).length;
   renderTaskChannels();
+  renderTodaySummary();
   
   if (!allActive.length) { list.innerHTML = `<div style="text-align:center;padding:24px;color:var(--muted);font-family:var(--font-m);font-size:11px">Tidak ada task aktif.</div>`; } 
   else {

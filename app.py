@@ -1959,6 +1959,11 @@ def api_key_checker_worker():
                 new_notifs.append({"msg": f"🧹 {dead_count} API Key mati untuk Channel '{c.get('name','Unknown')}' dibersihkan otomatis.",
                                    "time": datetime.now().strftime("%Y-%m-%d %H:%M")})
             elif dead_count and not live_keys:
+                # 🔥 v1.3.26: semua key mati -> status jadi Disconnected (pill
+                # merah di panel); kembali Connected saat taut ulang (8865).
+                with db_lock:
+                    c['status'] = f"Disconnected 🔴 ({dead_count} Keys)"
+                    changed = True
                 msg = f"⚠️ Semua API Key untuk Channel '{c.get('name','Unknown')}' EXPIRED! Silakan hapus dan tautkan ulang."
                 if not any(n['msg'] == msg for n in system_notifications):
                     new_notifs.append({"msg": msg, "time": datetime.now().strftime("%Y-%m-%d %H:%M")})

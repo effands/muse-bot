@@ -673,15 +673,17 @@ input[type=color] { padding:0; height:36px; width:100%; border:1px solid var(--b
 /* Tabel history: lebar kolom tetap — ID tidak pernah meluber ke judul. */
 .hist-tbl { table-layout:fixed; }
 .hist-tbl th, .hist-tbl td { padding-right:12px; overflow-wrap:break-word; }
+.hist-tbl td { padding-top:5px; padding-bottom:5px; }
+.hist-tbl .ch-group-head { padding:6px 12px; margin:4px 0 2px; }
 .hist-tbl th:last-child, .hist-tbl td:last-child { padding-right:0; }
 .hist-tbl th:nth-child(3) { width:30%; }
 .hist-tbl td { overflow:hidden; }
 .hist-tbl tbody tr:hover td { background:rgba(255,255,255,.025); }
 .hist-id { font-family:var(--font-m); font-size:10px; color:var(--muted); white-space:nowrap; }
-.hist-title { display:block; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.hist-dur { display:block; margin-top:3px; font-family:var(--font-m); font-size:10px; color:var(--green); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.hist-sub { display:block; margin-top:3px; font-size:10px; color:var(--text2); font-weight:400; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.hist-tbl .hist-del { width:36px; height:36px; padding:0; display:inline-flex; align-items:center; justify-content:center; }
+.hist-title { display:block; min-width:0; flex:1; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.hist-dur { margin:0; flex-shrink:0; font-family:var(--font-m); font-size:10px; color:var(--green); white-space:nowrap; }
+.hist-sub { display:inline; margin:0 0 0 6px; font-size:10px; color:var(--text2); font-weight:400; white-space:nowrap; }
+.hist-tbl .hist-del { width:28px; height:28px; padding:0; display:inline-flex; align-items:center; justify-content:center; }
 @media (max-width:640px) { .hist-tbl .hist-id-cell { display:none; } }
 
 .ch-connected { display:flex; align-items:center; gap:12px; background:rgba(0,232,135,.04); border:1px solid rgba(0,232,135,.15); border-radius:var(--r); padding:14px; margin-bottom:12px; }
@@ -5547,6 +5549,27 @@ function fetchServerTasks() {
 // 🔥 v1.3.28: ringkasan upload HARI INI di Task Monitor.
 // Aturan hitung SAMA seperti /status di Telegram (_count_history_for_date):
 // finished_date == tanggal WIB hari ini, status mengandung 'Tayang'/'Gagal'.
+// 🔥 v1.3.40: filter HISTORY dari pill HARI INI — klik pill channel untuk
+// melihat video hari ini channel itu saja; klik lagi untuk melepas filter.
+let todayFilterYt = null;
+function filterTodayHistory(list, yt_id, todayStr) {
+  return (list || []).filter(t => {
+    const yt = (t.blueprint && t.blueprint.yt_id) || t.yt_id || '';
+    return yt === yt_id && t.finished_date === todayStr && String(t.status || '').includes('Tayang');
+  });
+}
+function filterTodayChannel(yt_id) {
+  todayFilterYt = (todayFilterYt === yt_id) ? null : yt_id;
+  renderTasks();
+  if (todayFilterYt) {
+    const h = document.getElementById('historyTbl');
+    if (h) h.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+function clearTodayFilter() {
+  todayFilterYt = null;
+  renderTasks();
+}
 function renderTodaySummary() {
   const el = document.getElementById('today-summary'); if (!el) return;
   const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' });
@@ -5569,10 +5592,12 @@ function renderTodaySummary() {
   el.innerHTML = (channels || []).map((c, i) => {
     const n = per[c.yt_id] || 0;
     const hue = chHue(i);
-    const style = 'font-size:10px;padding:3px 8px;margin:0 6px 6px 0'
+    const active = todayFilterYt === c.yt_id;
+    const style = 'font-size:10px;padding:3px 8px;margin:0 6px 6px 0;cursor:pointer'
       + ';background:hsl(' + hue + ',70%,45%);border:1px solid hsl(' + hue + ',70%,38%);color:#fff'
-      + (n === 0 ? ';opacity:.45' : '');
-    return '<span class="pill" style="' + style + '" title="' + escapeHtml(c.name) + ' — ' + n + ' video hari ini">' + escapeHtml(c.name) + ' <b>' + n + '</b></span>';
+      + (n === 0 ? ';opacity:.45' : '')
+      + (active ? ';outline:2px solid #fff;outline-offset:1px' : '');
+    return '<span class="pill" style="' + style + '" onclick="filterTodayChannel(\'' + c.yt_id + '\')" title="' + escapeHtml(c.name) + ' — ' + n + ' video hari ini. Klik untuk melihat detailnya.">' + escapeHtml(c.name) + ' <b>' + n + '</b></span>';
   }).join('') || '<span style="color:var(--muted)">Belum ada channel tertaut.</span>';
 }
 function renderTasks() {
@@ -5663,19 +5688,22 @@ function renderTasks() {
     return /^\/static\/final_\d+\.mp4$/.test(u) ? u : '';
   }
 
-  if (!(serverData.history || []).length) { hist.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:16px;color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada history.</td></tr>`; } 
+  const _todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' });
+  const _histList = todayFilterYt ? filterTodayHistory(serverData.history || [], todayFilterYt, _todayStr) : (serverData.history || []);
+  const _filterBanner = !todayFilterYt ? '' : `<tr><td colspan="4" style="padding:8px 4px 2px;border:none;background:transparent"><span class="pill p-cyan" style="font-size:11px;padding:4px 10px">🔎 ${escapeHtml(chName(todayFilterYt))} — hari ini (${_histList.length} video)</span> <button class="btn btn-g btn-sm" onclick="clearTodayFilter()">✕ Hapus filter</button></td></tr>`;
+  if (!_histList.length) { hist.innerHTML = _filterBanner + `<tr><td colspan="4" style="text-align:center;padding:16px;color:var(--muted);font-family:var(--font-m);font-size:11px">${todayFilterYt ? 'Tidak ada video hari ini untuk channel ini.' : 'Belum ada history.'}</td></tr>`; }
   else {
     const hGroups = {}; const unknownHKey = '__unknownH__';
-    serverData.history.forEach(t => { const yt = (t.blueprint && t.blueprint.yt_id) || t.yt_id || ''; const key = yt || unknownHKey; if (!hGroups[key]) hGroups[key] = []; hGroups[key].push(t); });
-    
-    hist.innerHTML = sortKeys(hGroups, unknownHKey).map(key => {
+    _histList.forEach(t => { const yt = (t.blueprint && t.blueprint.yt_id) || t.yt_id || ''; const key = yt || unknownHKey; if (!hGroups[key]) hGroups[key] = []; hGroups[key].push(t); });
+
+    hist.innerHTML = _filterBanner + sortKeys(hGroups, unknownHKey).map(key => {
       const items = hGroups[key]; const isUnknown = key === unknownHKey;
       const name = isUnknown ? 'Channel Tidak Dikenal' : chName(key);
       const totalCount = items.length;
       
-      let html = `<tr><td colspan="4" style="padding:8px 4px 2px;border:none;background:transparent">${groupDivH(name, totalCount, '🗂', key)}</td></tr>`;
+      let html = `<tr><td colspan="4" style="padding:2px 4px 0;border:none;background:transparent">${groupDivH(name, totalCount, '🗂', key)}</td></tr>`;
       
-      if (!hCollapsed[key]) {
+      if (!hCollapsed[key] || todayFilterYt) {
           const limit = 100;
           const totalPages = Math.ceil(totalCount / limit);
           let currPage = hPage[key] || 1;
@@ -5692,7 +5720,7 @@ function renderTasks() {
             const ytLink = vid ? ` <a href="https://youtu.be/${vid}" target="_blank" rel="noopener" style="color:var(--accent)">▶ Lihat</a>` : '';
             const dl = histDownloadUrl(t);
             const dlLink = dl ? ` <a href="${escapeHtml(dl)}" target="_blank" rel="noopener" style="color:var(--accent)">[Download]</a>` : '';
-            return `<tr><td class="hist-id-cell"><span class="hist-id" title="#${t.id}">#${String(t.id).slice(-6)}</span></td><td><span class="hist-title" title="${escapeHtml(t.title || '—')}">${escapeHtml(t.title || '—')}</span>${renderInfo}</td><td style="color:${c};font-weight:600">${escapeHtml(histCleanStatus(t))}${ytLink}${dlLink}${t.thumb_status ? `<span class="hist-sub">🖼️ ${escapeHtml(t.thumb_status)}</span>` : ''}</td><td style="text-align:center"><button class="btn btn-g btn-sm hist-del" title="Hapus entri ini dari riwayat" onclick="deleteHistoryItem(${t.id})">🗑️</button></td></tr>`;
+            return `<tr><td class="hist-id-cell"><span class="hist-id" title="#${t.id}">#${String(t.id).slice(-6)}</span></td><td><span style="display:flex;gap:8px;align-items:baseline;min-width:0"><span class="hist-title" title="${escapeHtml(t.title || '—')}">${escapeHtml(t.title || '—')}</span>${renderInfo}</span></td><td style="color:${c};font-weight:600">${escapeHtml(histCleanStatus(t))}${ytLink}${dlLink}${t.thumb_status ? `<span class="hist-sub">🖼️ ${escapeHtml(t.thumb_status)}</span>` : ''}</td><td style="text-align:center"><button class="btn btn-g btn-sm hist-del" title="Hapus entri ini dari riwayat" onclick="deleteHistoryItem(${t.id})">🗑️</button></td></tr>`;
           }).join('');
           
           html += `<tbody>${rows}</tbody>`;

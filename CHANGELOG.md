@@ -3,6 +3,12 @@
 Catatan perubahan per versi. Dibaca operator saat start dan ditampilkan di
 pesan restart Telegram, supaya Bos langsung tahu apa yang berubah.
 
+## 1.3.41
+- HISTORY dibuat rapat: satu video satu baris — judul + durasi render sebaris, status + thumbnail sebaris, padding baris dipangkas separuh, tombol hapus dan header grup diperkecil. Jauh lebih banyak video muat di satu layar.
+
+## 1.3.40
+- Pill di kartu HARI INI bisa diklik: klik pill channel untuk melihat detail video hari ini channel itu saja di HISTORY (yang gagal dan kemarin ikut tersaring), halaman otomatis turun ke HISTORY. Klik lagi untuk melepas filter, atau tombol "Hapus filter".
+
 ## 1.3.39
 - Nama channel di tabel tidak lagi terpotong (batas lebar + ellipsis dihapus).
 - Scroll tabel ke samping tidak lagi kembali ke awal: ternyata tabel di-render ulang tiap 2 detik (poll) dan posisi scroll ikut terhapus — sekarang posisi scroll disimpan sebelum render ulang lalu dipulihkan.

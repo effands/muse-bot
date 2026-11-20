@@ -1,3 +1,9 @@
+## 1.3.58
+- Tombol ↻ Refresh kini menunjukkan tanda loading: ikon berputar + teks "Memuat…", tombol nonaktif selama data diambil, lalu notifikasi "Data channel diperbarui." / "Statistik video diperbarui." (atau pesan gagal) — berlaku untuk tombol Refresh DETAIL CHANNEL dan STATISTIK PER VIDEO, termasuk saat auto-update 5 menit jalan.
+- Daftar video di STATISTIK PER VIDEO dibatasi tinggi 360px dengan scroll di dalam kartu (header kolom tetap terlihat saat scroll) — halaman tidak lagi memanjang sampai 31 video.
+- LINGKARAN ANALITIK: Terbaik dan Terendah kini dipisah atas-bawah (dulu satu baris panjang yang menumpuk).
+- KUOTA PROJECT GOOGLE dan MONETISASI & BEBAN kini tersusun atas-bawah (1 kolom), seperti STATISTIK + LINGKARAN ANALITIK.
+
 ## 1.3.57
 - Status key tanpa kurung: pill kini `1 Key` / `2 Keys` (dulu `(1 Key)` / `(2 Keys)`); status lama di database ikut dimigrasi saat deploy.
 - DETAIL CHANNEL: tombol ↻ Refresh (paksa ambil data terbaru dari YouTube, lewati cache 1 jam — endpoint kini dukung `?force=1`) + tabel auto-update tiap 5 menit (posisi scroll horizontal dijaga saat render ulang).

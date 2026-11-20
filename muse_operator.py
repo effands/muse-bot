@@ -861,56 +861,76 @@ def build_status_report():
     lines = [
         "📊 *Laporan buat Bos* 😎",
         f"_{_wib_now().strftime('%d %b %Y, %H:%M')} WIB_",
-        "━━━━━━━━━━━━━━━━━━━━━━",
-        f"🖥️ *Panel Web (8000):* {'🟢 Online' if panel_ok else '🔴 Mati/tidak menjawab'}",
-        f"📌 *Versi Panel:* `{_panel_version()}`",
-        "🤖 *Operator Telegram:* 🟢 Online",
-        f"⚡ *CPU:* `{stats['cpu']}%`  🧠 *RAM:* `{stats['ram_used_gb']} GB / {stats['ram_total_gb']} GB ({stats['ram_pct']}%)`",
-        f"💾 *Sisa Disk:* `{stats['disk_free_gb']} GB`",
-        "━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "🖥️ *Panel & Server*",
+        f"• Web (8000): {'🟢 Online' if panel_ok else '🔴 Mati/tidak menjawab'} — `{_panel_version()}`",
+        "• Operator Telegram: 🟢 Online",
+        f"• CPU `{stats['cpu']}%` • RAM `{stats['ram_used_gb']}/{stats['ram_total_gb']} GB` • Disk sisa `{stats['disk_free_gb']} GB`",
+        "",
     ]
     # 🔥 v1.2.16: pending approval PALING ATAS — yang paling butuh keputusan Bos.
     _pend_lines = _pending_approval_lines(active, channels, limit=5)
     if _pend_lines:
-        lines += _pend_lines + ["━━━━━━━━━━━━━━━━━━━━━━"]
+        lines += _pend_lines + [""]
     # --- Channel + kuota ---
+    # 🔥 v1.3.66: dirapikan — yang sama di semua channel diringkas di kepala
+    # (terhubung/mode), stok habis diringkas 1 baris bila semua habis,
+    # Project ID hanya 1 baris bila ada >1 project (detail di panel).
     if not channels:
         lines.append("📺 *Channel:* Belum ada yang terhubung nih Bos 😅")
         lines.append("Tautkan dulu dari panel (/factory → Connect), baru kuota & antrean bisa dipantau.")
     else:
         total_left = 0
-        lines.append(f"📺 *Channel ({len(channels)}):*")
+        all_conn = all(_channel_connected(c) for c in channels)
+        modes = {_autopilot_of(c) for c in channels}
+        head_bits = ["🟢 semua terhubung" if all_conn else "⚠️ ada yang putus"]
+        if len(modes) == 1:
+            head_bits.append("🤖 semua Full-Auto" if 'auto' in modes else "👀 semua Approval")
+        lines.append(f"📺 *Channel ({len(channels)}):* {' • '.join(head_bits)}")
+        _ch_lines, _stocks = [], []
         for ch in channels:
             name = _channel_display_name(ch)
             used, left = get_channel_quota(ch)
             total_left += left
-            conn = "🟢 Terhubung" if _channel_connected(ch) else "🔴 Putus"
-            stock = get_stock_days(ch)
-            if stock is None:
-                stock_txt = "belum ada jadwal"
-            elif stock < 0:
-                stock_txt = "⚠️ stok habis"
-            elif stock <= 1:
-                stock_txt = f"⚠️ sisa ~{max(0, int(stock))} hari"
-            else:
-                stock_txt = f"sisa ~{int(stock)} hari"
+            flags = ""
+            if not _channel_connected(ch):
+                flags += " 🔴 Putus"
             cd = ch.get('cooldown_until', 0)
-            cd_txt = " ⏸️ cooldown" if cd and cd > time.time() else ""
-            # 🔥 FASE 3: tandai channel yang sedang dijeda.
-            pause_txt = " ⏸️ Dijeda" if ch.get('paused') else ""
-            mode_txt = ' 🤖 Full-Auto' if _autopilot_of(ch) == 'auto' else ' 👀 Approval'
-            lines.append(f"• *{_tg_escape(name)}* — {conn}{cd_txt}{pause_txt}{mode_txt}")
-            # 🔥 v1.2.25: tampilkan project utama channel di /status.
-            _spid = _project_id_of_channel(ch) or '—'
-            lines.append(f"  Upload hari ini: `{used}/{MAX_UPLOADS_PER_DAY}` (sisa `{left}`) • Project `{_tg_escape(_spid)}` • Stok: {stock_txt}")
-        lines.append(f"📈 *Total sisa kuota hari ini:* `{total_left} video`")
+            if cd and cd > time.time():
+                flags += " ⏸️ cooldown"
+            if ch.get('paused'):
+                flags += " ⏸️ Dijeda"
+            if len(modes) > 1:
+                flags += ' 🤖 Full-Auto' if _autopilot_of(ch) == 'auto' else ' 👀 Approval'
+            _ch_lines.append(f"• *{_tg_escape(name)}* — ↑`{used}/{MAX_UPLOADS_PER_DAY}`{flags}")
+            _stocks.append(get_stock_days(ch))
+        _empty_idx = [i for i, s in enumerate(_stocks) if s is not None and s < 0]
+        _low_idx = [i for i, s in enumerate(_stocks) if s is not None and 0 <= s <= 1]
+        _none_idx = [i for i, s in enumerate(_stocks) if s is None]
+        if _empty_idx and len(_empty_idx) == len(channels):
+            lines += _ch_lines
+            lines.append(f"⚠️ Stok habis di semua channel ({len(channels)}/{len(channels)}) — isi galeri/bank judul biar antrean jalan.")
+        else:
+            for i, ln in enumerate(_ch_lines):
+                if i in _empty_idx:
+                    ln += " • ⚠️ stok habis"
+                elif i in _low_idx:
+                    ln += f" • ⚠️ sisa ~{max(0, int(_stocks[i]))} hari"
+                elif i in _none_idx:
+                    ln += " • belum ada jadwal"
+                lines.append(ln)
+        _proj = {}
+        for ch in channels:
+            _proj.setdefault(_project_id_of_channel(ch) or '—', []).append(_channel_display_name(ch))
+        if len(_proj) > 1:
+            lines.append("📦 Project: " + " • ".join(
+                f"`{_tg_escape(p)}` ({len(ns)} ch)" for p, ns in _proj.items()))
+        lines.append(f"📈 Total sisa kuota hari ini: `{total_left} video`")
     lines += [
-        "━━━━━━━━━━━━━━━━━━━━━━",
-        f"🏭 *Antrean aktif:* `{len(active)} task` (`{in_progress}` sedang berjalan/menunggu)",
-        f"⏳ *Menunggu approval:* `{len(pending)} task`" + (" — cek pesan preview di atas, atau setujui dari panel." if pending else ""),
-        f"✅ *Upload sukses hari ini:* `{ok_today}`",
-        f"❌ *Gagal hari ini:* `{fail_today}`",
-        f"📁 *Riwayat:* `{len(history)} task`",
+        "",
+        "📈 *Hari ini*",
+        f"• ✅ Upload sukses: `{ok_today}` • ❌ Gagal: `{fail_today}`",
+        f"• Antrean aktif: `{len(active)}` • Menunggu approval: `{len(pending)}` • Riwayat: `{len(history)} task`",
     ]
     # 🔥 v1.2.18: task yang sedang dirender/di-upload + persennya.
     _prog_tasks = [t for t in active if _task_progress_line(t)]
@@ -2861,6 +2881,168 @@ def request_set_paused(yt_id, paused):
     return _operator_post('/api/operator/set_paused', {"yt_id": yt_id, "paused": paused})
 
 
+# ==========================================
+# 🔍 SARAN RISET TRENDING — file + tombol shortcut (v1.3.66)
+# ==========================================
+# Cron riset tiap 2 jam menulis saran ke file ini (di VPS) SEBELUM mengirim
+# pesan ke Telegram; tombol inline di pesan itu membawa id saran (callback
+# 'rs:...'), dan operator membaca file ini saat tombol ditekan.
+# Prinsip tombol (permintaan Bos 2026-11-20): SETIAP pesan bot yang
+# menawarkan sesuatu WAJIB diakhiri shortcut yang menebak langkah Bos
+# berikutnya — nomor saran, custom, saran lain, analisa lagi.
+_RESEARCH_SUGGESTIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                           'research_suggestions.json')
+_RESEARCH_MONTHS_ID = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun',
+                       'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des']
+
+
+def _research_load_suggestions():
+    """(dict|None): isi research_suggestions.json, atau None bila belum ada."""
+    try:
+        with open(_RESEARCH_SUGGESTIONS_FILE, encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _research_find_item(sug, item_id):
+    for key in ('shown', 'spare'):
+        for it in (sug or {}).get(key) or []:
+            if str(it.get('id')) == str(item_id):
+                return it
+    return None
+
+
+def _research_fmt_views(n):
+    try:
+        return f"{int(n):,}".replace(',', '.')
+    except Exception:
+        return "—"
+
+
+def _research_fmt_date(iso):
+    """'2026-11-18' → '18 Nov 2026'; bila gagal, kembalikan apa adanya."""
+    try:
+        y, m, d = str(iso).split('-')
+        return f"{int(d)} {_RESEARCH_MONTHS_ID[int(m) - 1]} {y}"
+    except Exception:
+        return str(iso or '—')
+
+
+def _research_render_batch(items, heading, genre):
+    """(teks, keyboard): render daftar saran riset format v3 — judul jadi
+    link biru tebal (bisa diklik langsung nonton) + views/tanggal upload
+    + alasan + channel. Keyboard: 🎵/🎬 per nomor + Custom/Saran lain/
+    Analisa lagi."""
+    lines = [f"🔍 *{_tg_escape(heading)} — {_tg_escape(genre)}*", ""]
+    kb_pl, kb_sh = [], []
+    for n, it in enumerate(items, 1):
+        title = _tg_escape(it.get('title') or 'Tanpa judul')
+        url = it.get('url') or ''
+        # Judul = link biru tebal (klik langsung nonton); tanpa URL cukup tebal.
+        head = f"[*{title}*]({url})" if url else f"*{title}*"
+        lines.append(f"{n}️⃣ {head}")
+        if it.get('subtitle'):
+            lines.append(_tg_escape(it['subtitle']))
+        if it.get('reason'):
+            lines.append(_tg_escape(it['reason']))
+        lines.append(f"👁 {_research_fmt_views(it.get('views'))} views • 📅 {_research_fmt_date(it.get('uploaded'))}")
+        lines.append(f"→ Cocok: {_tg_escape(it.get('channel') or '—')}")
+        lines.append("")
+        kb_pl.append({"text": f"🎵 {n}", "callback_data": f"rs:pl:{it.get('id')}"})
+        kb_sh.append({"text": f"🎬 {n}", "callback_data": f"rs:sh:{it.get('id')}"})
+    lines.append("Tinggal pencet: 🎵 = Playlist • 🎬 = Short (angka = nomor saran di atas).")
+    kb = {"inline_keyboard": [
+        kb_pl,
+        kb_sh,
+        [{"text": "✏️ Custom", "callback_data": "rs:custom"},
+         {"text": "💡 Saran lain", "callback_data": "rs:more"},
+         {"text": "🔄 Analisa lagi", "callback_data": "rs:again"}],
+    ]}
+    return "\n".join(lines), kb
+
+
+def _handle_research_callback(token, chat_id, cq_id, data):
+    """Tombol di pesan riset trending: rs:pl:<id> / rs:sh:<id> / rs:more /
+    rs:again / rs:custom."""
+    if data == 'rs:custom':
+        answer_callback(token, cq_id, "Siap Bos, ketik aja maunya 😎")
+        send_message(token, chat_id,
+                     "Siap Bos — ketik aja maunya apa, mis.\n"
+                     "• `buatkan playlist lagu Malaysia terbaik untuk Anto Panie`\n"
+                     "• `buatkan short anak-anak untuk Aruya 0089`")
+        return
+    if data == 'rs:more':
+        sug = _research_load_suggestions()
+        spares = (sug or {}).get('spare') or []
+        if not spares:
+            answer_callback(token, cq_id, "Saran untuk genre ini sudah habis 😅")
+            send_message(token, chat_id,
+                         "Saran untuk genre ini sudah habis Bos 😅\n"
+                         f"Batch berikutnya ({_tg_escape((sug or {}).get('next_genre') or 'genre berikutnya')}) datang {_tg_escape((sug or {}).get('next_batch') or 'nanti')}.")
+            return
+        answer_callback(token, cq_id, "Siap Bos, ini saran lainnya 💡")
+        text, kb = _research_render_batch(spares, "Saran lain", (sug or {}).get('genre') or '')
+        send_message(token, chat_id, text, reply_markup=kb)
+        return
+    if data == 'rs:again':
+        sug = _research_load_suggestions()
+        analysis = (sug or {}).get('analysis') or ''
+        if not analysis:
+            answer_callback(token, cq_id, "Belum ada analisanya 😅")
+            return
+        answer_callback(token, cq_id, "Siap Bos, ini analisanya 🔍")
+        send_message(token, chat_id, analysis)
+        return
+    if data.startswith('rs:pl:') or data.startswith('rs:sh:'):
+        kind = 'playlist' if data.startswith('rs:pl:') else 'short'
+        item_id = data.split(':', 2)[2]
+        sug = _research_load_suggestions()
+        it = _research_find_item(sug, item_id)
+        if not it:
+            answer_callback(token, cq_id, "Saran itu sudah nggak ada 😅")
+            send_message(token, chat_id,
+                         "Saran itu sudah nggak ada Bos 😅 — mungkin dari batch lama. "
+                         "Tunggu batch riset berikutnya ya.")
+            return
+        yt_id = it.get('yt_id') or ''
+        title = it.get('title') or ''
+        if kind == 'playlist':
+            answer_callback(token, cq_id, "Siap Bos, saya siapkan playlist-nya 🎵")
+            _pending = {'intent': 'buat_playlist',
+                        'slots': {'channels': [yt_id] if yt_id else [],
+                                  'playlist_theme': title},
+                        'awaiting': None, 'confirmed': False,
+                        'created_at': time.time()}
+            _save_nlu_pending(chat_id, _pending)
+            _nlu_advance(token, chat_id, _pending)
+        else:
+            answer_callback(token, cq_id, "Siap Bos, kita buat Short-nya 🎬")
+            draft = {"kind": "short", "step": "theme",
+                     "data": {"yt_id": yt_id, "channel_name": it.get('channel') or ''}}
+            _save_make_draft(chat_id, draft)
+            _make_ask_step(token, chat_id, draft)
+        return
+    answer_callback(token, cq_id, "Tombol ini saya nggak kenal, Bos 😅")
+
+
+def status_report_keyboard():
+    """Keyboard shortcut kontekstual untuk /status (v1.3.66): tombol yang
+    paling mungkin Bos pencet setelah baca laporan — lihat gagal (bila ada),
+    jadwal, statistik, refresh."""
+    tasks_data = load_tasks()
+    history = tasks_data.get('history', [])
+    today = _wib_today_str()
+    _, fail_today, _, _ = _count_history_for_date(history, today)
+    row1 = []
+    if fail_today > 0:
+        row1.append({"text": f"❌ Gagal ({fail_today})", "callback_data": "rep:gagal"})
+    row1.append({"text": "📅 Jadwal", "callback_data": "rep:jadwal"})
+    row2 = [{"text": "📊 Statistik", "callback_data": "rep:statistik"},
+            {"text": "🔄 Refresh", "callback_data": "rep:refresh"}]
+    return {"inline_keyboard": [row1, row2]}
+
+
 def handle_callback_query(token, chat_id, callback_query):
     """Proses tombol inline (Fase 1: 🔁 Coba Lagi; Fase 2: ✅/❌ approval).
     Hanya owner yang sampai ke sini — pengecekan owner dilakukan di loop utama."""
@@ -3339,6 +3521,30 @@ def handle_callback_query(token, chat_id, callback_query):
         return
     # --- 🧠 NLU: jawaban tombol klarifikasi (channel / niche / mode /
     # Short-vs-Long / Ya-Bukan). ---
+    # --- 🔍 SARAN RISET TRENDING (v1.3.66): tombol shortcut di pesan riset ---
+    if data.startswith('rs:'):
+        _handle_research_callback(token, chat_id, cq_id, data)
+        return
+    # --- 📊 LAPORAN (v1.3.66): tombol shortcut kontekstual di /status ---
+    if data.startswith('rep:'):
+        if data == 'rep:gagal':
+            answer_callback(token, cq_id, "Siap Bos, ini yang gagal ❌")
+            send_message(token, chat_id, build_failed_report()[0])
+        elif data == 'rep:jadwal':
+            answer_callback(token, cq_id, "Siap Bos, ini jadwalnya 📅")
+            _jt, _jtotal = build_schedule_report()
+            send_message(token, chat_id, _jt,
+                         reply_markup=_EMPTY_SCHEDULE_KB if _jtotal == 0 else None)
+        elif data == 'rep:statistik':
+            answer_callback(token, cq_id, "Siap Bos, ini statistiknya 📊")
+            send_message(token, chat_id, build_stats_report())
+        elif data == 'rep:refresh':
+            answer_callback(token, cq_id, "Siap Bos, saya refresh 🔄")
+            send_message(token, chat_id, build_status_report(),
+                         reply_markup=status_report_keyboard())
+        else:
+            answer_callback(token, cq_id, "Tombol ini saya nggak kenal, Bos 😅")
+        return
     if data.startswith('nlu:'):
         pending = _load_nlu_pending(chat_id)
         if not pending:
@@ -8590,7 +8796,8 @@ def _nlu_run_readonly(token, chat_id, intent, slots=None):
     """Perintah baca saja dari NLU — memakai builder yang sama seperti
     perintah baku."""
     if intent == 'status':
-        send_message(token, chat_id, build_status_report())
+        send_message(token, chat_id, build_status_report(),
+                     reply_markup=status_report_keyboard())
     elif intent == 'laporan':
         kind = 'morning' if _wib_now().hour < 12 else 'evening'
         report = build_daily_report(kind)
@@ -9871,7 +10078,8 @@ def handle_user_command(token, chat_id, text, message_id=None):
 
         # 2. STATUS SERVER (FASE 1 MONITORING: channel + kuota + upload hari ini)
         if "status" in clean_cmd or "server" in clean_cmd:
-            send_message(token, chat_id, build_status_report())
+            send_message(token, chat_id, build_status_report(),
+                         reply_markup=status_report_keyboard())
             return
 
         # 3. CHANNEL LIST (🔥 v1.2.20: tampilan database channel yang rapi —

@@ -2181,6 +2181,16 @@ def _approval_reminder_check(token, chat_id):
         else:
             print(f"⏰ Pengingat approval GAGAL terkirim: task #{tid} ({threshold}) — coba lagi tick berikutnya.", flush=True)
 
+# v1.3.16: tombol tawaran saat jadwal 7 hari KOSONG (total 0) — Bos minta
+# ada opsi, bukan cuma "cek /status".
+_EMPTY_SCHEDULE_KB = {
+    "inline_keyboard": [
+        [{"text": "🎵 Buat Playlist", "callback_data": "jadwal:buat_playlist"}],
+        [{"text": "📅 Perpanjang Jadwal 30 Hari", "callback_data": "jadwal:perpanjang30"}],
+    ]
+}
+
+
 def build_schedule_report(days=7):
     """Jadwal publish N hari ke depan per channel (untuk /jadwal).
     Sumber: tasks_db.json yang sudah ada — tidak ada jadwal yang dikarang.
@@ -2257,8 +2267,13 @@ def build_schedule_report(days=7):
             lines.append(f"  • {_video_meta((t.get('title') or '?'), None, _fmt_dt_short(dt), _task_duration_sec(t))} — {label}")
         lines.append("")
     lines.append(f"Total: `{total} task` dalam 7 hari ke depan (termasuk yang terlambat).")
-    lines.append("Bos, ketik /status buat cek kuota & antrean terkini 😎")
-    return "\n".join(lines)
+    if total == 0:
+        # v1.3.16: jadwal kosong -> tawarkan isi (tombol inline di call site),
+        # bukan cuma "cek /status".
+        lines.append("Jadwal masih kosong semua nih Bos — mau saya isikan? Pencet di bawah ya 👇")
+    else:
+        lines.append("Bos, ketik /status buat cek kuota & antrean terkini 😎")
+    return "\n".join(lines), total
 
 
 # ==========================================
@@ -2612,13 +2627,13 @@ def get_main_keyboard():
     TANPA is_persistent."""
     return {
         "keyboard": [
+            [{"text": "🎵 Buat Playlist"}, {"text": "🎬 Ide Shorts"}],
+            [{"text": "📱 Buat Short"}, {"text": "🎥 Buat Video Long"}],
+            [{"text": "💾 Backup"}, {"text": "📋 Laporan"}],
             [{"text": "📊 Status Server"}, {"text": "📤 Kuota Upload"}],
             [{"text": "📺 Cek Channel"}, {"text": "📂 Antrean Render"}],
             [{"text": "📅 Jadwal 7 Hari"}, {"text": "📈 Statistik Video"}],
-            [{"text": "💰 Monetisasi"}, {"text": "❌ Task Gagal"}],
-            [{"text": "🎵 Buat Playlist"}, {"text": "🎬 Ide Shorts"}],
-            [{"text": "📱 Buat Short"}, {"text": "🎥 Buat Video Long"}],
-            [{"text": "💾 Backup"}, {"text": "📋 Laporan"}]
+            [{"text": "💰 Monetisasi"}, {"text": "❌ Task Gagal"}]
         ],
         "resize_keyboard": True,
         "one_time_keyboard": True
@@ -2937,6 +2952,25 @@ def handle_callback_query(token, chat_id, callback_query):
             return
         finally:
             _cb_in_flight.discard(data)
+    # --- v1.3.16: tawaran isi jadwal saat /jadwal kosong (total 0) ---
+    if data in ('jadwal:buat_playlist', 'jadwal:perpanjang30'):
+        if data.endswith('buat_playlist'):
+            answer_callback(token, cq_id, "Siap Bos, buat playlist ya 🎵")
+            _start_make_playlist(token, chat_id, '/playlist')
+        else:
+            # Sama seperti /perpanjang semua 30: simpan pending + minta
+            # konfirmasi dulu lewat _nlu_advance (tidak langsung membuat).
+            answer_callback(token, cq_id, "Siap Bos, saya siapkan perpanjangnya 📅")
+            _chs = load_channels()
+            pending = {"intent": "perpanjang_jadwal",
+                       "slots": {"days": 30,
+                                 "channels": [c.get('yt_id') for c in _chs]},
+                       "awaiting": None,
+                       "candidates": [c.get('yt_id') for c in _chs],
+                       "created_at": time.time()}
+            _save_nlu_pending(chat_id, pending)
+            _nlu_advance(token, chat_id, pending)
+        return
     # --- v1.3.13: tawaran "yang paling dekat" di /playlist ---
     if data in ('mkplaylist:closest:yes', 'mkplaylist:closest:no'):
         draft = _load_make_draft(chat_id)
@@ -8214,7 +8248,9 @@ def _nlu_run_readonly(token, chat_id, intent, slots=None):
     elif intent == 'monetisasi':
         send_message(token, chat_id, build_monetization_report())
     elif intent == 'jadwal':
-        send_message(token, chat_id, build_schedule_report())
+        _jadwal_txt, _jadwal_total = build_schedule_report()
+        send_message(token, chat_id, _jadwal_txt,
+                     reply_markup=_EMPTY_SCHEDULE_KB if _jadwal_total == 0 else None)
     elif intent == 'jadwal_bulan':
         # 🔥 v1.2.20: 1 pesan per channel (sudah ringkas per channel).
         names = _nlu_channel_names((slots or {}).get('channels') or [])
@@ -9345,7 +9381,9 @@ def handle_user_command(token, chat_id, text, message_id=None):
 
         # 4b. JADWAL PUBLISH (FASE 3)
         if "jadwal" in clean_cmd or "schedule" in clean_cmd:
-            send_message(token, chat_id, build_schedule_report())
+            _jadwal_txt, _jadwal_total = build_schedule_report()
+            send_message(token, chat_id, _jadwal_txt,
+                         reply_markup=_EMPTY_SCHEDULE_KB if _jadwal_total == 0 else None)
             return
 
         # 5. GENERATOR JUDUL (niche + jumlah, mis. "/judul lofi 15")

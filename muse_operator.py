@@ -2249,6 +2249,12 @@ _EMPTY_SCHEDULE_KB = {
 }
 
 
+# 🔥 v1.3.68: jam order Playlist harian (cron Muse daily-playlist-malaysia-7d,
+# 06:10 WIB) — tampil di /jadwal untuk channel daily_playlist. Bila jam cron
+# berubah, ubah konstanta ini juga (operator tidak bisa membaca cron).
+_DAILY_PLAYLIST_TIME_LABEL = "±06:10"
+
+
 def build_schedule_report(days=7):
     """Jadwal publish N hari ke depan per channel (untuk /jadwal).
     Sumber: tasks_db.json yang sudah ada — tidak ada jadwal yang dikarang.
@@ -2290,10 +2296,14 @@ def build_schedule_report(days=7):
 
     known_ids = {c.get('yt_id') for c in channels}
     total = 0
+    daily_n = 0
     for ch in channels:
         name = _channel_display_name(ch)
         yt = ch.get('yt_id', '')
         paused = bool(ch.get('paused'))
+        daily_on = bool(ch.get('daily_playlist'))
+        if daily_on:
+            daily_n += 1
         items = [(dt, t) for dt, t in upcoming if _task_yt(t) == yt]
         over = [(dt, t) for dt, t in overdue if _task_yt(t) == yt]
         total += len(items) + len(over)
@@ -2303,7 +2313,14 @@ def build_schedule_report(days=7):
             for dt, t in over[:3]:
                 lines.append(f"  • {_video_meta((t.get('title') or '?'), None, _fmt_dt_short(dt), _task_duration_sec(t))}")
         if not items and not over:
-            lines.append("  _Nggak ada jadwal 7 hari ke depan Bos 😌_")
+            if daily_on:
+                # 🔥 v1.3.68: channel order harian TIDAK punya task yang
+                # dibuat jauh-jauh hari (video dibuat tiap pagi + riset
+                # fresh) — tampilkan ordernya supaya jadwal tidak kelihatan
+                # kosong.
+                lines.append(f"  🔁 _Playlist harian aktif — video dibuat tiap pagi {_DAILY_PLAYLIST_TIME_LABEL}, riset fresh, langsung tayang_")
+            else:
+                lines.append("  _Nggak ada jadwal 7 hari ke depan Bos 😌_")
         by_day = {}
         for dt, t in items:
             by_day.setdefault(dt.strftime('%Y-%m-%d'), []).append((dt, t))
@@ -2325,13 +2342,136 @@ def build_schedule_report(days=7):
             lines.append(f"  • {_video_meta((t.get('title') or '?'), None, _fmt_dt_short(dt), _task_duration_sec(t))} — {label}")
         lines.append("")
     lines.append(f"Total: `{total} task` dalam 7 hari ke depan (termasuk yang terlambat).")
+    if daily_n:
+        lines.append(f"🔁 Order harian: `{daily_n} channel` Playlist harian aktif (dibuat tiap pagi {_DAILY_PLAYLIST_TIME_LABEL}, riset fresh).")
     if total == 0:
         # v1.3.16: jadwal kosong -> tawarkan isi (tombol inline di call site),
         # bukan cuma "cek /status".
-        lines.append("Jadwal masih kosong semua nih Bos — mau saya isikan? Pencet di bawah ya 👇")
+        if daily_n:
+            lines.append("Belum ada video yang terjadwal jauh-jauh hari — video harian dibuat tiap pagi oleh order di atas (riset fresh tiap pagi 😎). Mau tambah video lain? Pencet di bawah ya 👇")
+        else:
+            lines.append("Jadwal masih kosong semua nih Bos — mau saya isikan? Pencet di bawah ya 👇")
     else:
         lines.append("Bos, ketik /status buat cek kuota & antrean terkini 😎")
     return "\n".join(lines), total
+
+
+# ==========================================
+# 🔥 v1.3.68 — GROUP CHANNEL
+# 1 channel = 1 group. Group disimpan sebagai field `group` per channel
+# di channels_db.json (string, kosong = tanpa group); daftar group =
+# nilai berbeda yang dipakai channel. Tidak ada file baru — group baru
+# lahir saat channel pertama dimasukkan ke dalamnya.
+# ==========================================
+def _group_of(ch):
+    """Nama group channel ('' = tanpa group)."""
+    return ((ch or {}).get('group') or '').strip()
+
+
+def _group_list(channels):
+    """Daftar group yang dipakai, urut kemunculan pertama."""
+    out = []
+    for c in channels or []:
+        g = _group_of(c)
+        if g and g not in out:
+            out.append(g)
+    return out
+
+
+def _group_canonical(name, channels):
+    """Samakan ejaan group dengan yang sudah ada (tak peduli huruf
+    besar/kecil) supaya 'monet' tidak jadi group baru padahal 'Monet'
+    sudah ada."""
+    want = (name or '').strip()
+    if not want:
+        return ''
+    for g in _group_list(channels):
+        if g.lower() == want.lower():
+            return g
+    return want
+
+
+def _set_channel_group_op(yt_id, group):
+    """Set group satu channel lewat endpoint operator.
+    (ok, info, data). group '' = keluarkan dari group."""
+    return _operator_post('/api/operator/set_channel_group',
+                          {'yt_id': yt_id, 'group': group or ''})
+
+
+def build_group_report():
+    """Daftar group + anggotanya (untuk /group)."""
+    channels = load_channels()
+    groups = _group_list(channels)
+    now = _wib_now()
+    lines = ["👥 *Group Channel*",
+             f"_{now.strftime('%d %b %Y, %H:%M')} WIB_",
+             "━━━━━━━━━━━━━━━━━━━━━━"]
+    if not channels:
+        lines.append("📺 Belum ada channel terhubung nih Bos 😅")
+        return "\n".join(lines)
+    if not groups:
+        lines.append("Belum ada group — semua channel masih tanpa group.")
+    for g in groups:
+        members = [c for c in channels if _group_of(c) == g]
+        lines.append(f"📁 *{_tg_escape(g)}* ({len(members)} channel)")
+        for c in members:
+            lines.append(f"  • {_tg_escape(_channel_display_name(c))}")
+        lines.append("")
+    ungrouped = [c for c in channels if not _group_of(c)]
+    if ungrouped:
+        lines.append(f"📁 *Tanpa Group* ({len(ungrouped)} channel)")
+        for c in ungrouped:
+            lines.append(f"  • {_tg_escape(_channel_display_name(c))}")
+        lines.append("")
+    lines.append("Atur group: `Aruya masuk ke Group Playlist A` · pindah: `Aruya pindah ke Group ZUMO 1` · keluar: `Aruya keluar group`")
+    return "\n".join(lines)
+
+
+def _execute_nlu_group(token, chat_id, pending):
+    """Eksekusi intent 'atur_group' (assign / move / leave)."""
+    slots = pending.get('slots') or {}
+    action = slots.get('group_action') or 'assign'
+    chans = [c for c in load_channels()
+             if c.get('yt_id') in (slots.get('channels') or [])]
+    if not chans:
+        send_message(token, chat_id,
+                     "😅 *Channel-nya belum ketemu Bos* — sebut namanya ya, mis. `Aruya masuk ke Group Playlist A`.")
+        return
+    if action == 'leave':
+        group = ''
+    else:
+        group = _group_canonical(slots.get('group_name') or '', load_channels())
+        if not group:
+            send_message(token, chat_id,
+                         "😅 *Nama group-nya apa Bos?* — mis. `Aruya masuk ke Group Playlist A`.")
+            return
+    done, failed = [], []
+    for ch in chans:
+        ok, info, _d = _set_channel_group_op(ch.get('yt_id'), group)
+        if ok:
+            done.append(_channel_display_name(ch))
+        else:
+            failed.append(f"{_channel_display_name(ch)}: {info}")
+    if action == 'leave':
+        head = "🚪 *Keluar group, Bos*"
+        verb = "sudah keluar dari group"
+    elif action == 'move':
+        head = f"🔀 *Pindah group ke {group}, Bos*"
+        verb = f"sudah pindah ke group {group}"
+    else:
+        head = f"👥 *Masuk group {group}, Bos*"
+        verb = f"sudah masuk group {group}"
+    lines = [head]
+    if done:
+        lines.append("✅ " + ", ".join(f"{_tg_escape(n)} {verb}" for n in done))
+    if failed:
+        lines.append("⚠️ Gagal: " + "; ".join(_tg_escape(f) for f in failed))
+    lines.append("Lihat daftar: /group")
+    send_message(token, chat_id, "\n".join(lines),
+                 reply_markup={"inline_keyboard": [[
+                     {"text": "👥 Lihat Group", "callback_data": "grp:list"},
+                     {"text": "📅 Lihat Jadwal", "callback_data": "rep:jadwal"},
+                 ]]})
 
 
 # ==========================================
@@ -3572,6 +3712,11 @@ def handle_callback_query(token, chat_id, callback_query):
     # --- 🔍 SARAN RISET TRENDING (v1.3.66): tombol shortcut di pesan riset ---
     if data.startswith('rs:'):
         _handle_research_callback(token, chat_id, cq_id, data)
+        return
+    # --- 👥 GROUP (v1.3.68): tombol shortcut di pesan atur-group. ---
+    if data == 'grp:list':
+        answer_callback(token, cq_id, "Siap Bos, ini daftar group-nya 👥")
+        send_message(token, chat_id, build_group_report())
         return
     # --- 📊 LAPORAN (v1.3.66): tombol shortcut kontekstual di /status ---
     if data.startswith('rep:'):
@@ -7407,6 +7552,46 @@ def parse_natural_command(text, channels):
             slots['target'] = 'antrean'
         else:
             slots['target'] = 'tidak_jelas'
+    # --- 🔥 v1.3.68: Group channel — 'Aruya masuk ke Group Playlist A' /
+    # 'Akun H pindah ke Group X' / 'Aruya keluar group' / 'lihat group'.
+    # Dicek SEBELUM jeda/mode supaya 'pindah'/'masuk' tidak jatuh ke
+    # tidak_dikenali, TAPI dilewati bila frasanya perintah buat konten
+    # untuk sebuah group ('buatkan playlist untuk group X' tetap jadi
+    # buat_playlist, bukan atur group). Nama group diambil dari teks ASLI
+    # (bukan clean) supaya huruf besar/kecilnya tetap seperti yang Bos
+    # ketik ('Monet' tetap 'Monet', bukan 'monet').
+    elif ('group' in clean or 'grup' in clean) and not (
+            create_verb and ('playlist' in clean or 'short' in clean
+                             or 'lagu' in clean or 'video' in clean)):
+        _gm = re.search(r'(?:group|grup)\s+([A-Za-z0-9][\w \-]{0,39})',
+                        text or '', re.I)
+        _gname = (_gm.group(1).strip() if _gm else '')
+        _gname = re.sub(r'\s+', ' ', _gname).strip(' -')
+        if 'keluar' in clean:
+            intent = 'atur_group'
+            slots['group_action'] = 'leave'
+            conf = 70
+        elif 'pindah' in clean:
+            intent = 'atur_group'
+            slots['group_action'] = 'move'
+            slots['group_name'] = _gname
+            conf = 70
+        elif ('masuk' in clean or 'tambah' in clean) and _gname:
+            intent = 'atur_group'
+            slots['group_action'] = 'assign'
+            slots['group_name'] = _gname
+            conf = 70
+        elif re.search(r'\b(buat|bikin|buatkan)\b', clean) and _gname:
+            intent = 'atur_group'
+            slots['group_action'] = 'assign'
+            slots['group_name'] = _gname
+            conf = 60
+        elif ('lihat' in clean or 'daftar' in clean or 'list' in clean
+              or 'tampilkan' in clean or 'tampil' in clean
+              or clean.strip() in ('group', 'grup')):
+            intent = 'atur_group'
+            slots['group_action'] = 'list'
+            conf = 70
     elif ('hentikan antrean' in clean or 'stop antrean' in clean
             or 'batalkan antrean' in clean or 'bersihkan antrean' in clean
             or 'hentikan antrian' in clean):
@@ -7972,6 +8157,16 @@ def _nlu_describe(pending):
         return f"lanjutkan channel {ch}"
     if intent == 'hapus':
         return f"hapus {slots.get('target') or 'sesuatu'} {ch}"
+    if intent == 'atur_group':
+        act = slots.get('group_action')
+        g = slots.get('group_name') or ''
+        if act == 'list':
+            return "tampilkan daftar group"
+        if act == 'leave':
+            return f"keluarkan {ch} dari group"
+        if act == 'move':
+            return f"pindahkan {ch} ke group {g or '(nama group belum disebut)'}"
+        return f"masukkan {ch} ke group {g or '(nama group belum disebut)'}"
     if intent == 'hentikan_antrean':
         return "hentikan antrean"
     if intent == 'jadwal_bulan':
@@ -8066,9 +8261,13 @@ def _nlu_ask_confirm(token, chat_id, pending):
         extra = ("\n⚠️ Beralih ke Full-Auto berarti video langsung tayang "
                  "tanpa persetujuan Bos. Lanjut?")
     elif pending.get('intent') == 'hapus':
-        extra = ("\n⚠️ Ini perintah destruktif — saya TIDAK akan menghapus "
-                 "apa-apa sendiri; setelah Bos setuju saya kasih langkah "
-                 "hapusnya di panel.")
+        # 🔥 v1.3.68: hapus channel dari Telegram kini BENAR-BENAR menghapus
+        # (panel + antrean + galeri) — konfirmasi ini yang terakhir.
+        extra = ("\n⚠️ Channel dihapus dari panel, antreannya dibatalkan, "
+                 "folder galerinya ikut terhapus. Video yang sudah tayang "
+                 "di YouTube TIDAK ikut terhapus.")
+    elif pending.get('intent') == 'atur_group':
+        extra = "\nℹ️ 1 channel hanya boleh 1 group — channel yang sudah punya group akan pindah ke group baru."
     elif pending.get('intent') == 'hentikan_antrean':
         extra = "\n⚠️ Antrean yang dihentikan tidak bisa dibatalkan."
     send_message(token, chat_id,
@@ -8087,10 +8286,16 @@ def _nlu_advance(token, chat_id, pending):
     slots = pending.setdefault('slots', {})
     intent = pending.get('intent')
     chans = load_channels()
+    # --- 🔥 v1.3.68: 'lihat group' = baca saja — langsung kirim laporan,
+    # tanpa tanya channel / konfirmasi. ---
+    if intent == 'atur_group' and slots.get('group_action') == 'list':
+        _clear_nlu_pending(chat_id)
+        send_message(token, chat_id, build_group_report())
+        return
     # --- Channel: isi dari 'all' / cek apakah sudah ada. ---
     if intent in ('buat_short', 'buat_long', 'buat_playlist', 'jadwalkan_playlist', 'perpanjang_jadwal', 'ubah_mode',
                   'jeda_channel', 'lanjutkan_channel', 'hapus', 'hentikan_antrean',
-                  'atur_jadwal'):
+                  'atur_group', 'atur_jadwal'):
         if slots.get('channels') == 'all':
             slots['channels'] = [c.get('yt_id') for c in chans]
         if not slots.get('channels') and slots.get('channel_unknown') \
@@ -8273,7 +8478,8 @@ def _nlu_advance(token, chat_id, pending):
     # --- Konfirmasi bila aksi membuat konten / berbahaya / matikan pengaman. ---
     needs_confirm = (
         intent in ('buat_short', 'buat_long', 'buat_playlist', 'jadwalkan_playlist', 'buat_zumo',
-                   'buat_zumobank', 'buat_zumorakit', 'hapus', 'hentikan_antrean', 'publish_now')
+                   'buat_zumobank', 'buat_zumorakit', 'hapus', 'hentikan_antrean', 'publish_now',
+                   'atur_group')
         or (intent == 'ubah_mode' and slots.get('mode') == 'auto')
     )
     if needs_confirm and not pending.get('confirmed'):
@@ -8505,10 +8711,28 @@ def _execute_nlu_destructive(token, chat_id, pending):
     names = _nlu_channel_names(slots.get('channels') or [])
     ch = ', '.join(names) if names else ''
     if target == 'channel':
-        send_message(token, chat_id,
-                     f"Siap Bos, saya TIDAK hapus sendiri dari Telegram (terlalu berisiko). "
-                     f"Untuk hapus channel {ch or 'itu'}: buka panel → Settings → daftar channel → "
-                     f"Hapus. Saya tunggu di sini kalau Bos berubah pikiran 😌")
+        # 🔥 v1.3.68: hapus channel dari Telegram kini BENAR-BENAR jalan
+        # (endpoint operator = logika yang sama dengan tombol 🗑 di panel:
+        # batalkan antrean + hapus channel dari database + hapus folder
+        # galeri; video YouTube TIDAK ikut terhapus). Konfirmasi sudah
+        # lewat _nlu_ask_confirm sebelum sampai sini.
+        _chs = [c for c in load_channels()
+                if c.get('yt_id') in (slots.get('channels') or [])]
+        if not _chs:
+            send_message(token, chat_id,
+                         "😅 *Channel-nya belum ketemu Bos* — sebut namanya ya, mis. `hapus channel Aruya 0089`.")
+            return
+        lines = ["🗑️ *Hapus channel, Bos*"]
+        for _c in _chs:
+            ok, info, _d = _operator_post('/api/operator/delete_channel',
+                                          {'yt_id': _c.get('yt_id')})
+            nm = _channel_display_name(_c)
+            if ok:
+                lines.append(f"✅ *{nm}* — dihapus dari panel (antrean dibatalkan, galeri ikut terhapus).")
+            else:
+                lines.append(f"❌ *{nm}* — {info or 'gagal dihapus'}.")
+        lines.append("Video yang sudah tayang di YouTube tetap ada — hapus manual dari YouTube Studio bila perlu.")
+        send_message(token, chat_id, "\n".join(lines))
     elif target == 'video':
         send_message(token, chat_id,
                      "Siap Bos, hapus video saya tidak lakukan dari Telegram — video yang sudah "
@@ -8853,6 +9077,8 @@ def _nlu_execute(token, chat_id, pending):
         _execute_nlu_set_mode(token, chat_id, pending)
     elif kind == 'jeda_channel' or kind == 'lanjutkan_channel':
         _execute_nlu_set_paused(token, chat_id, pending)
+    elif kind == 'atur_group':
+        _execute_nlu_group(token, chat_id, pending)
     elif kind in ('hapus', 'hentikan_antrean'):
         _execute_nlu_destructive(token, chat_id, pending)
     elif kind == 'publish_now':
@@ -9228,6 +9454,8 @@ _BOT_COMMANDS = [
     ('hariini', 'Upload hari ini per channel (berapa video di akun mana saja)', 'atur', ''),
     ('jeda', 'Jeda channel (jadwal & antrean berhenti)', 'atur', '[channel]'),
     ('lanjutkan', 'Lanjutkan channel yang dijeda', 'atur', '[channel]'),
+    ('group', 'Lihat & atur Group channel, mis. /group Aruya 0089 Playlist A', 'atur', '[channel] [group]'),
+    ('hapuschannel', 'Hapus channel dari panel (pakai konfirmasi dulu)', 'atur', '[channel]'),
     ('pixabaykey', 'Tambah API key Pixabay', 'atur', '<key>'),
     ('pixabaykeys', 'Daftar API key Pixabay (masked)', 'atur', ''),
     ('pixabaydel', 'Hapus API key Pixabay', 'atur', '<4-karakter-terakhir|nomor>'),
@@ -9764,6 +9992,81 @@ def handle_user_command(token, chat_id, text, message_id=None):
                 slots['channels'] = [c.get('yt_id') for c in matched]
             pending = {"intent": "jeda_channel" if first_word == "/jeda" else "lanjutkan_channel",
                        "slots": slots, "awaiting": None,
+                       "candidates": [c.get('yt_id') for c in load_channels()],
+                       "created_at": time.time()}
+            _save_nlu_pending(chat_id, pending)
+            _nlu_advance(token, chat_id, pending)
+            return
+
+        # --- 👥 GROUP CHANNEL (v1.3.68): /group = daftar group; ---
+        # /group <channel> <group> = masukkan channel ke group (group baru
+        # dibuat otomatis bila belum ada); /group keluar <channel> =
+        # keluarkan dari group. 1 channel = 1 group.
+        if first_word in ("/group",):
+            rest = raw_cmd[len('/group'):].strip()
+            if not rest:
+                send_message(token, chat_id, build_group_report())
+                return
+            clean_rest = _nlu_clean(rest)
+            if 'keluar' in clean_rest:
+                matched, _all = _nlu_match_channels(clean_rest, load_channels())
+                if not matched:
+                    send_message(token, chat_id, "😅 *Channel-nya yang mana Bos?* — mis. `/group keluar Aruya 0089`.")
+                    return
+                done, failed = [], []
+                for ch in matched:
+                    ok, info, _d = _set_channel_group_op(ch.get('yt_id'), '')
+                    if ok:
+                        done.append(_channel_display_name(ch))
+                    else:
+                        failed.append(f"{_channel_display_name(ch)}: {info}")
+                lines = ["🚪 *Keluar group, Bos*"]
+                if done:
+                    lines.append("✅ " + ", ".join(_tg_escape(n) for n in done) + " sudah keluar dari group.")
+                if failed:
+                    lines.append("⚠️ Gagal: " + "; ".join(_tg_escape(f) for f in failed))
+                send_message(token, chat_id, "\n".join(lines))
+                return
+            matched, _all = _nlu_match_channels(clean_rest, load_channels())
+            gm = re.search(r'(?:group|grup)\s+([A-Za-z0-9][\w \-]{0,39})', rest, re.I)
+            if gm:
+                gname = re.sub(r'\s+', ' ', gm.group(1).strip()).strip(' -')
+            else:
+                rest2 = rest
+                for ch in matched:
+                    rest2 = re.sub(re.escape(_channel_display_name(ch)), '', rest2, flags=re.I).strip()
+                gname = re.sub(r'^(masuk(kan)?|pindah|tambah)\s+(ke\s+)?', '', rest2, flags=re.I).strip()
+            if not matched or not gname:
+                send_message(token, chat_id,
+                             "😅 *Formatnya:* `/group Aruya 0089 Playlist A` atau `/group keluar Aruya 0089` — ketik /group buat lihat daftar group.")
+                return
+            gname = _group_canonical(gname, load_channels())
+            done, failed = [], []
+            for ch in matched:
+                ok, info, _d = _set_channel_group_op(ch.get('yt_id'), gname)
+                if ok:
+                    done.append(_channel_display_name(ch))
+                else:
+                    failed.append(f"{_channel_display_name(ch)}: {info}")
+            lines = [f"👥 *Masuk group {gname}, Bos*"]
+            if done:
+                lines.append("✅ " + ", ".join(_tg_escape(n) for n in done) + f" sudah masuk group {gname}.")
+            if failed:
+                lines.append("⚠️ Gagal: " + "; ".join(_tg_escape(f) for f in failed))
+            lines.append("Lihat daftar: /group")
+            send_message(token, chat_id, "\n".join(lines))
+            return
+
+        # --- 🗑️ HAPUS CHANNEL (v1.3.68): /hapuschannel <nama> — masuk alur
+        # konfirmasi NLU yang sama (tombol ✅ Ya / ❌ Bukan), baru dieksekusi.
+        if first_word in ("/hapuschannel",):
+            rest = raw_cmd[len('/hapuschannel'):].strip()
+            clean_rest = _nlu_clean(rest)
+            matched, _all = _nlu_match_channels(clean_rest, load_channels())
+            slots = {'target': 'channel'}
+            if matched:
+                slots['channels'] = [c.get('yt_id') for c in matched]
+            pending = {"intent": "hapus", "slots": slots, "awaiting": None,
                        "candidates": [c.get('yt_id') for c in load_channels()],
                        "created_at": time.time()}
             _save_nlu_pending(chat_id, pending)

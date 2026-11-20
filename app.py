@@ -431,6 +431,7 @@ _OPERATOR_ENDPOINTS = {'operator_retry_task', 'operator_approve_task',
                       'operator_create_long', 'operator_extend_schedule',
                       'operator_set_autopilot', 'operator_set_paused',
                       'operator_set_daily_playlist',
+                      'operator_set_channel_group', 'operator_delete_channel',
                       'operator_pixabay_key_add', 'operator_pixabay_key_list',
                       'operator_pixabay_key_del', 'operator_backup_create',
                       'operator_backup_status', 'operator_playlist_research',
@@ -7368,6 +7369,9 @@ def get_channels():
     # belum punya scope yt-analytics.readonly ("perlu taut ulang").
     _scope_cache = _load_video_stats_cache()
     safe_c = [{"id": c["id"], "name": c["name"], "yt_id": c["yt_id"], "thumbnail": c["thumbnail"], "status": c["status"], "title_bank": c.get("title_bank", []), "title_weights": c.get("title_weights", {}), "paused": c.get("paused", False), "autopilot": c.get("autopilot", "approval"), "rpm_usd": c.get("rpm_usd"), "monetized": c.get("monetized", False), "owner_email": c.get("owner_email", ""), "auto_shorts": _auto_shorts_cfg(c), "analytics_scope": _analytics_scope_state(_scope_cache, c.get("yt_id")),
+               # 🔥 v1.3.68: group + flag jadwal harian (dipakai kolom GROUP,
+               # filter group, dan slot rutin di Kalender).
+               "group": c.get("group", ""), "daily_playlist": c.get("daily_playlist", False),
                # 🔥 v1.2.25: pemetaan OAuth — client utama + project mana saja
                # channel ini punya tokennya (metadata saja, tanpa secret).
                "oauth_client_id": _oauth_channel_primary_client_id(c),
@@ -7505,20 +7509,19 @@ def import_channels():
         print(f"Gagal import channels: {e}", flush=True)
         return jsonify({"status": "error", "message": "Gagal membaca file cadangan. Periksa format JSON-nya."}), 500
 
-@app.route('/api/delete_channel', methods=['POST'])
-def delete_channel():
-    # 🔒 #5: yt_id divalidasi ketat (allowlist) + path hasil gabung dicek
-    # tetap di bawah BASE_UPLOAD sebelum rmtree. 🔒 Konfirmasi ulang:
-    # request wajib membawa confirm=yes (JS panel mengirimkannya setelah
-    # dialog confirm() — lihat deleteChannel() di template).
-    yt_id = request.form.get('yt_id')
-    if not _valid_yt_id(yt_id):
-        return jsonify({"status": "error", "message": "yt_id tidak valid."}), 400
-    if request.form.get('confirm') != 'yes':
-        return jsonify({"status": "error", "message": "Penghapusan channel wajib dikonfirmasi (confirm=yes)."}), 400
+def _delete_channel_full(yt_id):
+    """Hapus channel SEPENUHNYA (dipakai panel /api/delete_channel DAN
+    operator /api/operator/delete_channel — v1.3.68, satu logika): batalkan
+    antrean + bunuh proses render + sapu folder galeri + hapus dari
+    database_channel. Video YouTube TIDAK ikut terhapus (tetap tayang di
+    YouTube). Kembalikan (ok, pesan, jumlah_task_dibatalkan)."""
     global database_channel, active_tasks, history_tasks
-    
+    target = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+    if target is None:
+        return False, "Channel tidak ditemukan.", 0
+    name = target.get('name', yt_id)
     # 1. Batalkan semua antreannya di background
+    cancelled = 0
     with db_lock:
         tasks_to_remove = [t for t in active_tasks if _active_task_yt_id(t) == yt_id]
         for t in tasks_to_remove:
@@ -7531,7 +7534,8 @@ def delete_channel():
             t['status'] = "Dibatalkan (Channel Dihapus) 🗑️"
             active_tasks.remove(t)
             history_tasks.insert(0, t)
-            
+            cancelled += 1
+
         # 🔥 FIX v1.7: item antrean adalah tuple (prioritas, seq, blueprint) — versi lama
         # membaca item.get('yt_id') → error di item pertama, purge berhenti, blueprint
         # channel ini tertinggal di antrean → task hidup lagi setelah channel dihapus.
@@ -7557,8 +7561,44 @@ def delete_channel():
     # 3. Hapus profil channel dari Database
     database_channel = [c for c in database_channel if c['yt_id'] != yt_id]
     save_channels(database_channel)
-    
-    return jsonify({"status": "success", "message": "Channel, aset Gallery, dan antrean berhasil disapu bersih!"})
+
+    return True, f"Channel {name}, aset Gallery, dan antrean berhasil disapu bersih!", cancelled
+
+
+@app.route('/api/delete_channel', methods=['POST'])
+def delete_channel():
+    # 🔒 #5: yt_id divalidasi ketat (allowlist) + path hasil gabung dicek
+    # tetap di bawah BASE_UPLOAD sebelum rmtree. 🔒 Konfirmasi ulang:
+    # request wajib membawa confirm=yes (JS panel mengirimkannya setelah
+    # dialog confirm() — lihat deleteChannel() di template).
+    yt_id = request.form.get('yt_id')
+    if not _valid_yt_id(yt_id):
+        return jsonify({"status": "error", "message": "yt_id tidak valid."}), 400
+    if request.form.get('confirm') != 'yes':
+        return jsonify({"status": "error", "message": "Penghapusan channel wajib dikonfirmasi (confirm=yes)."}), 400
+    ok, msg, _n = _delete_channel_full(yt_id)
+    if not ok:
+        return jsonify({"status": "error", "message": msg}), 404
+    return jsonify({"status": "success", "message": msg})
+
+
+@app.route('/api/operator/delete_channel', methods=['POST'])
+def operator_delete_channel():
+    """Hapus channel dari Telegram (NLU 'hapus channel X' / /hapuschannel —
+    v1.3.68). Keamanan: wajib `key` == operator_key (HMAC). Logika hapus
+    SAMA dengan tombol 🗑 di panel (helper _delete_channel_full).
+    Konfirmasi sudah lewat alur NLU sebelum request ini dikirim."""
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    yt_id = (data.get('yt_id') or '').strip()
+    if not _valid_yt_id(yt_id):
+        return jsonify({"status": "error", "message": "Channel tidak valid."}), 400
+    ok, msg, cancelled = _delete_channel_full(yt_id)
+    if not ok:
+        return jsonify({"status": "error", "message": msg}), 404
+    return jsonify({"status": "success", "message": msg, "cancelled_tasks": cancelled})
 
 # --- PRESET API ---
 @app.route('/api/save_preset', methods=['POST'])
@@ -14345,6 +14385,42 @@ def operator_set_daily_playlist():
                     "message": f"Channel {name} jadwal harian {'aktif' if enabled else 'berhenti'}."})
 
 
+@app.route('/api/operator/set_channel_group', methods=['POST'])
+def operator_set_channel_group():
+    """Set group satu channel dari Telegram (/group, NLU atur_group — v1.3.68).
+    Keamanan: wajib `key` == operator_key (HMAC). Field `group` di
+    channels_db.json; '' = keluarkan dari group. 1 channel = 1 group.
+    Group baru dibuat otomatis bila belum ada (daftar group = nilai
+    berbeda yang dipakai channel). Channel tidak dikenal → 404."""
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    yt_id = (data.get('yt_id') or '').strip()
+    group = data.get('group') or ''
+    if not isinstance(group, str):
+        return jsonify({"status": "error", "message": "group harus teks."}), 400
+    group = group.strip()[:40]
+    if not _valid_yt_id(yt_id):
+        return jsonify({"status": "error", "message": "Channel tidak valid."}), 400
+    with db_lock:
+        target = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+        if target is None:
+            return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
+        if group:
+            target['group'] = group
+        else:
+            target.pop('group', None)
+        name = target.get('name', yt_id)
+        try:
+            save_channels(database_channel)
+        except Exception as e:
+            print(f"Gagal simpan group {yt_id} (operator): {e}", flush=True)
+            return jsonify({"status": "error", "message": "Gagal menyimpan perubahan."}), 500
+    return jsonify({"status": "success", "group": group, "channel_name": name,
+                    "message": f"Channel {name} {'masuk group ' + group if group else 'keluar dari group'}."})
+
+
 def _valid_owner_email(email):
     """Email pemilik channel: '' (kosongkan) atau format email biasa."""
     if email == '':
@@ -14378,6 +14454,37 @@ def set_channel_email():
             return jsonify({"status": "error", "message": "Gagal menyimpan perubahan."}), 500
     return jsonify({"status": "success", "owner_email": email, "channel_name": name,
                     "message": f"Email {name} tersimpan."})
+
+
+@app.route('/api/set_channel_group', methods=['POST'])
+def set_channel_group():
+    """Set group satu channel dari panel (dropdown GROUP di tabel channel
+    — v1.3.68). Panel-only (login + CSRF via check_security).
+    group '' = keluarkan dari group."""
+    data = request.get_json(silent=True) or {}
+    yt_id = (data.get('yt_id') or '').strip()
+    group = data.get('group') or ''
+    if not isinstance(group, str):
+        return jsonify({"status": "error", "message": "group harus teks."}), 400
+    group = group.strip()[:40]
+    if not _valid_yt_id(yt_id):
+        return jsonify({"status": "error", "message": "Channel tidak valid."}), 400
+    with db_lock:
+        target = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+        if target is None:
+            return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
+        if group:
+            target['group'] = group
+        else:
+            target.pop('group', None)
+        name = target.get('name', yt_id)
+        try:
+            save_channels(database_channel)
+        except Exception as e:
+            print(f"Gagal simpan group {yt_id}: {e}", flush=True)
+            return jsonify({"status": "error", "message": "Gagal menyimpan perubahan."}), 500
+    return jsonify({"status": "success", "group": group, "channel_name": name,
+                    "message": f"Group {name} tersimpan."})
 
 
 @app.route('/api/operator/set_paused', methods=['POST'])

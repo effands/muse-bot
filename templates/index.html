@@ -1235,11 +1235,11 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
       </div>
 
       <div class="stats-grid">
-        <div class="stat s1"><div class="stat-lbl">TOTAL VIEWS</div><div class="stat-val" id="st-views" style="color:var(--accent)">0</div><div class="stat-note">All channels</div><div class="stat-ico">👁</div></div>
-        <div class="stat s2"><div class="stat-lbl">WATCH TIME (JAM)</div><div class="stat-val" id="st-watch" style="color:var(--accent2)">0</div><div class="stat-note">Est. 90 hari</div><div class="stat-ico">⏱</div></div>
-        <div class="stat s3"><div class="stat-lbl">SUBSCRIBERS</div><div class="stat-val" id="st-subs" style="color:var(--accent3)">0</div><div class="stat-note">Total</div><div class="stat-ico">👥</div></div>
-        <div class="stat s4"><div class="stat-lbl">ACTIVE TASKS</div><div class="stat-val" id="st-active" style="color:var(--green)">0</div><div class="stat-note">Running</div><div class="stat-ico">⚡</div></div>
-        <div class="stat s5"><div class="stat-lbl">CHANNEL</div><div class="stat-val" id="st-channels" style="color:var(--yellow)">0</div><div class="stat-note">Terhubung</div><div class="stat-ico">📺</div></div>
+        <div class="stat s1"><div class="stat-lbl">TOTAL VIEWS</div><div class="stat-val" id="st-views" style="color:var(--accent)">…</div><div class="stat-note">All channels</div><div class="stat-ico">👁</div></div>
+        <div class="stat s2"><div class="stat-lbl">WATCH TIME (JAM)</div><div class="stat-val" id="st-watch" style="color:var(--accent2)">…</div><div class="stat-note">Est. 90 hari</div><div class="stat-ico">⏱</div></div>
+        <div class="stat s3"><div class="stat-lbl">SUBSCRIBERS</div><div class="stat-val" id="st-subs" style="color:var(--accent3)">…</div><div class="stat-note">Total</div><div class="stat-ico">👥</div></div>
+        <div class="stat s4"><div class="stat-lbl">ACTIVE TASKS</div><div class="stat-val" id="st-active" style="color:var(--green)">…</div><div class="stat-note">Running</div><div class="stat-ico">⚡</div></div>
+        <div class="stat s5"><div class="stat-lbl">CHANNEL</div><div class="stat-val" id="st-channels" style="color:var(--yellow)">…</div><div class="stat-note">Terhubung</div><div class="stat-ico">📺</div></div>
       </div>
 
       <div class="dashboard-overview">
@@ -1265,14 +1265,14 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
           <div style="overflow-x:auto">
             <table style="width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap">
               <thead><tr style="text-align:left;color:var(--muted);font-family:var(--font-m);font-size:10px;border-bottom:1px solid var(--border)">
-                <th style="padding:6px 8px">CHANNEL</th><th style="padding:6px 8px">STATUS</th><th style="padding:6px 8px">UPDATED</th>
+                <th style="padding:6px 8px">CHANNEL</th><th style="padding:6px 8px">STATUS</th><th style="padding:6px 8px">GROUP</th><th style="padding:6px 8px">UPDATED</th>
                 <th style="padding:6px 8px;text-align:right">SUBSCRIBE</th><th style="padding:6px 8px;text-align:right">VIDEOS</th>
                 <th style="padding:6px 8px;text-align:right">VIEW 28D</th><th style="padding:6px 8px;text-align:right">VIEW 48H</th>
                 <th style="padding:6px 8px">TREND</th><th style="padding:6px 8px;text-align:right;width:64px" title="WATCH 30D (est.) — estimasi kasar, bukan data YouTube">WATCH 30D</th>
                 <th style="padding:6px 8px;text-align:right">AVG</th><th style="padding:6px 8px">AGE</th>
                 <th style="padding:6px 8px">MONETISASI</th><th style="padding:6px 8px">OPEN</th>
               </tr></thead>
-              <tbody id="ch-detail-tbody"><tr><td colspan="13" style="padding:10px 8px;color:var(--muted)">Memuat detail channel…</td></tr></tbody>
+              <tbody id="ch-detail-tbody"><tr><td colspan="14" style="padding:10px 8px;color:var(--muted)">Memuat detail channel…</td></tr></tbody>
             </table>
           </div>
           <div id="ch-detail-note" style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5"></div>
@@ -3145,7 +3145,7 @@ function lastUpdateFor(yt_id) {
 }
 // 🔥 v1.3.55: param showEmail — false = sembunyikan kolom EMAIL (dipakai Dashboard); default tampil (Task Monitor).
 function channelTableHtml(list, withMode, showNext, fill, showEmail) {
-  const head = `<thead><tr><th>CHANNEL</th><th>STATUS</th>${showEmail === false ? '' : '<th>EMAIL</th>'}${withMode ? '<th>MODE</th>' : ''}${showNext ? '<th>JADWAL BERIKUTNYA</th><th>UPDATE TERAKHIR</th>' : ''}</tr></thead>`;
+  const head = `<thead><tr><th>CHANNEL</th><th>STATUS</th><th>GROUP</th>${showEmail === false ? '' : '<th>EMAIL</th>'}${withMode ? '<th>MODE</th>' : ''}${showNext ? '<th>JADWAL BERIKUTNYA</th><th>UPDATE TERAKHIR</th>' : ''}</tr></thead>`;
   const rows = list.map(c => {
     const nx = showNext ? nextScheduleFor(c.yt_id) : null;
     const nextCell = !showNext ? '' : (!nx
@@ -3161,6 +3161,7 @@ function channelTableHtml(list, withMode, showNext, fill, showEmail) {
       + (c.paused ? ` <span class="pill p-yellow" style="font-size:9px;padding:2px 6px">⏸️ Dijeda</span>` : '')
       + (c.monetized ? ` <span class="pill p-green" style="font-size:9px;padding:2px 6px">💰 Monetisasi Aktif</span>` : '')
       + `</td>`
+      + `<td style="white-space:nowrap">${groupSelectHtml(c)}</td>`
       + (showEmail === false ? '' : `<td title="${escapeHtml(c.owner_email || '')} — klik untuk isi/ubah email" style="font-family:var(--font-m);font-size:11px;color:${c.owner_email ? 'var(--text)' : 'var(--muted)'};white-space:nowrap"><span onclick="editEmail('${c.yt_id}', this)" title="Klik untuk isi/ubah email" style="display:inline-block;max-width:190px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;cursor:pointer;border-bottom:1px dashed var(--muted)">${escapeHtml(c.owner_email || '—')}</span></td>`)
       + (withMode ? `<td style="white-space:nowrap"><span onclick="go('panel-tasks')" title="Lihat antrean approval" style="cursor:pointer">${c.autopilot === 'auto' ? '<span class="pill p-cyan" style="font-size:9px;padding:2px 6px">🤖 Full-Auto</span>' : '<span class="pill p-muted" style="font-size:9px;padding:2px 6px">👀 Approval</span>'}</span></td>` : '')
       + nextCell
@@ -3172,6 +3173,57 @@ function channelTableHtml(list, withMode, showNext, fill, showEmail) {
   // kolom nama menyusut pakai ellipsis di layar sempit; STATUS dan MODE
   // jadi rapat berdampingan, tidak ada lagi scroll menyamping di HP.
   return `<div style="${wrapStyle}"><table class="tbl ch-tbl">${head}<tbody>${rows}</tbody></table></div>`;
+}
+// 🔥 v1.3.68: kolom GROUP — dropdown ganti group (1 channel = 1 group).
+// Opsi: group yang sudah dipakai channel lain + "— Tanpa Group —" +
+// "＋ Buat group baru…" (jadi input inline, pola sama seperti editEmail).
+function groupListAll() {
+  const out = [];
+  (channels || []).forEach(c => { const g = (c.group || '').trim(); if (g && out.indexOf(g) === -1) out.push(g); });
+  return out;
+}
+function groupSelectHtml(c) {
+  const cur = (c.group || '').trim();
+  const opts = groupListAll().map(g => `<option value="${escapeHtml(g)}"${g === cur ? ' selected' : ''}>${escapeHtml(g)}</option>`).join('');
+  return `<select onchange="onGroupSelect(this, '${c.yt_id}')" title="Group channel ini — 1 channel = 1 group" style="font-size:11px;padding:2px 4px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);max-width:130px">`
+    + `<option value=""${cur ? '' : ' selected'}>— Tanpa Group —</option>` + opts
+    + `<option value="__new__">＋ Buat group baru…</option></select>`;
+}
+function onGroupSelect(sel, ytId) {
+  const td = sel.closest('td'); if (!td) return;
+  if (sel.value === '__new__') {
+    td.dataset.orig = td.innerHTML; td.dataset.yt = ytId;
+    td.innerHTML = `<span style="display:flex;gap:4px;align-items:center"><input class="grp-input" type="text" placeholder="Nama group baru" maxlength="40" style="width:130px;padding:3px 6px;border:1px solid var(--accent);border-radius:6px;background:var(--bg);color:var(--text);font-size:11px"><button class="btn btn-p btn-sm" onclick="saveChannelGroupInput(this)">✓</button><button class="btn btn-sm" onclick="cancelEditGroup(this)">✕</button></span>`;
+    const inp = td.querySelector('input'); inp.focus();
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') saveChannelGroupInput(inp);
+      if (e.key === 'Escape') cancelEditGroup(inp);
+    });
+    return;
+  }
+  saveChannelGroup(ytId, sel.value, sel);
+}
+function cancelEditGroup(el) {
+  const td = el.closest('td'); if (!td) return;
+  td.innerHTML = td.dataset.orig || '';
+}
+async function saveChannelGroupInput(el) {
+  const td = el.closest('td'); if (!td) return;
+  const inp = td.querySelector('.grp-input'); if (!inp) return;
+  const name = inp.value.trim();
+  if (!name) { toast('Nama group tidak boleh kosong.', 'err'); return; }
+  await saveChannelGroup(td.dataset.yt || '', name, td);
+}
+async function saveChannelGroup(ytId, group, el) {
+  const res = await _fetch('/api/set_channel_group', { method: 'POST', body: JSON.stringify({ yt_id: ytId, group }) });
+  const d = await res.json().catch(() => ({}));
+  if (res.ok && d.status === 'success') {
+    toast(group ? `Group tersimpan → ${group}.` : 'Channel keluar dari group.', 'ok');
+    loadChannels();
+  } else {
+    toast(d.message || 'Gagal menyimpan group.', 'err');
+    loadChannels();
+  }
 }
 function editEmail(ytId, el) {
   const td = el.closest('td'); if (!td) return;
@@ -3208,7 +3260,7 @@ async function saveChannelEmail(el) {
 }
 function renderTaskChannels() {
   const el = document.getElementById('tm-channels'); if (!el) return;
-  if (el.querySelector('.em-input')) return;
+  if (el.querySelector('.em-input') || el.querySelector('.grp-input')) return;
   const cnt = document.getElementById('tm-ch-count'); if (cnt) cnt.textContent = channels.length + ' channel';
   // 🔥 v1.3.39: simpan posisi scroll tabel sebelum render ulang — tabel
   // di-render ulang tiap poll (2 detik), dan wrapper baru selalu mulai
@@ -3223,7 +3275,7 @@ function renderTaskChannels() {
 }
 function renderDashboardChannels() {
   const el = document.getElementById('dash-channels'); if (!el) return;
-  if (el.querySelector('.em-input')) return;
+  if (el.querySelector('.em-input') || el.querySelector('.grp-input')) return;
   const cnt = document.getElementById('dash-ch-count'); if (cnt) cnt.textContent = channels.length + ' channel';
   // 🔥 v1.3.39: simpan posisi scroll (alasan sama seperti renderTaskChannels).
   const prev = el.querySelector('div');
@@ -3386,8 +3438,43 @@ function renderCalendar() {
     groups[key].push({ dt, t: h, fromHistory: true });
   });
 
+  // — 🔥 v1.3.68: slot RUTIN hari ini — channel daily_playlist yang belum
+  // punya video hari ini tampil sebagai baris "🔁 Playlist harian (rutin)"
+  // jam 06:10, supaya jadwal rutin kelihatan di kalender walau videonya
+  // belum dibuat/di-post (dibuat cron tiap pagi + riset fresh). Bila
+  // channel itu sudah punya video hari ini, baris rutin tidak tampil
+  // (video aslinya yang tampil).
+  const _todayKey = todayStart.getFullYear() + '-' + String(todayStart.getMonth() + 1).padStart(2, '0') + '-' + String(todayStart.getDate()).padStart(2, '0');
+  const _tomorrowStart = new Date(todayStart.getTime() + 86400000);
+  const _hasTaskToday = (yt) => {
+    for (const t of active) {
+      const y2 = (t.blueprint && t.blueprint.yt_id) || t.yt_id || '';
+      if (y2 !== yt) continue;
+      const dt2 = calParseDt(t.time || (t.blueprint && t.blueprint.publish_date) || '');
+      if (dt2 && dt2 >= todayStart && dt2 < _tomorrowStart) return true;
+    }
+    for (const h of (calData.history || [])) {
+      const y2 = (h.blueprint && h.blueprint.yt_id) || h.yt_id || '';
+      if (y2 !== yt) continue;
+      if (h.finished_date === _todayKey) return true;
+      const dt2 = calParseDt(h.time || (h.blueprint && h.blueprint.publish_date) || '');
+      if (dt2 && dt2 >= todayStart && dt2 < _tomorrowStart) return true;
+    }
+    return false;
+  };
+  let _rutinToday = 0;
+  chs.forEach(c => {
+    if (!c.daily_playlist) return;
+    if (filter && c.yt_id !== filter) return;
+    if (_hasTaskToday(c.yt_id)) return;
+    _rutinToday++;
+    const dt = new Date(todayStart.getTime() + 6 * 3600000 + 10 * 60000);
+    if (!groups[_todayKey]) groups[_todayKey] = [];
+    groups[_todayKey].push({ dt, t: { title: '🔁 Playlist harian (rutin)', yt_id: c.yt_id, _rutin: true, _rutinLate: now > dt }, fromHistory: false });
+  });
+
   const pausedCount = chs.filter(c => c.paused).length;
-  if (sumEl) sumEl.textContent = `${totalUpcoming} video terjadwal 30 hari ke depan · ${totalPending} menunggu approval · ${totalPaused} ditahan (channel dijeda) · ${pausedCount} channel dijeda` + (overdue.length ? ` · ⚠️ ${overdue.length} terlambat` : '');
+  if (sumEl) sumEl.textContent = `${totalUpcoming} video terjadwal 30 hari ke depan · ${totalPending} menunggu approval · ${totalPaused} ditahan (channel dijeda) · ${pausedCount} channel dijeda` + (overdue.length ? ` · ⚠️ ${overdue.length} terlambat` : '') + (_rutinToday ? ` · 🔁 ${_rutinToday} slot rutin hari ini` : '');
 
   let html = '';
   const calRows = [];
@@ -3418,7 +3505,13 @@ function renderCalendar() {
 
 function calTableRow(dt, t, chName, isPaused, fromHistory, dateCell) {
   const yt = (t.blueprint && t.blueprint.yt_id) || t.yt_id || '';
-  const s = fromHistory ? { txt: '📤 Sudah di-upload', cls: 'p-cyan' } : calTaskStatus(t, isPaused(yt));
+  // 🔥 v1.3.68: baris slot rutin (bukan task nyata) — statusnya menjelaskan
+  // slotnya, bukan status task.
+  const s = t._rutin
+    ? (isPaused(yt) ? { txt: '⏸️ Dijeda — rutin tertahan', cls: 'p-muted' }
+        : t._rutinLate ? { txt: '🔁 Rutin — belum dibuat hari ini', cls: 'p-yellow' }
+        : { txt: '🔁 Rutin — dibuat ±06:10', cls: 'p-muted' })
+    : fromHistory ? { txt: '📤 Sudah di-upload', cls: 'p-cyan' } : calTaskStatus(t, isPaused(yt));
   const hhmm = String(dt.getHours()).padStart(2, '0') + ':' + String(dt.getMinutes()).padStart(2, '0');
   return `<tr style="border-bottom:1px solid var(--border)">${dateCell}<td style="padding:6px 8px;white-space:nowrap">${hhmm}</td><td style="padding:6px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(t.title || 'Task')}">${escapeHtml(t.title || 'Task')}</td><td style="padding:6px 8px;white-space:nowrap">${escapeHtml(chName(yt))}</td><td style="padding:6px 8px;white-space:nowrap"><span class="pill ${s.cls}">${s.txt}</span></td></tr>`;
 }
@@ -6000,7 +6093,11 @@ function fetchAnalytics(force) {
   _anLoading++; _setBtnLoading('ch-detail-refresh', _anLoading, '↻ Refresh');
   fetch('/api/get_youtube_analytics' + (force ? '?force=1' : '')).then(r => r.json()).then(data => {
     analyticsData = data; const f = document.getElementById('analytics_filter'); f.innerHTML = '<option value="ALL">⬡ ALL CHANNELS</option>';
-    data.forEach(d => f.innerHTML += `<option value="${escapeHtml(d.yt_id)}">${escapeHtml(d.name)}</option>`); renderAnalytics(); fetchVideoStats(false); fetchProjectQuotas(); fetchFormulaAnalytics(); fetchMonetization(); fetchNodeStatus();
+    data.forEach(d => f.innerHTML += `<option value="${escapeHtml(d.yt_id)}">${escapeHtml(d.name)}</option>`);
+    // 🔥 v1.3.68: opsi filter per GROUP (dari field `group` channel).
+    const _groups = []; (channels || []).forEach(c => { const g = (c.group || '').trim(); if (g && _groups.indexOf(g) === -1) _groups.push(g); });
+    if (_groups.length) { f.innerHTML += '<optgroup label="👥 GROUP">' + _groups.map(g => `<option value="group:${escapeHtml(g)}">👥 ${escapeHtml(g)}</option>`).join('') + '</optgroup>'; }
+    renderAnalytics(); fetchVideoStats(false); fetchProjectQuotas(); fetchFormulaAnalytics(); fetchMonetization(); fetchNodeStatus();
     if (force) toast('Data channel diperbarui.', 'success');
   }).catch(() => {
     if (force) {
@@ -6020,6 +6117,15 @@ function renderAnalytics() {
   if (fv === 'ALL') {
     monBox.style.display = 'none'; analyticsData.forEach(d => { tV += d.views; tS += d.subs; tW += d.watch_hours; cL.push(d.name); cV.push(d.views); cS.push(d.subs); });
     drawChart('Perbandingan Views & Subs', cL, cV, cS, 'bar');
+  } else if (fv.indexOf('group:') === 0) {
+    // 🔥 v1.3.68: filter per GROUP — kartu + grafik menjumlah channel
+    // dalam group itu saja; tabel DETAIL CHANNEL ikut terfilter
+    // (renderChannelTable membaca filter yang sama).
+    monBox.style.display = 'none';
+    const gname = fv.slice(6);
+    const gids = {}; (channels || []).forEach(c => { if ((c.group || '').trim() === gname) gids[c.yt_id] = true; });
+    analyticsData.forEach(d => { if (gids[d.yt_id]) { tV += d.views; tS += d.subs; tW += d.watch_hours; cL.push(d.name); cV.push(d.views); cS.push(d.subs); } });
+    drawChart('Perbandingan Views & Subs — Group ' + gname, cL, cV, cS, 'bar');
   } else {
     monBox.style.display = 'block'; const d = analyticsData.find(x => x.yt_id === fv);
     if (d) {
@@ -6653,16 +6759,26 @@ function monSortBy(key) {
 }
 function renderChannelTable() {
   const tb = document.getElementById('ch-detail-tbody'); if (!tb) return;
-  const rows = analyticsData || [];
+  let rows = analyticsData || [];
+  // 🔥 v1.3.68: tabel ikut filter GROUP dari dropdown atas (sama seperti
+  // kartu statistik di renderAnalytics).
+  const _fv = (document.getElementById('analytics_filter') || {}).value || 'ALL';
+  if (_fv.indexOf('group:') === 0) {
+    const _gname = _fv.slice(6);
+    const _gids = {}; (channels || []).forEach(c => { if ((c.group || '').trim() === _gname) _gids[c.yt_id] = true; });
+    rows = rows.filter(d => _gids[d.yt_id]);
+  }
   const cnt = document.getElementById('ch-detail-count'); if (cnt) cnt.textContent = rows.length + ' channel';
   const noteEl = document.getElementById('ch-detail-note');
   const sumEl = document.getElementById('ch-monet-summary');
   const chById = {}; (channels || []).forEach(c => { chById[c.yt_id] = c; });
   if (!rows.length) {
     const loading = (channels || []).length > 0;
-    tb.innerHTML = '<tr><td colspan="13" style="padding:10px 8px;color:var(--muted)">'
-      + (loading ? 'Memuat detail channel…'
-                 : 'Belum ada channel tertaut — tambahkan lewat tombol "➕ Tambah Channel" di atas atau dari Settings.')
+    tb.innerHTML = '<tr><td colspan="14" style="padding:10px 8px;color:var(--muted)">'
+      + ((_fv.indexOf('group:') === 0 && (analyticsData || []).length)
+          ? 'Tidak ada data untuk group ini.'
+          : (loading ? 'Memuat detail channel…'
+                     : 'Belum ada channel tertaut — tambahkan lewat tombol "➕ Tambah Channel" di atas atau dari Settings.'))
       + '</td></tr>';
     if (noteEl) noteEl.textContent = '';
     if (sumEl) sumEl.innerHTML = '';
@@ -6693,6 +6809,7 @@ function renderChannelTable() {
     return '<tr style="border-bottom:1px solid var(--border)">'
       + '<td style="padding:6px 8px">' + thumb + '<b>' + escapeHtml(d.name) + '</b></td>'
       + '<td style="padding:6px 8px">' + statusPillHTML(d.status) + (paused ? ' <span class="pill p-yellow">⏸️ Dijeda</span>' : '') + '</td>'
+      + '<td style="padding:6px 8px">' + escapeHtml((c.group || '').trim() || '—') + '</td>'
       + '<td style="padding:6px 8px">' + escapeHtml(d.updated_label || '—') + '</td>'
       + '<td style="padding:6px 8px;text-align:right">' + _fmtNum(d.subs) + '</td>'
       + '<td style="padding:6px 8px;text-align:right">' + _fmtNum(d.videos) + '</td>'

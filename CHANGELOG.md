@@ -3,6 +3,9 @@
 Catatan perubahan per versi. Dibaca operator saat start dan ditampilkan di
 pesan restart Telegram, supaya Bos langsung tahu apa yang berubah.
 
+## 1.3.32
+- Judul playlist tidak lagi kembar antar channel: sudut + pola judul sekarang dari urutan channel (bukan dari hash yang kebetulan sama) — Barang Unick dan Mahewa sebelumnya sama-sama dapat sudut "Spesial", sekarang dijamin beda sampai 48 channel.
+
 ## 1.3.31
 - Konfirmasi bot sekarang bisa direvisi: ketik saja yang mau diubah (mis. "jam 5 sore", "tema lofi", "cuma Aruya") — bot mengubahnya lalu konfirmasi ulang, tidak perlu batal.
 - Jadwal beruntun per channel diperbaiki (sebelumnya semua channel dapat jam yang sama karena bug penulisan tanggal).

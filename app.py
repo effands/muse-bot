@@ -10249,11 +10249,13 @@ def _seo_ensure_different(new, clean):
     return new
 
 
-# v1.3.4: sudut judul per channel (12 pilihan, indeks = crc32(yt_id) % 12
-# — ke-4 channel yang ada sekarang terpetakan ke sudut yang berbeda:
-# Aruya 'Paling Syahdu', Barang Unick 'Spesial', Cozy Sax 'Paling Enak',
-# Romantic 'Full Album'). Satu referensi yang sama tidak lagi
-# menghasilkan judul yang sama persis di semua channel.
+# v1.3.4: sudut judul per channel (12 pilihan). v1.3.32: pemetaan sudut
+# + pola TIDAK lagi dari crc32(yt_id) % 12 — hash itu menabrakkan
+# Barang Unick & Mahewa ke sudut 'Spesial' yang sama, jadi judul final
+# keduanya identik karakter per karakter. Sekarang dari SLOT urutan
+# channel di channels_db.json (diurutkan menurut yt_id): 48 kombinasi
+# (sudut, pola) yang unik sampai 48 channel. Satu referensi yang sama
+# tidak lagi menghasilkan judul yang sama persis di dua channel.
 _SEO_ANGLE_ID = ('Terbaik', 'Paling Enak', 'Buat Santai', 'Romantis',
                  'Paling Menyentuh', 'Full Album', 'Pilihan', 'Spesial',
                  'Paling Hits', 'Enak Didengar', 'Paling Adem',
@@ -10270,26 +10272,51 @@ _SEO_INCOMPLETE_TAIL = frozenset({
     'really'})
 
 
+_SEO_SLOT_COUNT = 48  # 12 sudut x 4 pola — kombinasi unik sampai 48 channel
+
+
+def _seo_channel_slot(channel_key):
+    """Slot judul unik per channel (0-47), dari URUTAN channel di
+    channels_db.json (diurutkan menurut yt_id) — bukan dari hash, supaya
+    dua channel tidak pernah dapat kombinasi (sudut, pola) yang sama.
+    Channel yang belum ada di daftar (atau daftar tidak terbaca) memakai
+    fallback crc32 — deterministik, tapi bisa bertabrakan. Slot berubah
+    bila urutan daftar channel berubah (mis. tambah channel baru yang
+    urutannya di tengah); judul video yang sudah tayang tidak ikut
+    berubah — judul ditulis sekali saat task dibuat."""
+    key = (channel_key or '').strip()
+    if not key:
+        return 0
+    try:
+        ids = sorted(c.get('yt_id', '') for c in load_channels()
+                     if isinstance(c, dict) and c.get('yt_id'))
+        if key in ids:
+            return ids.index(key) % _SEO_SLOT_COUNT
+    except Exception:
+        pass
+    return zlib.crc32(key.encode('utf-8')) % _SEO_SLOT_COUNT
+
+
 def _seo_channel_angle(channel_key, lang='id'):
-    """Sudut judul untuk satu channel ('' = tanpa sudut). Deterministik
-    dari yt_id: satu channel selalu dapat sudut yang sama."""
+    """Sudut judul untuk satu channel ('' = tanpa sudut). Dari slot
+    urutan channel: slot % 12. Satu channel selalu dapat sudut yang
+    sama selama urutan daftar channel tidak berubah."""
     key = (channel_key or '').strip()
     if not key:
         return ''
     angles = _SEO_ANGLE_EN if lang == 'en' else _SEO_ANGLE_ID
-    return angles[zlib.crc32(key.encode('utf-8')) % len(angles)]
+    return angles[_seo_channel_slot(key) % len(angles)]
 
 
 def _seo_channel_pattern(channel_key):
-    """Pola susunan judul per channel (0-3), diturunkan dari indeks sudut
-    (12 sudut -> 4 pola: indeks // 3). Deterministik: satu channel selalu
-    memakai pola yang sama, dan ke-4 channel yang ada sekarang memakai
-    4 pola yang berbeda (Aruya 3, Barang 2, Cozy 0, Romantic 1)."""
+    """Pola susunan judul per channel (0-3). Dari slot: (slot // 12 +
+    slot) % 4 — pola bergeser tiap putaran 12 slot, jadi kombinasi
+    (sudut, pola) unik untuk 48 slot pertama, bukan hanya 12."""
     key = (channel_key or '').strip()
     if not key:
         return 0
-    idx = zlib.crc32(key.encode('utf-8')) % len(_SEO_ANGLE_ID)
-    return idx // 3
+    slot = _seo_channel_slot(key)
+    return (slot // len(_SEO_ANGLE_ID) + slot) % 4
 
 
 def _seo_apply_angle(base, angle, channel_key):
@@ -10345,7 +10372,9 @@ def _playlist_rewrite_title(ref_title, duration_sec=None, ref_channel='', channe
     lama (inti referensi). Selalu berbeda dari judul referensi.
     v1.3.4: akhir menggantung dibuang ('... Cocok Untuk') + sudut per
     channel (channel_key = yt_id) supaya satu referensi tidak
-    menghasilkan judul yang sama di semua channel."""
+    menghasilkan judul yang sama di semua channel. v1.3.32: sudut+pola
+    dari slot urutan channel, bukan crc32 (crc32 menabrakkan Barang
+    Unick & Mahewa ke sudut 'Spesial' yang sama)."""
     try:
         clean = _seo_words(ref_title)
         if ref_channel:

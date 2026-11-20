@@ -3963,9 +3963,10 @@ def _send_make_created_message(token, chat_id, kind, d, resp):
                   "🚀 *Langsung masuk antrean render (mode Full-Auto)* — ditunggu kabar selesainya ya Bos! 💪"]
     send_message(token, chat_id, "\n".join(lines))
 
-def _make_pick_channel(channels):
+def _make_pick_channel(channels, multi=False):
     """Kembalikan (channel_terpilih_atau_None, pesan_pilih_atau_None).
-    1 channel → langsung pakai; >1 → minta pilih nomor."""
+    1 channel → langsung pakai; >1 → minta pilih nomor.
+    multi=True → boleh jawab 'semua channel' (Short & Playlist)."""
     if not channels:
         return None, None
     if len(channels) == 1:
@@ -3974,7 +3975,10 @@ def _make_pick_channel(channels):
     for i, c in enumerate(channels, 1):
         mark = " ⏸️ Dijeda" if c.get('paused') else ""
         lines.append(f"{i}. {_tg_escape(_channel_display_name(c))}{mark}")
-    lines.append("\nBalas dengan angkanya saja (mis. `1`).")
+    if multi:
+        lines.append("\nBalas dengan angkanya saja (mis. `1`), ketik nama channelnya, atau `semua channel` untuk semua channel.")
+    else:
+        lines.append("\nBalas dengan angkanya saja (mis. `1`) atau ketik nama channelnya.")
     return None, "\n".join(lines)
 
 def _make_check_bg_or_cancel(token, chat_id, draft):
@@ -4010,7 +4014,7 @@ def _make_ask_step(token, chat_id, draft):
             lines.append("\nBalas angkanya atau ketik namanya. Ketik `lewati` untuk pakai Cozy Sax Relaxing (default).")
             send_message(token, chat_id, "\n".join(lines))
             return
-        _ch, msg = _make_pick_channel(load_channels())
+        _ch, msg = _make_pick_channel(load_channels(), multi=(kind in ('short', 'playlist')))
         if msg:
             send_message(token, chat_id, msg)
         return
@@ -4285,7 +4289,7 @@ def _start_make_short(token, chat_id, raw_cmd):
             pre['script'] = parts[2][:2000]
         if len(parts) > 3 and parts[3]:
             pre['cta'] = parts[3][:100]
-    ch, ask_msg = _make_pick_channel(channels)
+    ch, ask_msg = _make_pick_channel(channels, multi=True)
     draft = {"kind": "short", "step": "theme", "data": dict(pre)}
     if ch is None:
         draft['step'] = 'channel'
@@ -4874,7 +4878,7 @@ def _start_make_playlist(token, chat_id, raw_cmd):
                      "Jawab tiap langkah satu per satu — ketik /batal kapan saja untuk berhenti.")
         _make_ask_step(token, chat_id, draft)
         return
-    ch, ask_msg = _make_pick_channel(channels)
+    ch, ask_msg = _make_pick_channel(channels, multi=True)
     if ch is None:
         draft['step'] = 'channel'
         _save_make_draft(chat_id, draft)
@@ -5724,8 +5728,8 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
             ch = channels[idx] if 0 <= idx < len(channels) else None
         except Exception:
             ch = None
-        if ch is None and kind in ('playlist', 'zumo', 'zumobank', 'zumorakit'):
-            # Playlist/Zumo/bank/rakit: jawaban bebas diterima — ketik nama channel juga boleh.
+        if ch is None and kind in ('playlist', 'zumo', 'zumobank', 'zumorakit', 'short', 'long'):
+            # Playlist/Zumo/bank/rakit/Short/Long: jawaban bebas diterima — ketik nama channel juga boleh.
             matched, all_flag = _nlu_match_channels(_nlu_clean(ans), channels)
             if all_flag:
                 if kind == 'zumo':
@@ -5737,6 +5741,27 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
                 elif kind == 'zumorakit':
                     send_message(token, chat_id,
                                  "Video rakitan dibuat 1 channel sekali proses Bos — pilih 1 channel ya: balas angkanya atau ketik namanya.")
+                elif kind == 'long':
+                    send_message(token, chat_id,
+                                 "Video long dibuat 1 channel sekali proses Bos — pilih 1 channel ya: balas angkanya atau ketik namanya.")
+                elif kind == 'short':
+                    # 🔥 v1.3.65: 'semua channel' untuk Short TIDAK ditolak lagi.
+                    # Wizard memang 1 channel, tapi jalur NLU bisa
+                    # multi-channel (jadwal + konfirmasi sekali, lalu
+                    # eksekusi per channel). Draft wizard dibersihkan,
+                    # order dilempar ke NLU. Catatan: judul/hook/naskah/
+                    # CTA custom dari one-shot /buatshort tidak dibawa —
+                    # NLU Short memakai bank konten per niche; konfirmasi
+                    # NLU menampilkan rencananya sebelum dieksekusi.
+                    _clear_make_draft(chat_id)
+                    _slots = {'channels': 'all'}
+                    if d.get('theme'):
+                        _slots['niche'] = d.get('theme')
+                    _pending = {'intent': 'buat_short', 'slots': _slots,
+                                'awaiting': None, 'confirmed': False,
+                                'created_at': time.time()}
+                    _save_nlu_pending(chat_id, _pending)
+                    _nlu_advance(token, chat_id, _pending)
                 else:
                     # 🔥 v1.3.21: 'semua' untuk Playlist TIDAK ditolak lagi.
                     # Wizard memang 1 channel, tapi jalur NLU bisa

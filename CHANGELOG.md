@@ -1,3 +1,7 @@
+## 1.3.65
+- Telegram /buatshort: jawaban "semua channel" kini diterima — tidak ditolak lagi. Wizard 1 channel dialihkan ke jalur NLU multi-channel (tanya tema, konfirmasi sekali, lalu Short dibuat untuk semua 8 channel dengan jadwal per channel). Ketik nama channel ("Aruya", "cozy sax") juga kini diterima sebagai jawaban, bukan cuma angka 1–8. Prompt pilih channel sudah menyebut kedua opsi ini.
+- Telegram /buatlong: "semua channel" tetap ditolak dengan penjelasan (video long 1 channel sekali proses) — sama seperti aturan NLU yang sudah ada; ketik nama channel kini diterima.
+
 ## 1.3.64
 - Ganti PIN Panel: tombol "Ganti PIN" kini sejajar 1 baris dengan ketiga field (PIN Lama, PIN Baru, Ulangi PIN Baru) — sama seperti tombol Riset Playlist.
 - Input jam (Auto Shorts "Buat/Tayang", Batch Creator) yang tadinya putih kini mengikuti tema: `input[type=time]` masuk ke aturan input gelap + `color-scheme` mengikuti tema (gelap/terang) supaya ikon jam & pemilih waktunya juga gelap.

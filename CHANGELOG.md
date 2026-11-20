@@ -1,3 +1,7 @@
+## 1.3.59
+- Kalender Jadwal dirapatkan: kartu per hari kini jauh lebih hemat tempat (header lebih tipis, baris video lebih rapat — padding & ikon diperkecil, judul 12px), satu hari dengan 1 video tidak lagi memakan satu layar penuh. Hanya kalender yang berubah; baris task di Task Monitor tetap seperti semula.
+- Shorts Muse: form Buat Short Baru dan Daftar Shorts Muse kini tersusun atas-bawah (1 kolom) — dulu bersebelahan, kolom daftar sempit sampai tombol "Tayang!" terpotong di tepi.
+
 ## 1.3.58
 - Tombol ↻ Refresh kini menunjukkan tanda loading: ikon berputar + teks "Memuat…", tombol nonaktif selama data diambil, lalu notifikasi "Data channel diperbarui." / "Statistik video diperbarui." (atau pesan gagal) — berlaku untuk tombol Refresh DETAIL CHANNEL dan STATISTIK PER VIDEO, termasuk saat auto-update 5 menit jalan.
 - Daftar video di STATISTIK PER VIDEO dibatasi tinggi 360px dengan scroll di dalam kartu (header kolom tetap terlihat saat scroll) — halaman tidak lagi memanjang sampai 31 video.

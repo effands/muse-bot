@@ -649,6 +649,15 @@ input[type=color] { padding:0; height:36px; width:100%; border:1px solid var(--b
 .task-name { font-size:13px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:2px; }
 .task-meta { font-family:var(--font-m); font-size:10px; color:var(--muted); }
 
+/* 🔥 v1.3.59: Kalender Jadwal hemat tempat — kartu hari & baris video rapat
+   (scoped .cal-day; .task-row di Task Monitor tidak ikut berubah). */
+.cal-day { margin-bottom:10px !important; }
+.cal-day .card-head { padding:8px 14px; }
+.cal-day .cal-rows { padding:2px 14px 8px; }
+.cal-day .task-row { padding:6px 10px; gap:8px; margin-bottom:6px; }
+.cal-day .task-icon { font-size:15px; width:24px; }
+.cal-day .task-name { font-size:12px; }
+
 /* 🔥 CSS BARU COLLAPSE & PAGINATION */
 .ch-group-head { cursor: pointer; user-select: none; transition: 0.2s; }
 .ch-group-head:hover { filter: brightness(1.1); }
@@ -2052,7 +2061,9 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         <div><div class="sh-title"><svg class="nav-ic" style="width:18px;height:18px;vertical-align:-3px"><use href="#ic-shorts"/></svg> Shorts Muse</div><div class="sh-sub">Short vertikal 1080x1920 dari naskah + CTA — dibuat Muse, di-render &amp; di-upload VPS</div></div>
       </div>
 
-      <div class="g2">
+      <!-- 🔥 v1.3.59: 1 kolom — form Buat Short di atas, Daftar Shorts di bawah
+           (dulu bersebelahan, kolom daftar sempit sampai tombol terpotong). -->
+      <div class="g2" style="grid-template-columns:1fr">
         <div class="form-section sm-form">
           <div class="fs-title"><svg class="nav-ic"><use href="#ic-shorts"/></svg> Buat Short Baru</div>
           <div class="g21">
@@ -3364,7 +3375,7 @@ function renderCalendar() {
 
   let html = '';
   if (overdue.length) {
-    html += `<div class="card" style="margin-bottom:14px;border-color:rgba(255,77,109,.4)"><div class="card-head"><span class="card-title" style="color:var(--accent2)">⚠️ TERLAMBAT — JADWAL SUDAH LEWAT (${overdue.length})</span></div><div style="padding:6px 16px 10px">` +
+    html += `<div class="card cal-day" style="border-color:rgba(255,77,109,.4)"><div class="card-head"><span class="card-title" style="color:var(--accent2)">⚠️ TERLAMBAT — JADWAL SUDAH LEWAT (${overdue.length})</span></div><div class="cal-rows">` +
       overdue.map(({ dt, t }) => calDayRow(dt, t, chName, isPaused)).join('') + `</div></div>`;
   }
   const keys = Object.keys(groups).sort();
@@ -3375,7 +3386,7 @@ function renderCalendar() {
     const items = groups[key].sort((a, b) => a.dt - b.dt);
     const d0 = items[0].dt;
     const dayLbl = d0.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-    html += `<div class="card" style="margin-bottom:14px"><div class="card-head"><span class="card-title">📅 ${dayLbl}</span><span class="pill p-cyan">${items.length} video</span></div><div style="padding:6px 16px 10px">` +
+    html += `<div class="card cal-day"><div class="card-head"><span class="card-title">📅 ${dayLbl}</span><span class="pill p-cyan">${items.length} video</span></div><div class="cal-rows">` +
       items.map(({ dt, t, fromHistory }) => calDayRow(dt, t, chName, isPaused, fromHistory)).join('') + `</div></div>`;
   });
   daysEl.innerHTML = html;

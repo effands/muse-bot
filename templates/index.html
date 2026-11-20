@@ -524,6 +524,7 @@ body::before {
 .tbl th { font-family:var(--font-m); font-size:9px; color:var(--muted); letter-spacing:.12em; text-align:left; padding:0 0 10px; border-bottom:1px solid var(--border); }
 .tbl td { padding:10px 0; border-bottom:1px solid var(--border); vertical-align:middle; }
 .tbl tr:last-child td { border-bottom:none; }
+.ch-tbl thead th { position:sticky; top:0; background:var(--card); z-index:1; }
 
 .fg { display:flex; flex-direction:column; gap:5px; margin-bottom:14px; }
 .fg:last-child { margin-bottom:0; }
@@ -2962,11 +2963,11 @@ function channelTableHtml(list, withMode, showNext) {
       + (c.paused ? ` <span class="pill p-yellow" style="font-size:9px;padding:2px 6px">⏸️ Dijeda</span>` : '')
       + (c.monetized ? ` <span class="pill p-green" style="font-size:9px;padding:2px 6px">💰 Monetisasi Aktif</span>` : '')
       + `</td>`
-      + (withMode ? `<td style="white-space:nowrap">${c.autopilot === 'auto' ? '<span class="pill p-cyan" style="font-size:9px;padding:2px 6px">🤖 Full-Auto</span>' : '<span class="pill p-muted" style="font-size:9px;padding:2px 6px">👀 Approval</span>'}</td>` : '')
+      + (withMode ? `<td style="white-space:nowrap"><span onclick="go('panel-tasks')" title="Lihat antrean approval" style="cursor:pointer">${c.autopilot === 'auto' ? '<span class="pill p-cyan" style="font-size:9px;padding:2px 6px">🤖 Full-Auto</span>' : '<span class="pill p-muted" style="font-size:9px;padding:2px 6px">👀 Approval</span>'}</span></td>` : '')
       + nextCell
       + `</tr>`;
   }).join('');
-  return `<div style="overflow-x:auto"><table class="tbl" style="min-width:420px">${head}<tbody>${rows}</tbody></table></div>`;
+  return `<div style="overflow-x:auto;max-height:280px;overflow-y:auto"><table class="tbl ch-tbl" style="min-width:420px">${head}<tbody>${rows}</tbody></table></div>`;
 }
 function renderTaskChannels() {
   const el = document.getElementById('tm-channels'); if (!el) return;

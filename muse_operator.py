@@ -5630,8 +5630,22 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
                     send_message(token, chat_id,
                                  "Video rakitan dibuat 1 channel sekali proses Bos — pilih 1 channel ya: balas angkanya atau ketik namanya.")
                 else:
-                    send_message(token, chat_id,
-                                 "😅 *Playlist dibuat 1 channel sekali proses Bos* — pilih 1 channel ya: balas angkanya atau ketik namanya.")
+                    # 🔥 v1.3.21: 'semua' untuk Playlist TIDAK ditolak lagi.
+                    # Wizard memang 1 channel, tapi jalur NLU bisa
+                    # multi-channel (riset + auto-pick per channel).
+                    # Draft wizard dibersihkan, order dilempar ke NLU:
+                    # login dicek, tema diambil dari jawaban ini, lalu
+                    # konfirmasi sekali sebelum dieksekusi.
+                    _clear_make_draft(chat_id)
+                    _th = _nlu_extract_playlist_theme(_nlu_clean(ans), channels)
+                    _slots = {'channels': 'all',
+                              'playlist_theme': _th,
+                              'publish_now': True}
+                    _pending = {'intent': 'buat_playlist', 'slots': _slots,
+                                'awaiting': None, 'confirmed': False,
+                                'created_at': time.time()}
+                    _save_nlu_pending(chat_id, _pending)
+                    _nlu_advance(token, chat_id, _pending)
                 return True
             if len(matched) == 1:
                 ch = matched[0]
@@ -6306,6 +6320,7 @@ def _nlu_match_channels(clean, channels):
     all_flag = ('semua channel' in clean or 'ketiga' in clean
                 or 'tiga channel' in clean
                 or bool(re.search(r'\bke\s*3\b', clean))
+                or bool(re.search(r'\bsemua\b', clean))
                 or ('semua' in clean and 'channel' in clean))
     matched = []
     for ch in channels or []:
@@ -6710,6 +6725,11 @@ def _nlu_extract_playlist_theme(clean, channels):
     # malaysia" temanya 'lagu malaysia', bukan 'sebulan konten lagu
     # malaysia' (pernah: 'sebulan' malah cocok ke video 'Gaji Sebulan').
     t = re.sub(r'\b(sebulan|seminggu|sehari|selama|konten|bulan|minggu)\b', ' ', t)
+    # 🔥 v1.3.21: hitungan hari bukan tema — '7 hari kedepan musik
+    # malaysia' temanya 'musik malaysia', bukan '7 hari kedepan musik
+    # malaysia'. ('hari raya' aman: yang dibuang hanya angka+hari.)
+    t = re.sub(r'\b\d+\s*hari\b', ' ', t)
+    t = re.sub(r'\b(kedepan|ke\s+depan)\b', ' ', t)
     # Kata sisa durasi (bila segmen durasi lolos karena format aneh).
     t = re.sub(r'\b(minimal|maksimal|minimum|maksimum|durasi|menit|mnt)\b', ' ', t)
     for c in (channels or []):
@@ -8964,10 +8984,16 @@ def handle_user_command(token, chat_id, text, message_id=None):
             return
         _draft = _load_make_draft(chat_id)
         if isinstance(_draft, dict) and _draft.get("expired"):
-            send_message(token, chat_id,
-                         "⌛ *Eh Bos, draft buat videonya sudah hangus (>30 menit tidak ada kabar)* 😅\n"
-                         "Ketik /buatshort atau /buatlong untuk mulai lagi ya Bos!")
-            return
+            # 🔥 v1.3.21: draft basi HANYA dijawab bila pesan ini memang
+            # jawaban untuk draft itu (teks bebas). Perintah "/" dan tombol
+            # keyboard tetap jalan — draft basi sudah dihapus
+            # _load_make_draft, jadi diam-diam saja. Sebelum ini, tap
+            # 'Jadwal 7 Hari' malah dijawab pesan draft hangus.
+            if not first_word.startswith("/") and clean_cmd not in _MAIN_BUTTON_TEXTS:
+                send_message(token, chat_id,
+                             "⌛ *Eh Bos, draft buat videonya sudah hangus (>30 menit tidak ada kabar)* 😅\n"
+                             "Ketik /buatshort atau /buatlong untuk mulai lagi ya Bos!")
+                return
         if _draft:
             if first_word in ("/start", "/help"):
                 _clear_make_draft(chat_id)
@@ -8999,10 +9025,13 @@ def handle_user_command(token, chat_id, text, message_id=None):
         # lain & tombol keyboard tetap jalan, draft tersimpan.
         _aj = _load_aturjadwal_draft(chat_id)
         if isinstance(_aj, dict) and _aj.get("expired"):
-            send_message(token, chat_id,
-                         "⌛ *Eh Bos, pengaturan jadwalnya sudah hangus (>30 menit tidak ada kabar)* 😅\n"
-                         "Ketik /aturjadwal untuk mulai lagi ya Bos!")
-            return
+            # 🔥 v1.3.21: sama seperti draft buat video — perintah "/"
+            # dan tombol keyboard tetap jalan, draft basi dihapus diam-diam.
+            if not first_word.startswith("/") and clean_cmd not in _MAIN_BUTTON_TEXTS:
+                send_message(token, chat_id,
+                             "⌛ *Eh Bos, pengaturan jadwalnya sudah hangus (>30 menit tidak ada kabar)* 😅\n"
+                             "Ketik /aturjadwal untuk mulai lagi ya Bos!")
+                return
         if _aj:
             if first_word in ("/start", "/help"):
                 _clear_aturjadwal_draft(chat_id)

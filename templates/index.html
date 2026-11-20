@@ -1227,7 +1227,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
           <span class="card-title">📊 DETAIL CHANNEL</span>
           <span style="display:flex;gap:8px;align-items:center">
             <span class="pill p-cyan" id="ch-detail-count">0 channel</span>
-            <button type="button" class="btn btn-p btn-sm" onclick="openAddChannelModal()" title="Tautkan channel YouTube baru (device login, sama seperti di Settings)">➕ Tambah Channel</button>
+            <button type="button" class="btn btn-p btn-sm" onclick="goAddChannel()" title="Tambah channel YouTube baru (1x login browser)">➕ Tambah Channel</button>
           </span>
         </div>
         <div class="card-body" style="padding:6px 16px 10px">
@@ -2234,9 +2234,9 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
             <span style="font-size:12px;color:var(--muted)">Device login pakai client:</span>
             <select id="tv-client-select" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;min-width:220px"></select>
           </div>
-          <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">
+          <div id="ca-block" style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">
             <div style="font-size:12px;font-weight:700;margin-bottom:2px">➕ Tambah Channel — 1x Login</div>
-            <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:8px">Tambah channel YouTube baru dengan SATU kali login browser — token langsung punya semua izin (upload + Analytics + email). Tidak perlu device login lagi. Bila client Desktop belum ada di daftar, upload dulu JSON-nya lewat tombol Upload API Key di atas.</div>
+            <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:8px">Tambah channel YouTube baru dengan SATU kali login browser — token langsung punya semua izin (upload + Analytics + email). Tidak perlu device login lagi. Bila client Desktop belum ada di daftar, upload dulu JSON-nya lewat tombol Upload API Key di atas. 1 akun Google bisa punya beberapa channel — yang terdeteksi adalah channel yang sedang AKTIF di akun itu saat login. Kalau mau tambah channel lain dari akun yang sama, ganti dulu channel aktifnya di YouTube (foto profil → Ganti channel), lalu ulangi login.</div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
               <div class="fg" style="min-width:180px;flex:1;margin-bottom:0"><label class="fl">Client OAuth (Desktop)</label><select id="ca-client" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;width:100%"></select></div>
               <button class="btn btn-g btn-sm" onclick="channelAddMakeUrl()">🔗 Buat Link Login</button>
@@ -2250,6 +2250,18 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
               <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
                 <input type="text" id="ca-code" placeholder="Tempel kode dari Google di sini" autocomplete="off" style="flex:1">
                 <button class="btn btn-p btn-sm" onclick="channelAddSaveCode()">💾 Simpan &amp; Tambah Channel</button>
+              </div>
+            </div>
+            <div id="ca-confirm-box" style="display:none;margin-top:8px;padding:10px;border:1px solid var(--accent);border-radius:8px">
+              <div style="font-size:12px;margin-bottom:6px">Channel yang terdeteksi:</div>
+              <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+                <img id="ca-confirm-thumb" src="" alt="" style="width:40px;height:40px;border-radius:50%;object-fit:cover">
+                <div><div id="ca-confirm-name" style="font-weight:700"></div><div id="ca-confirm-email" style="font-size:11px;color:var(--muted)"></div></div>
+              </div>
+              <div id="ca-confirm-note" style="font-size:11px;color:var(--muted);margin-bottom:8px"></div>
+              <div style="display:flex;gap:8px">
+                <button class="btn btn-p btn-sm" onclick="channelAddConfirm()">✅ Ya, Tambah Channel Ini</button>
+                <button class="btn btn-g btn-sm" onclick="channelAddCancel()">❌ Batal</button>
               </div>
             </div>
             <div id="ca-status" style="margin-top:8px;font-size:12px;color:var(--muted)"></div>
@@ -6321,12 +6333,38 @@ function channelAddSaveCode() {
   if (!code) { toast('Tempel kodenya dulu.', 'error'); return; }
   _fetch('/api/channel_add_code', { method: 'POST', body: JSON.stringify({ client_id: cid, code }) })
     .then(d => {
+      if (d.status === 'confirm') { showChannelAddConfirm(d); return; }
       if (d.status !== 'success') { toast(d.message || 'Kode ditolak.', 'error'); return; }
       toast(d.message || 'Channel ditambahkan.', 'success');
       const el = document.getElementById('ca-code'); if (el) el.value = '';
       loadChannels();
       loadAnalyticsBlock();
     }).catch(() => toast('Gagal menyimpan kode.', 'error'));
+}
+function showChannelAddConfirm(d) {
+  const box = document.getElementById('ca-confirm-box');
+  const ch = d.channel || {};
+  document.getElementById('ca-confirm-name').textContent = ch.name || '?';
+  document.getElementById('ca-confirm-email').textContent = ch.owner_email ? ('Email: ' + ch.owner_email) : 'Email belum tercatat';
+  const th = document.getElementById('ca-confirm-thumb'); if (th) th.src = ch.thumbnail || '';
+  document.getElementById('ca-confirm-note').textContent = (d.exists ? 'Channel ini sudah ada di pabrik — token baru akan ditambahkan ke channel ini. ' : '') + (d.scopes_note || '');
+  if (box) box.style.display = 'block';
+}
+function channelAddConfirm() {
+  _fetch('/api/channel_add_confirm', { method: 'POST', body: JSON.stringify({}) })
+    .then(d => {
+      if (d.status !== 'success') { toast(d.message || 'Gagal menambah channel.', 'error'); return; }
+      toast(d.message || 'Channel ditambahkan.', 'success');
+      const box = document.getElementById('ca-confirm-box'); if (box) box.style.display = 'none';
+      const el = document.getElementById('ca-code'); if (el) el.value = '';
+      loadChannels();
+      loadAnalyticsBlock();
+    }).catch(() => toast('Gagal menambah channel.', 'error'));
+}
+function channelAddCancel() {
+  _fetch('/api/channel_add_cancel', { method: 'POST', body: JSON.stringify({}) })
+    .then(() => { const box = document.getElementById('ca-confirm-box'); if (box) box.style.display = 'none'; toast('Penambahan channel dibatalkan.', 'info'); })
+    .catch(() => { const box = document.getElementById('ca-confirm-box'); if (box) box.style.display = 'none'; });
 }
 
 // 🔥 v1.2.27: token_client_ids per channel HANYA ada di /api/oauth_clients
@@ -6603,6 +6641,11 @@ function renderChannelTable() {
 let _addChTimer = null;
 let _addChPolling = false;
 
+function goAddChannel() {
+  go('settings');
+  toast('Tambah channel lewat 1x login browser di bawah — sekali login, semua izin.', 'info');
+  setTimeout(() => { const el = document.getElementById('ca-block'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 350);
+}
 function openAddChannelModal() {
   const modal = document.getElementById('add-ch-modal');
   const body = document.getElementById('add-ch-body');
@@ -6629,7 +6672,8 @@ function openAddChannelModal() {
         + '<div style="display:flex;gap:8px;margin-top:6px"><input type="text" id="add-ch-code" readonly value="' + escapeHtml(d.user_code) + '" style="flex:1;font-weight:700;font-size:18px;text-align:center;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"><button type="button" class="btn btn-p" onclick="copyAddChCode()">COPY</button></div></div>'
         + '<div id="add-ch-status" style="font-weight:700;margin-top:6px">⏳ Menunggu Anda memasukkan kode… (kode kedaluwarsa 15 menit)</div>'
         + '<div style="font-size:11px;color:var(--muted);margin-top:10px">Izin yang diminta: kelola video YouTube (upload & statistik). Jangan tutup modal ini sebelum selesai.</div>'
-        + '<div style="font-size:11px;color:var(--muted);margin-top:8px">💡 Atau pakai <b>1x login browser</b> (upload + Analytics + email sekaligus) di Settings → GOOGLE OAUTH 2.0 API → Tambah Channel — 1x Login.</div>';
+        + '<div style="font-size:11px;color:var(--muted);margin-top:8px">💡 Atau pakai <b>1x login browser</b> (upload + Analytics + email sekaligus) di Settings → GOOGLE OAUTH 2.0 API → Tambah Channel — 1x Login.</div>'
+        + '<div style="font-size:11px;color:var(--muted);margin-top:8px">💡 1 akun Google bisa punya beberapa channel — yang terdeteksi nanti adalah channel yang sedang AKTIF di akun itu.</div>';
       _pollDeviceModal(d.device_code, d.interval || 5);
     })
     .catch(() => {
@@ -6667,6 +6711,13 @@ function _pollDeviceModal(deviceCode, intervalSec) {
         setTimeout(closeAddChannelModal, 2000);
       } else if (data.status === 'pending') {
         _addChTimer = setTimeout(() => _pollDeviceModal(deviceCode, data.interval ? data.interval / 1000 : intervalSec), data.interval || intervalSec * 1000);
+      } else if (data.status === 'confirm') {
+        _addChPolling = false;
+        const ch = data.channel || {};
+        if (st) st.innerHTML = '<span style="color:var(--accent)">Channel terdeteksi: <b>' + escapeHtml(ch.name || '?') + '</b>' + (data.exists ? ' (sudah ada — token baru akan ditambahkan)' : '') + '</span>';
+        const body = document.getElementById('add-ch-body');
+        if (body) body.innerHTML += '<div style="margin-top:8px;font-size:11px;color:var(--muted)">1 akun Google bisa punya beberapa channel — yang terdeteksi adalah channel yang sedang AKTIF di akun itu. Kalau ini bukan channel yang dimaksud, ganti dulu channel aktifnya di YouTube, lalu ulangi. ' + escapeHtml(data.scopes_note || '') + '</div>'
+          + '<div style="display:flex;gap:8px;margin-top:12px"><button type="button" class="btn btn-p" onclick="confirmDeviceAddChannel()">✅ Ya, Tambah Channel Ini</button><button type="button" class="btn btn-g" onclick="cancelDeviceAddChannel()">❌ Batal</button></div>';
       } else {
         _addChPolling = false;
         if (st) st.innerHTML = '<span style="color:var(--red,#f43f5e)">❌ ' + escapeHtml(data.error || 'Gagal menautkan channel.') + '</span>';
@@ -6684,6 +6735,25 @@ function closeAddChannelModal() {
   if (_addChTimer) { clearTimeout(_addChTimer); _addChTimer = null; }
   const modal = document.getElementById('add-ch-modal');
   if (modal) modal.style.display = 'none';
+}
+function confirmDeviceAddChannel() {
+  _fetch('/api/channel_add_confirm', { method: 'POST', body: JSON.stringify({}) })
+    .then(data => {
+      const st = document.getElementById('add-ch-status');
+      if (data.status === 'success') {
+        if (st) st.innerHTML = '<span style="color:var(--green)">🎉 Berhasil! Channel tertaut — me-refresh daftar…</span>';
+        loadChannels();
+        fetchAnalytics();
+        setTimeout(closeAddChannelModal, 2000);
+      } else {
+        if (st) st.innerHTML = '<span style="color:var(--red,#f43f5e)">❌ ' + escapeHtml(data.message || data.error || 'Gagal menautkan channel.') + '</span>';
+      }
+    })
+    .catch(() => { const st = document.getElementById('add-ch-status'); if (st) st.innerHTML = '<span style="color:var(--red,#f43f5e)">❌ Gagal menghubungi server.</span>'; });
+}
+function cancelDeviceAddChannel() {
+  _fetch('/api/channel_add_cancel', { method: 'POST', body: JSON.stringify({}) }).catch(() => {});
+  closeAddChannelModal();
 }
 
 

@@ -5530,6 +5530,49 @@ def _new_channel_record(next_id, item, creds_json, client_id, owner_email=''):
     return rec
 
 
+def _channel_add_save(item, creds_json, client_id, owner_email=''):
+    """Simpan token hasil login menjadi channel (dipakai endpoint
+    konfirmasi tambah channel — device flow maupun 1x login). Channel baru
+    dibuat, channel lama ditambah tokennya (key mati dibuang dulu).
+    Kembalikan (created, channel_name)."""
+    global database_channel
+    with db_lock:
+        c_idx = next((i for i, c in enumerate(database_channel) if c['yt_id'] == item['id']), None)
+        if c_idx is None:
+            new_c = _new_channel_record(len(database_channel) + 1, item, creds_json, client_id, owner_email)
+            database_channel.append(new_c)
+            created = True
+        else:
+            ch = database_channel[c_idx]
+            if 'creds_list' not in ch:
+                ch['creds_list'] = [ch.get('creds_json', '')]
+            live_keys = []
+            for ks in ch['creds_list']:
+                if not ks:
+                    continue
+                try:
+                    kc = Credentials.from_authorized_user_info(json.loads(ks))
+                    if kc.expired and kc.refresh_token:
+                        kc.refresh(Request())
+                    live_keys.append(ks)
+                except Exception as e:
+                    if 'invalid_grant' not in str(e).lower():
+                        live_keys.append(ks)
+            ch['creds_list'] = live_keys
+            _oauth_upsert_channel_cred(ch, creds_json)
+            ch['status'] = f"Connected 🟢 ({len(ch.get('creds_list') or [])} Keys)"
+            if owner_email:
+                ch['owner_email'] = owner_email
+            _oauth_channel_primary_client_id(ch)
+            created = False
+        try:
+            clear_channel_cooldown(item['id'])
+        except Exception:
+            pass
+        save_channels(database_channel)
+    return created, item['snippet']['title']
+
+
 def _analytics_insufficient_permissions(exc):
     """True bila error ini adalah 403 insufficientPermissions (token
     tidak punya scope yt-analytics.readonly). Dicek duck-typing
@@ -8965,6 +9008,7 @@ def analytics_auth_code():
         if not replaced:
             out.append(creds_json)
         ch['creds_list'] = out
+        ch['status'] = f"Connected 🟢 ({len(out)} Keys)"
         if owner_email:
             ch['owner_email'] = owner_email
         save_channels(channels)
@@ -9052,32 +9096,52 @@ def channel_add_code():
     if not items:
         return jsonify({"status": "error", "message": "Akun Google ini tidak memiliki channel YouTube. Ulangi dengan akun yang punya channel."}), 400
     item = items[0]
-    global database_channel
-    with db_lock:
-        c_idx = next((i for i, c in enumerate(database_channel) if c['yt_id'] == item['id']), None)
-        if c_idx is None:
-            new_c = _new_channel_record(len(database_channel) + 1, item, creds_json, c_id, owner_email)
-            database_channel.append(new_c)
-            created = True
-        else:
-            ch = database_channel[c_idx]
-            _oauth_upsert_channel_cred(ch, creds_json)
-            ch['status'] = f"Connected 🟢 ({len(ch.get('creds_list') or [])} Keys)"
-            if owner_email:
-                ch['owner_email'] = owner_email
-            created = False
-        try:
-            clear_channel_cooldown(item['id'])
-        except Exception:
-            pass
-        save_channels(database_channel)
-    _name = item['snippet']['title']
+    exists = any(c.get('yt_id') == item['id'] for c in database_channel)
+    session['pending_add'] = {
+        'creds_json': creds_json, 'client_id': c_id, 'owner_email': owner_email,
+        'yt_id': item['id'], 'name': item['snippet']['title'],
+        'thumbnail': item['snippet']['thumbnails']['default']['url'],
+        'scopes': 'full'}
+    return jsonify({"status": "confirm",
+                    "channel": {"yt_id": item['id'], "name": item['snippet']['title'],
+                                "thumbnail": item['snippet']['thumbnails']['default']['url'],
+                                "owner_email": owner_email},
+                    "exists": exists,
+                    "scopes_note": "1x login — upload + Analytics + email."})
+
+
+@app.route('/api/channel_add_confirm', methods=['POST'])
+def channel_add_confirm():
+    """Konfirmasi tambah channel (dipakai device flow + 1x login): simpan
+    token yang ditunda di sesi menjadi channel."""
+    pend = session.get('pending_add') or {}
+    creds_json = pend.get('creds_json') or ''
+    c_id = pend.get('client_id') or ''
+    if not creds_json or not c_id:
+        return jsonify({"status": "error", "message": "Sesi penambahan channel tidak ditemukan. Ulangi login."}), 400
+    item = {'id': pend.get('yt_id'), 'snippet': {'title': pend.get('name') or '?',
+            'thumbnails': {'default': {'url': pend.get('thumbnail') or ''}}}}
+    try:
+        created, _name = _channel_add_save(item, creds_json, c_id, pend.get('owner_email') or '')
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Gagal menyimpan channel: {e}"}), 500
+    session.pop('pending_add', None)
     if created:
-        _msg = f"Channel {_name} berhasil ditambahkan — 1x login (upload + Analytics + email)."
+        _msg = f"Channel {_name} berhasil ditambahkan."
     else:
         _msg = f"Channel {_name} sudah ada — token baru ditambahkan ke channel ini."
-    if owner_email:
-        _msg += f" Email pemilik: {owner_email}."
+    if pend.get('owner_email'):
+        _msg += f" Email pemilik: {pend['owner_email']}."
+    return jsonify({"status": "success", "message": _msg, "channel": _name, "yt_id": pend.get('yt_id'), "created": created})
+
+
+@app.route('/api/channel_add_cancel', methods=['POST'])
+def channel_add_cancel():
+    """Batalkan penambahan channel yang menunggu konfirmasi."""
+    session.pop('pending_add', None)
+    return jsonify({"status": "success", "message": "Penambahan channel dibatalkan."})
+
+
     return jsonify({"status": "success", "message": _msg, "channel": _name, "yt_id": item['id'], "created": created})
 
 
@@ -9190,39 +9254,19 @@ def poll_device_token():
     creds = Credentials(token=res['access_token'], refresh_token=res.get('refresh_token'), token_uri='https://oauth2.googleapis.com/token', client_id=c_id, client_secret=c_sec, scopes=SCOPES)
     youtube = build('youtube', 'v3', credentials=creds); chan_res = youtube.channels().list(part="snippet", mine=True).execute()
     if chan_res['items']:
-        item = chan_res['items'][0]; global database_channel
-        c_idx = next((i for i, c in enumerate(database_channel) if c['yt_id'] == item['id']), None)
-        if c_idx is None:
-            new_c = {"id": len(database_channel)+1, "name": item['snippet']['title'], "yt_id": item['id'], "thumbnail": item['snippet']['thumbnails']['default']['url'], "status": "Connected 🟢 (1 Key)", "creds_list": [creds.to_json()], "oauth_client_id": c_id}
-            database_channel.append(new_c)
-        else:
-            if 'creds_list' not in database_channel[c_idx]:
-                database_channel[c_idx]['creds_list'] = [database_channel[c_idx].get('creds_json', '')]
-            # 🔥 FIX v1.3: buang key yang sudah mati (invalid_grant) dulu,
-            # baru tumpuk key baru — daftar key tidak menumpuk key mati lagi.
-            live_keys = []
-            for ks in database_channel[c_idx]['creds_list']:
-                if not ks:
-                    continue
-                try:
-                    kc = Credentials.from_authorized_user_info(json.loads(ks))
-                    if kc.expired and kc.refresh_token:
-                        kc.refresh(Request())
-                    live_keys.append(ks)
-                except Exception as e:
-                    if 'invalid_grant' not in str(e).lower():
-                        live_keys.append(ks)  # gagal non-invalid_grant: jangan hapus
-            database_channel[c_idx]['creds_list'] = live_keys
-            # 🔥 v1.2.25: dedup BERDASARKAN client_id — login ulang dengan
-            # client yang sama MENGGANTI token lama (bukan menumpuk);
-            # client baru ditambahkan sebagai cadangan.
-            _oauth_upsert_channel_cred(database_channel[c_idx], creds.to_json())
-            database_channel[c_idx]['status'] = f"Connected 🟢 ({len(database_channel[c_idx]['creds_list'])} Keys)"
-            _oauth_channel_primary_client_id(database_channel[c_idx])
-        # 🔥 FIX: taut ulang = token fresh → hapus cooldown lama channel ini
-        try: clear_channel_cooldown(item['id'])
-        except Exception: pass
-        save_channels(database_channel)
+        item = chan_res['items'][0]
+        session['pending_add'] = {
+            'creds_json': creds.to_json(), 'client_id': c_id, 'owner_email': '',
+            'yt_id': item['id'], 'name': item['snippet']['title'],
+            'thumbnail': item['snippet']['thumbnails']['default']['url'],
+            'scopes': 'upload'}
+        _exists = any(c.get('yt_id') == item['id'] for c in database_channel)
+        return jsonify({"status": "confirm",
+                        "channel": {"yt_id": item['id'], "name": item['snippet']['title'],
+                                    "thumbnail": item['snippet']['thumbnails']['default']['url'],
+                                    "owner_email": ""},
+                        "exists": _exists,
+                        "scopes_note": "Device login — token upload saja. Analytics + email perlu login browser 1x lagi."})
         return jsonify({"status": "success"})
     # 🔥 FIX v1.3: jangan klaim "Berhasil" kalau akun Google-nya tidak punya channel
     # (sebelumnya halaman tetap bilang Berhasil padahal tidak ada yang ketaut).

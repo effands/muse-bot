@@ -14326,6 +14326,41 @@ def operator_set_daily_playlist():
                     "message": f"Channel {name} jadwal harian {'aktif' if enabled else 'berhenti'}."})
 
 
+def _valid_owner_email(email):
+    """Email pemilik channel: '' (kosongkan) atau format email biasa."""
+    if email == '':
+        return True
+    return re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email) is not None
+
+
+@app.route('/api/set_channel_email', methods=['POST'])
+def set_channel_email():
+    """Isi/ubah email pemilik channel manual dari tabel CHANNEL TERHUBUNG
+    (klik kolom EMAIL — v1.3.54). Panel-only (login + CSRF via
+    check_security). Email '' = kosongkan. Email juga terisi otomatis
+    saat login Analytics (scope openid/email)."""
+    data = request.get_json(silent=True) or {}
+    yt_id = (data.get('yt_id') or '').strip()
+    email = (data.get('email') or '').strip()
+    if not _valid_yt_id(yt_id):
+        return jsonify({"status": "error", "message": "Channel tidak valid."}), 400
+    if not _valid_owner_email(email):
+        return jsonify({"status": "error", "message": "Format email tidak valid."}), 400
+    with db_lock:
+        target = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+        if target is None:
+            return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
+        target['owner_email'] = email
+        name = target.get('name', yt_id)
+        try:
+            save_channels(database_channel)
+        except Exception as e:
+            print(f"Gagal simpan owner_email {yt_id}: {e}", flush=True)
+            return jsonify({"status": "error", "message": "Gagal menyimpan perubahan."}), 500
+    return jsonify({"status": "success", "owner_email": email, "channel_name": name,
+                    "message": f"Email {name} tersimpan."})
+
+
 @app.route('/api/operator/set_paused', methods=['POST'])
 def operator_set_paused():
     """Jeda / lanjutkan channel dari Telegram (NLU /jeda / /lanjutkan).

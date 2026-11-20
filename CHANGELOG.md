@@ -1,3 +1,6 @@
+## 1.3.54
+- Kolom EMAIL di tabel channel bisa diisi manual: klik emailnya, ketik, lalu ✓ (Enter juga bisa, Esc batal). Kosongkan untuk menghapus. Email juga tetap terisi otomatis saat login Analytics.
+
 ## 1.3.53
 - Tombol Tambah Channel di Dashboard kembali ke device login (TV) — login lebih cepat. Jalur 1x login browser tetap tersedia di Settings → GOOGLE OAUTH 2.0 API → Tambah Channel — 1x Login (dipakai untuk Analytics + email).
 

@@ -3123,7 +3123,7 @@ function channelTableHtml(list, withMode, showNext, fill) {
       + (c.paused ? ` <span class="pill p-yellow" style="font-size:9px;padding:2px 6px">⏸️ Dijeda</span>` : '')
       + (c.monetized ? ` <span class="pill p-green" style="font-size:9px;padding:2px 6px">💰 Monetisasi Aktif</span>` : '')
       + `</td>`
-      + `<td title="${escapeHtml(c.owner_email || '')}" style="font-family:var(--font-m);font-size:11px;color:${c.owner_email ? 'var(--text)' : 'var(--muted)'};white-space:nowrap"><span style="display:inline-block;max-width:190px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle">${escapeHtml(c.owner_email || '—')}</span></td>`
+      + `<td title="${escapeHtml(c.owner_email || '')} — klik untuk isi/ubah email" style="font-family:var(--font-m);font-size:11px;color:${c.owner_email ? 'var(--text)' : 'var(--muted)'};white-space:nowrap"><span onclick="editEmail('${c.yt_id}', this)" title="Klik untuk isi/ubah email" style="display:inline-block;max-width:190px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;cursor:pointer;border-bottom:1px dashed var(--muted)">${escapeHtml(c.owner_email || '—')}</span></td>`
       + (withMode ? `<td style="white-space:nowrap"><span onclick="go('panel-tasks')" title="Lihat antrean approval" style="cursor:pointer">${c.autopilot === 'auto' ? '<span class="pill p-cyan" style="font-size:9px;padding:2px 6px">🤖 Full-Auto</span>' : '<span class="pill p-muted" style="font-size:9px;padding:2px 6px">👀 Approval</span>'}</span></td>` : '')
       + nextCell
       + lastCell
@@ -3135,8 +3135,42 @@ function channelTableHtml(list, withMode, showNext, fill) {
   // jadi rapat berdampingan, tidak ada lagi scroll menyamping di HP.
   return `<div style="${wrapStyle}"><table class="tbl ch-tbl">${head}<tbody>${rows}</tbody></table></div>`;
 }
+function editEmail(ytId, el) {
+  const td = el.closest('td'); if (!td) return;
+  const cur = (el.textContent || '').trim();
+  const curVal = (cur === '—') ? '' : cur;
+  td.dataset.orig = td.innerHTML;
+  td.dataset.yt = ytId;
+  td.innerHTML = `<span style="display:flex;gap:4px;align-items:center"><input class="em-input" type="email" value="${escapeHtml(curVal)}" placeholder="email@gmail.com" style="width:170px;padding:3px 6px;border:1px solid var(--accent);border-radius:6px;background:var(--bg);color:var(--text);font-size:11px;font-family:var(--font-m)"><button class="btn btn-p btn-sm" onclick="saveChannelEmail(this)">✓</button><button class="btn btn-sm" onclick="cancelEditEmail(this)">✕</button></span>`;
+  const inp = td.querySelector('input');
+  inp.focus(); inp.select();
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') saveChannelEmail(inp);
+    if (e.key === 'Escape') cancelEditEmail(inp);
+  });
+}
+function cancelEditEmail(el) {
+  const td = el.closest('td'); if (!td) return;
+  td.innerHTML = td.dataset.orig || '';
+}
+async function saveChannelEmail(el) {
+  const td = el.closest('td'); if (!td) return;
+  const inp = td.querySelector('.em-input'); if (!inp) return;
+  const email = inp.value.trim();
+  const ytId = td.dataset.yt || '';
+  const res = await _fetch('/api/set_channel_email', { method: 'POST', body: JSON.stringify({ yt_id: ytId, email }) });
+  const d = await res.json().catch(() => ({}));
+  if (res.ok && d.status === 'success') {
+    toast(email ? 'Email tersimpan.' : 'Email dikosongkan.', 'ok');
+    td.innerHTML = td.dataset.orig || '';
+    loadChannels();
+  } else {
+    toast(d.message || 'Gagal menyimpan email.', 'err');
+  }
+}
 function renderTaskChannels() {
   const el = document.getElementById('tm-channels'); if (!el) return;
+  if (el.querySelector('.em-input')) return;
   const cnt = document.getElementById('tm-ch-count'); if (cnt) cnt.textContent = channels.length + ' channel';
   // 🔥 v1.3.39: simpan posisi scroll tabel sebelum render ulang — tabel
   // di-render ulang tiap poll (2 detik), dan wrapper baru selalu mulai
@@ -3151,6 +3185,7 @@ function renderTaskChannels() {
 }
 function renderDashboardChannels() {
   const el = document.getElementById('dash-channels'); if (!el) return;
+  if (el.querySelector('.em-input')) return;
   const cnt = document.getElementById('dash-ch-count'); if (cnt) cnt.textContent = channels.length + ' channel';
   // 🔥 v1.3.39: simpan posisi scroll (alasan sama seperti renderTaskChannels).
   const prev = el.querySelector('div');

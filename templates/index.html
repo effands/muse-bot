@@ -1227,6 +1227,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
           <span class="card-title">📊 DETAIL CHANNEL</span>
           <span style="display:flex;gap:8px;align-items:center">
             <span class="pill p-cyan" id="ch-detail-count">0 channel</span>
+            <button type="button" class="btn btn-sm" onclick="fetchAnalytics(true)" title="Ambil data terbaru dari YouTube (lewati cache 1 jam)">↻ Refresh</button>
             <button type="button" class="btn btn-p btn-sm" onclick="openAddChannelModal()" title="Tautkan channel YouTube baru (device login, sama seperti di Settings)">➕ Tambah Channel</button>
           </span>
         </div>
@@ -1260,7 +1261,9 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
       </div>
 
       <!-- ════════ GRID DASHBOARD: kartu sekunder berdampingan 2 kolom (1 kolom di layar kecil) ════════ -->
-      <div class="dash-grid">
+      <!-- 🔥 v1.3.57: grid ini 1 kolom — STATISTIK PER VIDEO di atas,
+           LINGKARAN ANALITIK di bawah (dulu bersebelahan, sempit). -->
+      <div class="dash-grid" style="grid-template-columns:1fr">
       <!-- ════════ FASE 4: STATISTIK PER VIDEO ════════ -->
       <div class="card" style="margin-bottom:18px;">
         <div class="card-head">
@@ -5935,8 +5938,9 @@ async function recoverFailedTasks() {
 // ────────────────────────────────────────────────────────
 //  ANALYTICS
 // ────────────────────────────────────────────────────────
-function fetchAnalytics() {
-  fetch('/api/get_youtube_analytics').then(r => r.json()).then(data => {
+// 🔥 v1.3.57: force=true lewati cache 1 jam (tombol ↻ Refresh DETAIL CHANNEL).
+function fetchAnalytics(force) {
+  fetch('/api/get_youtube_analytics' + (force ? '?force=1' : '')).then(r => r.json()).then(data => {
     analyticsData = data; const f = document.getElementById('analytics_filter'); f.innerHTML = '<option value="ALL">⬡ ALL CHANNELS</option>';
     data.forEach(d => f.innerHTML += `<option value="${escapeHtml(d.yt_id)}">${escapeHtml(d.name)}</option>`); renderAnalytics(); fetchVideoStats(false); fetchProjectQuotas(); fetchFormulaAnalytics(); fetchMonetization(); fetchNodeStatus();
   }).catch(() => {});
@@ -6005,12 +6009,27 @@ function renderVideoStats() {
       noteEl.textContent = 'ℹ️ Belum ada video yang di-upload pabrik, jadi angka di sini 0. Views ' + chTotal.toLocaleString() + ' pada kartu TOTAL VIEWS di atas adalah total semua video channel (termasuk video lama yang di-upload sebelum pabrik jalan) dan tidak terlacak di tabel ini.';
     } else noteEl.textContent = '';
   }
+  // 🔥 v1.3.57: redesain — dulu satu paragraf panjang per channel (judul
+  // utuh menumpuk, berantakan); kini tabel rapi, judul dipendekkan dari
+  // tengah (shortTitle, seperti tabel lain) + judul lengkap di tooltip.
   const bw = s.best_worst || {};
   const bwKeys = Object.keys(bw).filter(k => fv === 'ALL' || k === fv);
-  document.getElementById('vs-bestworst').innerHTML = bwKeys.length ? bwKeys.map(k => {
-    const b = bw[k]; const ch = (d.channels || []).find(c => c.yt_id === k);
-    return '🏆 <b>' + escapeHtml(ch ? ch.name : k) + '</b> — Terbaik: ' + escapeHtml(b.best.title) + ' (' + (b.best.views || 0).toLocaleString() + ' views) · Terendah: ' + escapeHtml(b.worst.title) + ' (' + (b.worst.views || 0).toLocaleString() + ' views)';
-  }).join('<br>') : '';
+  const bwEl = document.getElementById('vs-bestworst');
+  if (!bwKeys.length) { bwEl.innerHTML = ''; }
+  else {
+    const bwCell = t => '<span title="' + escapeHtml(t || '') + '">' + escapeHtml(shortTitle(t || '—')) + '</span>';
+    bwEl.innerHTML = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="text-align:left;color:var(--muted);font-family:var(--font-m);font-size:10px;border-bottom:1px solid var(--border)">'
+      + '<th style="padding:6px 8px">CHANNEL</th><th style="padding:6px 8px">🏆 TERBAIK</th><th style="padding:6px 8px;text-align:right">VIEWS</th><th style="padding:6px 8px">📉 TERENDAH</th><th style="padding:6px 8px;text-align:right">VIEWS</th></tr></thead><tbody>'
+      + bwKeys.map(k => {
+        const b = bw[k]; const ch = (d.channels || []).find(c => c.yt_id === k);
+        return '<tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 8px;white-space:nowrap"><b>' + escapeHtml(ch ? ch.name : k) + '</b></td>'
+          + '<td style="padding:6px 8px">' + bwCell(b.best.title) + '</td>'
+          + '<td style="padding:6px 8px;text-align:right">' + (b.best.views || 0).toLocaleString() + '</td>'
+          + '<td style="padding:6px 8px">' + bwCell(b.worst.title) + '</td>'
+          + '<td style="padding:6px 8px;text-align:right">' + (b.worst.views || 0).toLocaleString() + '</td></tr>';
+      }).join('')
+      + '</tbody></table></div>';
+  }
   const rows = (d.videos || []).filter(v => fv === 'ALL' || v.yt_id === fv);
   if (!rows.length) {
     tb.innerHTML = '<tr><td colspan="7" style="padding:10px 8px;color:var(--muted)">Belum ada video yang tayang / belum ada data statistik. Video yang di-upload setelah Fase 4 akan terlacak otomatis.</td></tr>';
@@ -6559,6 +6578,10 @@ function renderChannelTable() {
     if (sumEl) sumEl.innerHTML = '';
     return;
   }
+  // 🔥 v1.3.57: jaga posisi scroll horizontal saat tabel di-render ulang
+  // (poll 5 menit) — tanpa ini scroll kembali ke kiri tiap refresh.
+  const _chWrap = tb.closest('table') ? tb.closest('table').parentElement : null;
+  const _chSl = _chWrap ? _chWrap.scrollLeft : 0;
   tb.innerHTML = rows.map(d => {
     const c = chById[d.yt_id] || {};
     const paused = !!c.paused;
@@ -6593,6 +6616,7 @@ function renderChannelTable() {
       + '<td style="padding:6px 8px"><a href="https://www.youtube.com/channel/' + escapeHtml(d.yt_id) + '" target="_blank" rel="noopener" style="color:var(--accent)">Open ↗</a></td>'
       + '</tr>';
   }).join('');
+  if (_chWrap) _chWrap.scrollLeft = _chSl;
   // Catatan kaki: mana data API, mana estimasi, mana yang butuh riwayat.
   // Ditampilkan sebagai chip info "ⓘ Tentang data ini" — teks lengkap
   // tetap ada, tersembunyi sampai diklik (tidak dihapus).
@@ -6942,6 +6966,10 @@ function init() {
   setInterval(fetchServerTasks, 2000); 
   setInterval(pollSysStats, 3000); 
   setInterval(fetchNotifs, 10000); 
+  // 🔥 v1.3.57: tabel DETAIL CHANNEL selalu update (5 menit) — data channel
+  // sendiri tetap cache 1 jam di server, jadi poll ini murah (tanpa
+  // panggilan YouTube baru selama cache masih segar).
+  setInterval(() => fetchAnalytics(), 300000);
   
   fetchNotifs();
   drawLivePreview();

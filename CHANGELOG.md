@@ -1,3 +1,9 @@
+## 1.3.57
+- Status key tanpa kurung: pill kini `1 Key` / `2 Keys` (dulu `(1 Key)` / `(2 Keys)`); status lama di database ikut dimigrasi saat deploy.
+- DETAIL CHANNEL: tombol ↻ Refresh (paksa ambil data terbaru dari YouTube, lewati cache 1 jam — endpoint kini dukung `?force=1`) + tabel auto-update tiap 5 menit (posisi scroll horizontal dijaga saat render ulang).
+- STATISTIK PER VIDEO: Terbaik/Terendah per channel kini tabel rapi (CHANNEL | TERBAIK | VIEWS | TERENDAH | VIEWS), judul dipendekkan dari tengah + judul lengkap di tooltip (dulu satu paragraf panjang per channel).
+- STATISTIK PER VIDEO dan LINGKARAN ANALITIK kini tersusun atas-bawah (1 kolom), tidak lagi bersebelahan.
+
 ## 1.3.56
 - Langkah 3 /playlist (Durasi) kini pakai tombol tinggal klik: 40–70 menit, 1 jam, 60 menit, Semua durasi, + ✏️ Custom (ketik sendiri). Nilai tombol dipakai ulang parser teks yang sama, jadi artinya identik dengan ketikan. Tap kedua ditolak (anti riset ganda).
 

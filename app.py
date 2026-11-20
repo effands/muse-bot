@@ -1932,6 +1932,13 @@ def get_fresh_credentials(channel_data):
 # ==========================================
 # 🚨 SATPAM API KEY (AUTO-CHECKER)
 # ==========================================
+def _keys_label(n):
+    """Label jumlah key untuk status channel — tanpa kurung, singular
+    bila 1: '1 Key' / '2 Keys' (v1.3.57, permintaan user)."""
+    n = int(n or 0)
+    return f"{n} Key" if n == 1 else f"{n} Keys"
+
+
 def api_key_checker_worker():
     global system_notifications, database_channel
     while True:
@@ -1978,7 +1985,7 @@ def api_key_checker_worker():
             if dead_count and live_keys:
                 with db_lock:
                     c['creds_list'] = live_keys
-                    c['status'] = f"Connected 🟢 ({len(live_keys)} Keys)"
+                    c['status'] = f"Connected 🟢 {_keys_label(len(live_keys))}"
                     changed = True
                 new_notifs.append({"msg": f"🧹 {dead_count} API Key mati untuk Channel '{c.get('name','Unknown')}' dibersihkan otomatis.",
                                    "time": datetime.now().strftime("%Y-%m-%d %H:%M")})
@@ -1986,7 +1993,7 @@ def api_key_checker_worker():
                 # 🔥 v1.3.26: semua key mati -> status jadi Disconnected (pill
                 # merah di panel); kembali Connected saat taut ulang (8865).
                 with db_lock:
-                    c['status'] = f"Disconnected 🔴 ({dead_count} Keys)"
+                    c['status'] = f"Disconnected 🔴 {_keys_label(dead_count)}"
                     changed = True
                 msg = f"⚠️ Semua API Key untuk Channel '{c.get('name','Unknown')}' EXPIRED! Silakan hapus dan tautkan ulang."
                 if not any(n['msg'] == msg for n in system_notifications):
@@ -4892,6 +4899,9 @@ def get_youtube_analytics():
     — snapshot hanya 90 hari. Angka views/subs/videos tetap dipertahankan
     untuk kartu TOTAL VIEWS/SUBSCRIBERS di Dashboard."""
     cache = _load_video_stats_cache()
+    # 🔥 v1.3.57: ?force=1 lewati cache 1 jam (tombol ↻ Refresh di tabel
+    # DETAIL CHANNEL) — sama seperti /api/get_video_stats.
+    force = request.args.get('force') == '1'
     now = time.time()
     today_str = _wib_now().strftime("%Y-%m-%d")
     ch_stats = cache.setdefault('channel_stats', {})
@@ -4933,7 +4943,7 @@ def get_youtube_analytics():
         views = subs = videos = None
         published_at = ent.get('published_at')
         fetched_at = ent.get('fetched_at')
-        fresh = (ent.get('views') is not None and ent.get('fetched_at')
+        fresh = (not force and ent.get('views') is not None and ent.get('fetched_at')
                  and (now - float(ent.get('fetched_at', 0)) < VIDEO_STATS_CACHE_TTL))
         if fresh:
             views, subs, videos = ent.get('views'), ent.get('subs'), ent.get('videos')
@@ -5523,7 +5533,7 @@ def _new_channel_record(next_id, item, creds_json, client_id, owner_email=''):
     poll_device_token (dipakai tambah-channel 1x login v1.3.49)."""
     rec = {"id": next_id, "name": item['snippet']['title'], "yt_id": item['id'],
            "thumbnail": item['snippet']['thumbnails']['default']['url'],
-           "status": "Connected 🟢 (1 Key)", "creds_list": [creds_json],
+           "status": "Connected 🟢 1 Key", "creds_list": [creds_json],
            "oauth_client_id": client_id}
     if owner_email:
         rec["owner_email"] = owner_email
@@ -5560,7 +5570,7 @@ def _channel_add_save(item, creds_json, client_id, owner_email=''):
                         live_keys.append(ks)
             ch['creds_list'] = live_keys
             _oauth_upsert_channel_cred(ch, creds_json)
-            ch['status'] = f"Connected 🟢 ({len(ch.get('creds_list') or [])} Keys)"
+            ch['status'] = f"Connected 🟢 {_keys_label(len(ch.get('creds_list') or []))}"
             if owner_email:
                 ch['owner_email'] = owner_email
             _oauth_channel_primary_client_id(ch)
@@ -9008,7 +9018,7 @@ def analytics_auth_code():
         if not replaced:
             out.append(creds_json)
         ch['creds_list'] = out
-        ch['status'] = f"Connected 🟢 ({len(out)} Keys)"
+        ch['status'] = f"Connected 🟢 {_keys_label(len(out))}"
         if owner_email:
             ch['owner_email'] = owner_email
         save_channels(channels)

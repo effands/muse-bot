@@ -3,6 +3,9 @@
 Catatan perubahan per versi. Dibaca operator saat start dan ditampilkan di
 pesan restart Telegram, supaya Bos langsung tahu apa yang berubah.
 
+## 1.3.29
+- Perintah Telegram baru /hariini: ringkasan upload hari ini per channel, sama seperti kartu "Hari Ini" di Task Monitor.
+
 ## 1.3.28
 - Task Monitor kini punya kartu "Hari Ini": total video yang sudah upload hari ini + jumlah per channel (channel yang belum upload tampil abu-abu).
 

@@ -706,6 +706,32 @@ def _count_history_for_date(history, date_str):
             fail_titles.append(t.get('title', '?')[:45])
     return ok, fail, ok_titles, fail_titles
 
+def _build_today_summary_text(channels, history):
+    """🔥 v1.3.29: teks ringkasan upload HARI INI per channel — sama
+    seperti kartu HARI INI di Task Monitor. Hitung dengan aturan yang
+    sama seperti /status: finished_date == tanggal WIB hari ini,
+    status mengandung 'Tayang' (sukses) / 'Gagal'."""
+    today = _wib_today_str()
+    ok, fail, _, _ = _count_history_for_date(history, today)
+    per = {}
+    for ch in channels:
+        per[ch.get('yt_id')] = 0
+    for t in history:
+        if t.get('finished_date') != today:
+            continue
+        if 'Tayang' in t.get('status', '') and t.get('yt_id') in per:
+            per[t['yt_id']] += 1
+    lines = [
+        f"📅 *Upload Hari Ini* — {_wib_now().strftime('%d %b %Y')}",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+    for ch in channels:
+        n = per.get(ch.get('yt_id'), 0)
+        lines.append(f"• *{_tg_escape(_channel_display_name(ch))}* — {n} video")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"✅ Total: {ok} video • ❌ Gagal: {fail}")
+    return "\n".join(lines)
+
 def check_panel_online():
     """Cek proses panel web (port 8000) dari dalam VPS. Redirect ke /login
     (302) tetap dihitung online — yang penting prosesnya menjawab."""
@@ -8593,6 +8619,7 @@ _BOT_COMMANDS = [
     ('jadwalplaylist', 'Jadwal Playlist harian per channel (tombol on/off)', 'atur', ''),
     ('stopjadwal', 'Stop jadwal harian, mis. /stopjadwal Cozy Sax atau /stopjadwal semua', 'atur', '[channel|semua]'),
     ('mulaijadwal', 'Mulai jadwal harian, mis. /mulaijadwal Cozy Sax atau /mulaijadwal semua', 'atur', '[channel|semua]'),
+    ('hariini', 'Upload hari ini per channel (berapa video di akun mana saja)', 'atur', ''),
     ('jeda', 'Jeda channel (jadwal & antrean berhenti)', 'atur', '[channel]'),
     ('lanjutkan', 'Lanjutkan channel yang dijeda', 'atur', '[channel]'),
     ('pixabaykey', 'Tambah API key Pixabay', 'atur', '<key>'),
@@ -9125,6 +9152,11 @@ def handle_user_command(token, chat_id, text, message_id=None):
                        "created_at": time.time()}
             _save_nlu_pending(chat_id, pending)
             _nlu_advance(token, chat_id, pending)
+            return
+
+        # --- 📅 HARI INI (v1.3.29): ringkasan upload hari ini per channel. ---
+        if first_word in ("/hariini",):
+            send_message(token, chat_id, _build_today_summary_text(load_channels(), load_tasks().get('history', [])))
             return
 
         # --- 📅 JADWAL PLAYLIST HARIAN (v1.3.18): toggle per channel + stop/mulai. ---

@@ -10,6 +10,7 @@
    ZIMUSE BOT — DUAL THEME ENGINE (NEON DARK & CRISP LIGHT)
 ═══════════════════════════════════════════ */
 :root {
+  color-scheme: dark;
   --bg:          #050914;
   --surface:     #091022;
   --card:        #0c162c;
@@ -41,6 +42,7 @@
 
 /* ══════════ LIGHT THEME (CLEAN SAAS WHITE) ══════════ */
 [data-theme="light"] {
+  color-scheme: light;
   --bg:          #f8fafc;
   --surface:     #ffffff;
   --card:        #ffffff;
@@ -551,6 +553,7 @@ body::before {
 .content input[type=text],
 .content input[type=number],
 .content input[type=datetime-local],
+.content input[type=time],
 .content input[type=password],
 .content select,
 .content textarea {
@@ -655,6 +658,12 @@ input[type=color] { padding:0; height:36px; width:100%; border:1px solid var(--b
    rowspan bila 1 hari ada >1 video. */
 .cal-table td { vertical-align:middle; }
 .cal-table td[rowspan] { vertical-align:top; padding-top:8px; }
+
+/* 🔥 v1.3.64: Riwayat Job Playlist lebih rapat — baris tipis, jeda kecil
+   (scoped #pl-jobs; .task-row di Task Monitor tidak ikut berubah). */
+#pl-jobs .task-row { padding:6px 10px; margin-bottom:4px; gap:8px; }
+#pl-jobs .task-icon { font-size:16px; width:26px; }
+#pl-jobs .task-name { font-size:12px; margin-bottom:0; }
 
 /* 🔥 v1.3.59: Musik Playlist rapat-padat (scoped #panel-playlist). */
 #panel-playlist .fg { margin-bottom:8px; }
@@ -2184,7 +2193,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         </div>
         <div class="card-body">
           <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:14px">PIN minimal 8 karakter, campur huruf dan angka. Mengganti PIN mematikan semua sesi login lain.</div>
-          <div class="g3">
+          <div class="g4">
             <div class="fg">
                 <label class="fl">PIN Lama</label>
                 <input type="password" id="pin-old" placeholder="PIN saat ini" autocomplete="current-password">
@@ -2197,9 +2206,10 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
                 <label class="fl">Ulangi PIN Baru</label>
                 <input type="password" id="pin-new2" placeholder="Ketik ulang PIN baru" autocomplete="new-password">
             </div>
-          </div>
-          <div class="btn-row">
-            <button class="btn btn-p" onclick="changePin()">Ganti PIN</button>
+            <div class="fg" style="justify-content:flex-end">
+                <label class="fl">&nbsp;</label>
+                <button class="btn btn-p" onclick="changePin()" style="width:100%">Ganti PIN</button>
+            </div>
           </div>
         </div>
       </div>

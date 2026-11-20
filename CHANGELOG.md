@@ -1,3 +1,8 @@
+## 1.3.64
+- Ganti PIN Panel: tombol "Ganti PIN" kini sejajar 1 baris dengan ketiga field (PIN Lama, PIN Baru, Ulangi PIN Baru) — sama seperti tombol Riset Playlist.
+- Input jam (Auto Shorts "Buat/Tayang", Batch Creator) yang tadinya putih kini mengikuti tema: `input[type=time]` masuk ke aturan input gelap + `color-scheme` mengikuti tema (gelap/terang) supaya ikon jam & pemilih waktunya juga gelap.
+- Riwayat Job Playlist dirapatkan: baris lebih tipis (padding 6px, jeda 4px), ikon & judul sedikit lebih kecil — muat lebih banyak job dalam 1 layar.
+
 ## 1.3.63
 - Semua menu: judul besar di dalam halaman dihapus (Dashboard, Task Monitor, Kalender Jadwal, Gallery, Title Generator, Batch Creator, Shorts Muse, Settings) — judulnya sudah tertulis jelas di bar atas, jadi tidak dobel lagi. Deskripsi kecil di bawahnya tetap ada.
 

@@ -13819,6 +13819,40 @@ def operator_set_autopilot():
                     "message": f"Channel {name} mode Approval. Batch baru menunggu persetujuan."})
 
 
+@app.route('/api/operator/set_daily_playlist', methods=['POST'])
+def operator_set_daily_playlist():
+    """Nyalakan/matikan jadwal Playlist harian satu channel dari Telegram
+    (/jadwalplaylist, /stopjadwal, /mulaijadwal — v1.3.18).
+    Keamanan: wajib `key` == operator_key (HMAC). Field `daily_playlist`
+    di channels_db.json; dibaca cron harian Muse tiap pagi — hanya channel
+    dengan flag ini yang dibuatkan 1 video Playlist per hari (riset fresh
+    + publish langsung). Channel jalur Zumo JANGAN diaktifkan (pola beda).
+    Channel tidak dikenal → 404; enabled bukan bool → 400."""
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    yt_id = (data.get('yt_id') or '').strip()
+    enabled = data.get('enabled')
+    if not _valid_yt_id(yt_id):
+        return jsonify({"status": "error", "message": "Channel tidak valid."}), 400
+    if not isinstance(enabled, bool):
+        return jsonify({"status": "error", "message": "enabled harus true/false."}), 400
+    with db_lock:
+        target = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+        if target is None:
+            return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
+        target['daily_playlist'] = enabled
+        name = target.get('name', yt_id)
+        try:
+            save_channels(database_channel)
+        except Exception as e:
+            print(f"Gagal simpan daily_playlist {yt_id} (operator): {e}", flush=True)
+            return jsonify({"status": "error", "message": "Gagal menyimpan perubahan."}), 500
+    return jsonify({"status": "success", "daily_playlist": enabled, "channel_name": name,
+                    "message": f"Channel {name} jadwal harian {'aktif' if enabled else 'berhenti'}."})
+
+
 @app.route('/api/operator/set_paused', methods=['POST'])
 def operator_set_paused():
     """Jeda / lanjutkan channel dari Telegram (NLU /jeda / /lanjutkan).

@@ -2813,6 +2813,11 @@ def request_set_autopilot(yt_id, mode):
     return _operator_post('/api/operator/set_autopilot', {"yt_id": yt_id, "mode": mode})
 
 
+def request_set_daily_playlist(yt_id, enabled):
+    """Nyalakan/matikan jadwal Playlist harian channel (v1.3.18)."""
+    return _operator_post('/api/operator/set_daily_playlist', {"yt_id": yt_id, "enabled": bool(enabled)})
+
+
 def request_set_paused(yt_id, paused):
     """Jeda / lanjutkan channel lewat /api/operator/set_paused."""
     return _operator_post('/api/operator/set_paused', {"yt_id": yt_id, "paused": paused})
@@ -2952,6 +2957,50 @@ def handle_callback_query(token, chat_id, callback_query):
             return
         finally:
             _cb_in_flight.discard(data)
+    # --- v1.3.18: toggle jadwal Playlist harian (per channel / semua) ---
+    if data.startswith('dailypl:'):
+        if data in ('dailypl:all:on', 'dailypl:all:off'):
+            enable = data.endswith(':on')
+            if data in _cb_in_flight:
+                answer_callback(token, cq_id, "Sabar Bos, masih saya proses 😅")
+                return
+            _cb_in_flight.add(data)
+            try:
+                answer_callback(token, cq_id, "Siap Bos, saya ubah semua... 📅")
+                done = []
+                for ch in load_channels():
+                    ok, _info, _d = request_set_daily_playlist(ch.get('yt_id'), enable)
+                    if ok:
+                        done.append(_channel_display_name(ch))
+                send_message(token, chat_id,
+                             f"{'▶️' if enable else '⏹️'} *Jadwal harian {'nyala' if enable else 'berhenti'} buat semua channel, Bos*\n" +
+                             ("✅ " + ", ".join(_tg_escape(n) for n in done) if done else "⚠️ Tidak ada channel yang berubah.") +
+                             "\nCek status: /jadwalplaylist")
+            finally:
+                _cb_in_flight.discard(data)
+            return
+        parts = data.split(':')
+        if len(parts) == 3 and parts[1] == 'toggle':
+            yt_id = parts[2]
+            if data in _cb_in_flight:
+                answer_callback(token, cq_id, "Sabar Bos, masih saya proses 😅")
+                return
+            _cb_in_flight.add(data)
+            try:
+                ch = next((c for c in load_channels() if c.get('yt_id') == yt_id), None)
+                if not ch:
+                    answer_callback(token, cq_id, "Channel tidak ketemu 😅")
+                    return
+                enable = not bool(ch.get('daily_playlist'))
+                answer_callback(token, cq_id, "Siap Bos, saya ubah... 📅")
+                ok, info, _d = request_set_daily_playlist(yt_id, enable)
+                if ok:
+                    _send_daily_playlist_report(token, chat_id)
+                else:
+                    send_message(token, chat_id, f"⚠️ *Yah gagal Bos* 😅\n{_tg_escape(info)}")
+            finally:
+                _cb_in_flight.discard(data)
+            return
     # --- v1.3.16: tawaran isi jadwal saat /jadwal kosong (total 0) ---
     if data in ('jadwal:buat_playlist', 'jadwal:perpanjang30'):
         if data.endswith('buat_playlist'):
@@ -8521,6 +8570,9 @@ _BOT_COMMANDS = [
     ('perpanjang', 'Tambah jadwal, mis. /perpanjang Aruya 0089 30 atau /perpanjang semua 30', 'atur', '[channel] [hari]'),
     ('aturjadwal', 'Ubah jam tayang / jadwal auto-shorts channel (cuma 3 pertanyaan)', 'atur', '[channel]'),
     ('mode', 'Ganti mode, mis. /mode Aruya 0089 auto', 'atur', '[channel] [auto|approval]'),
+    ('jadwalplaylist', 'Jadwal Playlist harian per channel (tombol on/off)', 'atur', ''),
+    ('stopjadwal', 'Stop jadwal harian, mis. /stopjadwal Cozy Sax atau /stopjadwal semua', 'atur', '[channel|semua]'),
+    ('mulaijadwal', 'Mulai jadwal harian, mis. /mulaijadwal Cozy Sax atau /mulaijadwal semua', 'atur', '[channel|semua]'),
     ('jeda', 'Jeda channel (jadwal & antrean berhenti)', 'atur', '[channel]'),
     ('lanjutkan', 'Lanjutkan channel yang dijeda', 'atur', '[channel]'),
     ('pixabaykey', 'Tambah API key Pixabay', 'atur', '<key>'),
@@ -8829,6 +8881,49 @@ def _aturjadwal_save(token, chat_id, draft):
                  f"✅ *Berhasil Bos!* 😎\n{val_txt} untuk channel *{_tg_escape(name)}*.{extra}")
 
 
+def _daily_playlist_keyboard(channels):
+    """Keyboard toggle jadwal harian (v1.3.18): 2 channel per baris
+    + baris Mulai Semua / Stop Semua."""
+    rows = []
+    row = []
+    for ch in channels:
+        name = _channel_display_name(ch)
+        on = bool(ch.get('daily_playlist'))
+        row.append({"text": f"{'✅' if on else '⏸️'} {name}",
+                    "callback_data": f"dailypl:toggle:{ch.get('yt_id')}"})
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([{"text": "▶️ Mulai Semua", "callback_data": "dailypl:all:on"},
+                 {"text": "⏹️ Stop Semua", "callback_data": "dailypl:all:off"}])
+    return {"inline_keyboard": rows}
+
+
+def _daily_playlist_text(channels):
+    lines = ["📅 *Jadwal Playlist Harian*",
+             "━━━━━━━━━━━━━━━━━━━━━━"]
+    for ch in channels:
+        name = _channel_display_name(ch)
+        on = bool(ch.get('daily_playlist'))
+        lines.append(f"{'✅' if on else '⏸️'} *{_tg_escape(name)}* — {'AKTIF' if on else 'MATI'}")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("AKTIF = tiap pagi saya riset video yang lagi trend, buatkan 1 Playlist, langsung tayang.")
+    lines.append("Channel jalur Zumo jangan diaktifkan — polanya beda.")
+    lines.append("Pencet tombol buat nyalakan/matikan per channel, atau /stopjadwal semua buat berhentiin semua.")
+    return "\n".join(lines)
+
+
+def _send_daily_playlist_report(token, chat_id):
+    channels = load_channels()
+    if not channels:
+        send_message(token, chat_id, "📅 *Jadwal Playlist Harian*\n\nBelum ada channel.")
+        return
+    send_message(token, chat_id, _daily_playlist_text(channels),
+                 reply_markup=_daily_playlist_keyboard(channels))
+
+
 def handle_user_command(token, chat_id, text, message_id=None):
     try:
         raw_cmd = text.strip()
@@ -9001,6 +9096,44 @@ def handle_user_command(token, chat_id, text, message_id=None):
                        "created_at": time.time()}
             _save_nlu_pending(chat_id, pending)
             _nlu_advance(token, chat_id, pending)
+            return
+
+        # --- 📅 JADWAL PLAYLIST HARIAN (v1.3.18): toggle per channel + stop/mulai. ---
+        # /jadwalplaylist = status + tombol; /stopjadwal [channel|semua] =
+        # matikan LANGSUNG tanpa konfirmasi (ini tombol darurat, misal
+        # channel sudah monet); /mulaijadwal [channel|semua] = nyalakan.
+        # Tanpa argumen channel → tampilkan laporan + tombol.
+        if first_word in ("/jadwalplaylist",):
+            _send_daily_playlist_report(token, chat_id)
+            return
+        if first_word in ("/stopjadwal", "/mulaijadwal"):
+            enable = first_word == "/mulaijadwal"
+            rest = raw_cmd[len(first_word):].strip()
+            clean_rest = _nlu_clean(rest)
+            matched, all_flag = _nlu_match_channels(clean_rest, load_channels())
+            if all_flag:
+                targets = load_channels()
+            elif matched:
+                targets = matched
+            else:
+                _send_daily_playlist_report(token, chat_id)
+                return
+            done = []
+            failed = []
+            for ch in targets:
+                ok, info, _d = request_set_daily_playlist(ch.get('yt_id'), enable)
+                if ok:
+                    done.append(_channel_display_name(ch))
+                else:
+                    failed.append(f"{_channel_display_name(ch)}: {info}")
+            verb = "nyala" if enable else "berhenti"
+            lines = [f"{'▶️' if enable else '⏹️'} *Jadwal harian {verb}, Bos*"]
+            if done:
+                lines.append("✅ " + ", ".join(_tg_escape(n) for n in done))
+            if failed:
+                lines.append("⚠️ Gagal: " + "; ".join(_tg_escape(f) for f in failed))
+            lines.append("Cek status: /jadwalplaylist")
+            send_message(token, chat_id, "\n".join(lines))
             return
 
         # --- ⚙️ ATUR JADWAL (v1.2.20): ubah jam tayang / auto-shorts,

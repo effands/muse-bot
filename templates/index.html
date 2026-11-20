@@ -3075,7 +3075,7 @@ function lastUpdateFor(yt_id) {
   return { type: type, icon: icon, time: best.time || '', title: best.title || 'Video' };
 }
 function channelTableHtml(list, withMode, showNext, fill) {
-  const head = `<thead><tr><th>CHANNEL</th><th>STATUS</th>${withMode ? '<th>MODE</th>' : ''}${showNext ? '<th>JADWAL BERIKUTNYA</th><th>UPDATE TERAKHIR</th>' : ''}</tr></thead>`;
+  const head = `<thead><tr><th>CHANNEL</th><th>STATUS</th><th>EMAIL</th>${withMode ? '<th>MODE</th>' : ''}${showNext ? '<th>JADWAL BERIKUTNYA</th><th>UPDATE TERAKHIR</th>' : ''}</tr></thead>`;
   const rows = list.map(c => {
     const nx = showNext ? nextScheduleFor(c.yt_id) : null;
     const nextCell = !showNext ? '' : (!nx
@@ -3091,6 +3091,7 @@ function channelTableHtml(list, withMode, showNext, fill) {
       + (c.paused ? ` <span class="pill p-yellow" style="font-size:9px;padding:2px 6px">⏸️ Dijeda</span>` : '')
       + (c.monetized ? ` <span class="pill p-green" style="font-size:9px;padding:2px 6px">💰 Monetisasi Aktif</span>` : '')
       + `</td>`
+      + `<td title="${escapeHtml(c.owner_email || '')}" style="font-family:var(--font-m);font-size:11px;color:${c.owner_email ? 'var(--text)' : 'var(--muted)'};white-space:nowrap"><span style="display:inline-block;max-width:190px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle">${escapeHtml(c.owner_email || '—')}</span></td>`
       + (withMode ? `<td style="white-space:nowrap"><span onclick="go('panel-tasks')" title="Lihat antrean approval" style="cursor:pointer">${c.autopilot === 'auto' ? '<span class="pill p-cyan" style="font-size:9px;padding:2px 6px">🤖 Full-Auto</span>' : '<span class="pill p-muted" style="font-size:9px;padding:2px 6px">👀 Approval</span>'}</span></td>` : '')
       + nextCell
       + lastCell

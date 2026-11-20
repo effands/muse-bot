@@ -1,3 +1,6 @@
+## 1.3.48
+- Kolom EMAIL di tabel Channel Terhubung (Dashboard + Task Monitor) — email pemilik channel, kosong tampil strip; email ditangkap otomatis saat login Analytics (izin baca email) dan disimpan per channel.
+
 ## 1.3.47
 - Aktivasi Analytics: jam tayang asli 365 hari untuk syarat 4.000 jam — login browser sekali per channel di Settings → OAuth → Analytics (device login tetap tidak bisa, Google menolak). WATCH 30D + KESIAPAN MONETISASI pakai angka asli (tanda ✓) bila sudah aktif.
 

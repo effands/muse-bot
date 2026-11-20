@@ -5483,6 +5483,23 @@ ANALYTICS_SCOPE = 'https://www.googleapis.com/auth/yt-analytics.readonly'
 ANALYTICS_EARLIEST_DATE = '2005-02-14'  # tanggal paling awal yang diizinkan API
 
 
+def _id_token_email(id_token):
+    """Ambil email pemilik dari id_token Google (JWT) tanpa verifikasi
+    tanda tangan — token baru saja diterima langsung dari Google lewat
+    TLS di endpoint ini, jadi payload-nya tepercaya. Kembalikan '' bila
+    tidak ada / tidak bisa dibaca."""
+    try:
+        import base64
+        parts = (id_token or '').split('.')
+        if len(parts) != 3:
+            return ''
+        payload = parts[1] + '=' * (-len(parts[1]) % 4)
+        data = json.loads(base64.urlsafe_b64decode(payload).decode('utf-8'))
+        return (data.get('email') or '').strip()
+    except Exception:
+        return ''
+
+
 def _analytics_insufficient_permissions(exc):
     """True bila error ini adalah 403 insufficientPermissions (token
     tidak punya scope yt-analytics.readonly). Dicek duck-typing
@@ -7258,7 +7275,7 @@ def get_channels():
     # None = belum dicek) supaya panel bisa menandai channel yang tokennya
     # belum punya scope yt-analytics.readonly ("perlu taut ulang").
     _scope_cache = _load_video_stats_cache()
-    safe_c = [{"id": c["id"], "name": c["name"], "yt_id": c["yt_id"], "thumbnail": c["thumbnail"], "status": c["status"], "title_bank": c.get("title_bank", []), "title_weights": c.get("title_weights", {}), "paused": c.get("paused", False), "autopilot": c.get("autopilot", "approval"), "rpm_usd": c.get("rpm_usd"), "monetized": c.get("monetized", False), "auto_shorts": _auto_shorts_cfg(c), "analytics_scope": _analytics_scope_state(_scope_cache, c.get("yt_id")),
+    safe_c = [{"id": c["id"], "name": c["name"], "yt_id": c["yt_id"], "thumbnail": c["thumbnail"], "status": c["status"], "title_bank": c.get("title_bank", []), "title_weights": c.get("title_weights", {}), "paused": c.get("paused", False), "autopilot": c.get("autopilot", "approval"), "rpm_usd": c.get("rpm_usd"), "monetized": c.get("monetized", False), "owner_email": c.get("owner_email", ""), "auto_shorts": _auto_shorts_cfg(c), "analytics_scope": _analytics_scope_state(_scope_cache, c.get("yt_id")),
                # 🔥 v1.2.25: pemetaan OAuth — client utama + project mana saja
                # channel ini punya tokennya (metadata saja, tanpa secret).
                "oauth_client_id": _oauth_channel_primary_client_id(c),
@@ -8851,7 +8868,7 @@ def analytics_auth_url():
         return jsonify({"status": "error", "message": "Client OAuth tidak bisa dibaca. Upload ulang JSON-nya."}), 400
     qs = urllib.parse.urlencode({
         'client_id': c_id, 'redirect_uri': 'http://localhost',
-        'response_type': 'code', 'scope': ' '.join(SCOPES + [ANALYTICS_SCOPE]),
+        'response_type': 'code', 'scope': ' '.join(SCOPES + [ANALYTICS_SCOPE, 'openid', 'email']),
         'access_type': 'offline', 'prompt': 'consent', 'state': yt_id})
     return jsonify({"status": "success",
                     "auth_url": "https://accounts.google.com/o/oauth2/v2/auth?" + qs,
@@ -8891,10 +8908,11 @@ def analytics_auth_code():
         creds = Credentials(token=res['access_token'], refresh_token=res['refresh_token'],
                             token_uri='https://oauth2.googleapis.com/token',
                             client_id=c_id, client_secret=c_sec,
-                            scopes=SCOPES + [ANALYTICS_SCOPE])
+                            scopes=SCOPES + [ANALYTICS_SCOPE, 'openid', 'email'])
         creds_json = creds.to_json()
     except Exception as e:
         return jsonify({"status": "error", "message": f"Gagal menyimpan token: {e}"}), 500
+    owner_email = _id_token_email(res.get('id_token'))
     channels = load_channels()
     ch = next((x for x in channels if x.get('yt_id') == yt_id), None)
     if not ch:
@@ -8917,6 +8935,8 @@ def analytics_auth_code():
         if not replaced:
             out.append(creds_json)
         ch['creds_list'] = out
+        if owner_email:
+            ch['owner_email'] = owner_email
         save_channels(channels)
     try:
         cache = _load_video_stats_cache()
@@ -8925,7 +8945,10 @@ def analytics_auth_code():
         _save_video_stats_cache(cache)
     except Exception:
         pass
-    return jsonify({"status": "success", "message": f"Analytics aktif untuk {ch.get('name') or yt_id} — jam tayang asli akan muncul di tabel."})
+    _msg = f"Analytics aktif untuk {ch.get('name') or yt_id} — jam tayang asli akan muncul di tabel."
+    if owner_email:
+        _msg += f" Email pemilik tercatat: {owner_email}."
+    return jsonify({"status": "success", "message": _msg})
 
 
 @app.route('/api/generate_tv_link')

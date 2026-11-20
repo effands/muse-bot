@@ -2235,6 +2235,26 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
             <select id="tv-client-select" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;min-width:220px"></select>
           </div>
           <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">
+            <div style="font-size:12px;font-weight:700;margin-bottom:2px">➕ Tambah Channel — 1x Login</div>
+            <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:8px">Tambah channel YouTube baru dengan SATU kali login browser — token langsung punya semua izin (upload + Analytics + email). Tidak perlu device login lagi. Bila client Desktop belum ada di daftar, upload dulu JSON-nya lewat tombol Upload API Key di atas.</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+              <div class="fg" style="min-width:180px;flex:1;margin-bottom:0"><label class="fl">Client OAuth (Desktop)</label><select id="ca-client" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;width:100%"></select></div>
+              <button class="btn btn-g btn-sm" onclick="channelAddMakeUrl()">🔗 Buat Link Login</button>
+            </div>
+            <div id="ca-url-box" style="display:none;margin-top:8px">
+              <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:4px">1) Buka link ini di Edge (akun Google pemilik channel BARU) → izinkan → browser akan gagal membuka http://localhost, itu normal. 2) Salin <b>code</b> dari address bar (setelah <code>code=</code>) → tempel di bawah → Simpan &amp; Tambah Channel.</div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <input type="text" id="ca-url-out" readonly style="flex:1;font-family:var(--font-m);font-size:11px" placeholder="Link login akan muncul di sini">
+                <button class="btn btn-g btn-sm" onclick="channelAddOpenUrl()">Buka Link</button>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+                <input type="text" id="ca-code" placeholder="Tempel kode dari Google di sini" autocomplete="off" style="flex:1">
+                <button class="btn btn-p btn-sm" onclick="channelAddSaveCode()">💾 Simpan &amp; Tambah Channel</button>
+              </div>
+            </div>
+            <div id="ca-status" style="margin-top:8px;font-size:12px;color:var(--muted)"></div>
+          </div>
+          <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">
             <div style="font-size:12px;font-weight:700;margin-bottom:2px">📊 Analytics — Jam Tayang Asli (4.000 jam)</div>
             <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:8px">Login browser sekali per channel supaya jam tayang 365 hari dibaca langsung dari YouTube Analytics — bukan estimasi. Device login tidak bisa memberi izin ini (Google menolak scope Analytics). Bila client Desktop belum ada di daftar, upload dulu JSON-nya lewat tombol Upload API Key di atas.</div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
@@ -6214,6 +6234,7 @@ function renderOAuthClients() {
     </div>`).join('');
   renderOAuthMapping();
   loadAnalyticsBlock();
+  loadChannelAddBlock();
 }
 
 // ────────────────────────────────────────────────────────
@@ -6265,6 +6286,45 @@ function analyticsSaveCode() {
       if (d.status !== 'success') { toast(d.message || 'Kode ditolak.', 'error'); return; }
       toast(d.message || 'Analytics aktif.', 'success');
       const el = document.getElementById('an-code'); if (el) el.value = '';
+      loadAnalyticsBlock();
+    }).catch(() => toast('Gagal menyimpan kode.', 'error'));
+}
+
+// ────────────────────────────────────────────────────────
+//  TAMBAH CHANNEL 1x LOGIN (v1.3.49)
+// ────────────────────────────────────────────────────────
+function loadChannelAddBlock() {
+  const selCl = document.getElementById('ca-client');
+  if (!selCl) return;
+  selCl.innerHTML = _oauthClients.map(c => `<option value="${escapeHtml(c.client_id)}"${(c.name || '').toLowerCase() === 'desktop' ? ' selected' : ''}>${escapeHtml(_oauthClientLabel(c))}</option>`).join('');
+}
+function channelAddMakeUrl() {
+  const cid = (document.getElementById('ca-client') || {}).value || '';
+  const box = document.getElementById('ca-url-box');
+  const out = document.getElementById('ca-url-out');
+  if (box) box.style.display = 'block';
+  if (out) out.value = 'Membuat link…';
+  _fetch('/api/channel_add_url', { method: 'POST', body: JSON.stringify({ client_id: cid }) })
+    .then(d => {
+      if (d.status !== 'success') { toast(d.message || 'Gagal membuat link.', 'error'); if (out) out.value = ''; return; }
+      if (out) out.value = d.auth_url || '';
+      toast('Link login dibuat — buka di Edge, izinkan, salin kodenya.', 'success');
+    }).catch(() => toast('Gagal membuat link.', 'error'));
+}
+function channelAddOpenUrl() {
+  const u = document.getElementById('ca-url-out');
+  if (u && u.value) window.open(u.value, '_blank');
+}
+function channelAddSaveCode() {
+  const cid = (document.getElementById('ca-client') || {}).value || '';
+  const code = ((document.getElementById('ca-code') || {}).value || '').trim();
+  if (!code) { toast('Tempel kodenya dulu.', 'error'); return; }
+  _fetch('/api/channel_add_code', { method: 'POST', body: JSON.stringify({ client_id: cid, code }) })
+    .then(d => {
+      if (d.status !== 'success') { toast(d.message || 'Kode ditolak.', 'error'); return; }
+      toast(d.message || 'Channel ditambahkan.', 'success');
+      const el = document.getElementById('ca-code'); if (el) el.value = '';
+      loadChannels();
       loadAnalyticsBlock();
     }).catch(() => toast('Gagal menyimpan kode.', 'error'));
 }
@@ -6568,7 +6628,8 @@ function openAddChannelModal() {
         + '<div style="margin-bottom:12px"><b>Langkah 2:</b> Masukkan kode ini:'
         + '<div style="display:flex;gap:8px;margin-top:6px"><input type="text" id="add-ch-code" readonly value="' + escapeHtml(d.user_code) + '" style="flex:1;font-weight:700;font-size:18px;text-align:center;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"><button type="button" class="btn btn-p" onclick="copyAddChCode()">COPY</button></div></div>'
         + '<div id="add-ch-status" style="font-weight:700;margin-top:6px">⏳ Menunggu Anda memasukkan kode… (kode kedaluwarsa 15 menit)</div>'
-        + '<div style="font-size:11px;color:var(--muted);margin-top:10px">Izin yang diminta: kelola video YouTube (upload & statistik). Jangan tutup modal ini sebelum selesai.</div>';
+        + '<div style="font-size:11px;color:var(--muted);margin-top:10px">Izin yang diminta: kelola video YouTube (upload & statistik). Jangan tutup modal ini sebelum selesai.</div>'
+        + '<div style="font-size:11px;color:var(--muted);margin-top:8px">💡 Atau pakai <b>1x login browser</b> (upload + Analytics + email sekaligus) di Settings → GOOGLE OAUTH 2.0 API → Tambah Channel — 1x Login.</div>';
       _pollDeviceModal(d.device_code, d.interval || 5);
     })
     .catch(() => {

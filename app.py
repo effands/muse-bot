@@ -720,6 +720,15 @@ def _oauth_primary_client():
     return entries[0] if entries else None
 
 
+def _oauth_desktop_client():
+    """Client Desktop untuk login browser (tambah channel 1x login):
+    entri bernama 'desktop' bila ada, kalau tidak client utama."""
+    for e in _oauth_client_entries():
+        if (e.get('name') or '').strip().lower() == 'desktop':
+            return e
+    return _oauth_primary_client()
+
+
 def _oauth_set_primary(client_id):
     """Jadikan satu client sebagai utama (dipakai default device login).
     Kembalikan True bila client ditemukan."""
@@ -5500,6 +5509,18 @@ def _id_token_email(id_token):
         return ''
 
 
+def _new_channel_record(next_id, item, creds_json, client_id, owner_email=''):
+    """Bentuk record channel baru — cerminan pembuatan channel di
+    poll_device_token (dipakai tambah-channel 1x login v1.3.49)."""
+    rec = {"id": next_id, "name": item['snippet']['title'], "yt_id": item['id'],
+           "thumbnail": item['snippet']['thumbnails']['default']['url'],
+           "status": "Connected 🟢 (1 Key)", "creds_list": [creds_json],
+           "oauth_client_id": client_id}
+    if owner_email:
+        rec["owner_email"] = owner_email
+    return rec
+
+
 def _analytics_insufficient_permissions(exc):
     """True bila error ini adalah 403 insufficientPermissions (token
     tidak punya scope yt-analytics.readonly). Dicek duck-typing
@@ -8949,6 +8970,106 @@ def analytics_auth_code():
     if owner_email:
         _msg += f" Email pemilik tercatat: {owner_email}."
     return jsonify({"status": "success", "message": _msg})
+
+
+@app.route('/api/channel_add_url', methods=['POST'])
+def channel_add_url():
+    """Buat URL login browser untuk TAMBAH CHANNEL 1x LOGIN: satu kali
+    login memberi SEMUA izin sekaligus (upload + Analytics + email).
+    Device flow tidak bisa dipakai untuk ini (Google menolak scope
+    Analytics di device flow). Kembalikan {auth_url} — user buka di Edge,
+    izinkan, salin `code`."""
+    data = request.get_json(silent=True) or {}
+    _cid = (data.get('client_id') or '').strip() or None
+    entry = _oauth_client_by_id(_cid) if _cid else _oauth_desktop_client()
+    if not entry:
+        return jsonify({"status": "error", "message": "Belum ada client OAuth. Upload dulu JSON client Desktop di Settings."}), 400
+    c_id, _c_sec = _oauth_client_conf(entry)
+    if not c_id:
+        return jsonify({"status": "error", "message": "Client OAuth tidak bisa dibaca. Upload ulang JSON-nya."}), 400
+    qs = urllib.parse.urlencode({
+        'client_id': c_id, 'redirect_uri': 'http://localhost',
+        'response_type': 'code',
+        'scope': ' '.join(SCOPES + [ANALYTICS_SCOPE, 'openid', 'email']),
+        'access_type': 'offline', 'prompt': 'consent', 'state': 'add_channel'})
+    return jsonify({"status": "success",
+                    "auth_url": "https://accounts.google.com/o/oauth2/v2/auth?" + qs,
+                    "client_name": entry.get('name') or entry.get('project_id') or ''})
+
+
+@app.route('/api/channel_add_code', methods=['POST'])
+def channel_add_code():
+    """Tukar `code` login browser menjadi channel baru (1x login).
+    Token disimpan dengan SEMUA scope (upload + Analytics + email).
+    Channel dikenali dari token itu sendiri (mine=True); bila channel
+    sudah ada, token baru ditambahkan ke channel tersebut."""
+    data = request.get_json(silent=True) or {}
+    code = (data.get('code') or '').strip()
+    if not code:
+        return jsonify({"status": "error", "message": "Kode wajib diisi."}), 400
+    _cid = (data.get('client_id') or '').strip() or None
+    entry = _oauth_client_by_id(_cid) if _cid else _oauth_desktop_client()
+    if not entry:
+        return jsonify({"status": "error", "message": "Belum ada client OAuth."}), 400
+    c_id, c_sec = _oauth_client_conf(entry)
+    if not c_id or not c_sec:
+        return jsonify({"status": "error", "message": "Client OAuth tidak bisa dibaca."}), 400
+    try:
+        res = requests.post('https://oauth2.googleapis.com/token',
+            data={'code': code, 'client_id': c_id, 'client_secret': c_sec,
+                  'redirect_uri': 'http://localhost', 'grant_type': 'authorization_code'},
+            timeout=20).json()
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Tidak bisa menghubungi Google: {e}"}), 502
+    if 'error' in res:
+        return jsonify({"status": "error", "message": f"Error Google: {res.get('error_description') or res['error']}"}), 400
+    if not res.get('refresh_token'):
+        return jsonify({"status": "error", "message": "Google tidak mengembalikan refresh_token — ulangi login dan pastikan memilih akun Google yang benar."}), 400
+    try:
+        creds = Credentials(token=res['access_token'], refresh_token=res['refresh_token'],
+                            token_uri='https://oauth2.googleapis.com/token',
+                            client_id=c_id, client_secret=c_sec,
+                            scopes=SCOPES + [ANALYTICS_SCOPE, 'openid', 'email'])
+        creds_json = creds.to_json()
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Gagal menyimpan token: {e}"}), 500
+    owner_email = _id_token_email(res.get('id_token'))
+    try:
+        youtube = build('youtube', 'v3', credentials=creds)
+        chan_res = youtube.channels().list(part="snippet", mine=True).execute()
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Tidak bisa membaca channel: {e}"}), 502
+    items = (chan_res or {}).get('items') or []
+    if not items:
+        return jsonify({"status": "error", "message": "Akun Google ini tidak memiliki channel YouTube. Ulangi dengan akun yang punya channel."}), 400
+    item = items[0]
+    global database_channel
+    with db_lock:
+        c_idx = next((i for i, c in enumerate(database_channel) if c['yt_id'] == item['id']), None)
+        if c_idx is None:
+            new_c = _new_channel_record(len(database_channel) + 1, item, creds_json, c_id, owner_email)
+            database_channel.append(new_c)
+            created = True
+        else:
+            ch = database_channel[c_idx]
+            _oauth_upsert_channel_cred(ch, creds_json)
+            ch['status'] = f"Connected 🟢 ({len(ch.get('creds_list') or [])} Keys)"
+            if owner_email:
+                ch['owner_email'] = owner_email
+            created = False
+        try:
+            clear_channel_cooldown(item['id'])
+        except Exception:
+            pass
+        save_channels(database_channel)
+    _name = item['snippet']['title']
+    if created:
+        _msg = f"Channel {_name} berhasil ditambahkan — 1x login (upload + Analytics + email)."
+    else:
+        _msg = f"Channel {_name} sudah ada — token baru ditambahkan ke channel ini."
+    if owner_email:
+        _msg += f" Email pemilik: {owner_email}."
+    return jsonify({"status": "success", "message": _msg, "channel": _name, "yt_id": item['id'], "created": created})
 
 
 @app.route('/api/generate_tv_link')

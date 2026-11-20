@@ -1,3 +1,6 @@
+## 1.3.69
+- Kolom GROUP di tabel DETAIL CHANNEL kini dropdown juga (sama seperti tabel CHANNEL TERHUBUNG) — sebelumnya cuma tampil "—" tanpa tombol; buat/pindah/keluar group bisa langsung dari tabel ini. Render ulang tiap 5 menit dijaga supaya tidak menghapus input group baru yang sedang dibuka.
+
 ## 1.3.68
 - /jadwal kini menampilkan order Playlist harian: channel daily_playlist yang belum punya task 7 hari ke depan tampil "🔁 Playlist harian aktif — video dibuat tiap pagi ±06:10, riset fresh, langsung tayang" (bukan "Nggak ada jadwal"), plus ringkasan "🔁 Order harian: N channel ..." di bawah; teks penutup bila total 0 task tapi order harian aktif ikut dijelaskan.
 - Kalender Jadwal: slot rutin hari ini tampil — channel daily_playlist yang belum punya video hari ini dapat baris "🔁 Playlist harian (rutin)" jam 06:10 (status "Rutin — dibuat ±06:10", atau "belum dibuat hari ini" bila jam sudah lewat, "Dijeda" bila channel dijeda); bila videonya sudah dibuat, baris rutin hilang dan video aslinya yang tampil. Ringkasan kalender menyebut jumlah slot rutin hari ini.

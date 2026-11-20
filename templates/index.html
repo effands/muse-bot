@@ -6759,6 +6759,10 @@ function monSortBy(key) {
 }
 function renderChannelTable() {
   const tb = document.getElementById('ch-detail-tbody'); if (!tb) return;
+  // 🔥 v1.3.69: jangan render ulang saat input group baru sedang dibuka
+  // (poll 5 menit akan menghapus inputnya — pola sama seperti .em-input
+  // di renderTaskChannels/renderDashboardChannels).
+  if (tb.querySelector('.grp-input')) return;
   let rows = analyticsData || [];
   // 🔥 v1.3.68: tabel ikut filter GROUP dari dropdown atas (sama seperti
   // kartu statistik di renderAnalytics).
@@ -6809,7 +6813,7 @@ function renderChannelTable() {
     return '<tr style="border-bottom:1px solid var(--border)">'
       + '<td style="padding:6px 8px">' + thumb + '<b>' + escapeHtml(d.name) + '</b></td>'
       + '<td style="padding:6px 8px">' + statusPillHTML(d.status) + (paused ? ' <span class="pill p-yellow">⏸️ Dijeda</span>' : '') + '</td>'
-      + '<td style="padding:6px 8px">' + escapeHtml((c.group || '').trim() || '—') + '</td>'
+      + '<td style="padding:6px 8px;white-space:nowrap">' + groupSelectHtml(c) + '</td>'
       + '<td style="padding:6px 8px">' + escapeHtml(d.updated_label || '—') + '</td>'
       + '<td style="padding:6px 8px;text-align:right">' + _fmtNum(d.subs) + '</td>'
       + '<td style="padding:6px 8px;text-align:right">' + _fmtNum(d.videos) + '</td>'

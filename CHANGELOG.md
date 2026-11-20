@@ -3,6 +3,11 @@
 Catatan perubahan per versi. Dibaca operator saat start dan ditampilkan di
 pesan restart Telegram, supaya Bos langsung tahu apa yang berubah.
 
+## 1.3.25
+- Tabel Kesiapan Monetisasi sekarang bisa di-sort: klik header kolom untuk mengurutkan, klik lagi untuk membalik arah.
+- Kartu statistik bertambah 1: CHANNEL — jumlah channel yang terhubung.
+- Di layar HP, subjudul header ("Overview sistem & analytics") disembunyikan — judulnya cukup "Dashboard" saja.
+
 ## 1.3.24
 - Kartu Tren Channel dan Channel Terhubung sekarang presisi sama tinggi — tabel channel mengisi penuh sisa ruang kartunya.
 

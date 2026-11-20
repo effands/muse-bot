@@ -496,13 +496,14 @@ body::before {
 .card-sub { font-family: var(--font-m); font-size: 9px; color: var(--muted); margin-top: 2px; }
 .card-body { padding: 18px; }
 
-.stats-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; margin-bottom: 16px; }
+.stats-grid { display: grid; grid-template-columns: repeat(5,1fr); gap: 12px; margin-bottom: 16px; }
 .stat { background: var(--card); border: 1px solid var(--border); border-radius: var(--r2); padding: 16px; position: relative; overflow: hidden; }
 .stat::after { content:''; position:absolute; top:0;left:0;right:0; height:2px; }
 .stat.s1::after { background: linear-gradient(90deg,var(--accent),transparent); }
 .stat.s2::after { background: linear-gradient(90deg,var(--accent2),transparent); }
 .stat.s3::after { background: linear-gradient(90deg,var(--accent3),transparent); }
 .stat.s4::after { background: linear-gradient(90deg,var(--green),transparent); }
+.stat.s5::after { background: linear-gradient(90deg,var(--yellow),transparent); }
 .stat-lbl { font-family:var(--font-m); font-size:9px; color:var(--muted); letter-spacing:.12em; margin-bottom:8px; }
 .stat-val { font-size:26px; font-weight:700; line-height:1; margin-bottom:3px; }
 .stat-note { font-family:var(--font-m); font-size:10px; color:var(--muted); }
@@ -898,6 +899,7 @@ body::before { display: none; }
 /* ── Tabel kesiapan monetisasi ── */
 .monet-table { width:100%; border-collapse:collapse; font-size:12px; }
 .monet-table th { text-align:left; color:var(--muted); font-family:var(--font-m); font-size:10px; padding:4px 8px 6px 0; border-bottom:1px solid var(--border); }
+.monet-table th.sortable:hover { color:var(--text); }
 .monet-table td { padding:8px 8px 8px 0; border-bottom:1px solid var(--border); vertical-align:middle; }
 
 /* ════════ SETTINGS — kerapatan ala GitHub Primer + Tabler (v1.2.29) ════════ */
@@ -1033,6 +1035,10 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
 /* Responsif 1100px: sembunyikan monitor CPU/RAM agar tombol header (termasuk Update) tidak terdorong terpotong di layar sempit */
 @media (max-width: 1100px) {
   .sys-monitor { display: none; }
+  /* 🔥 v1.3.25: di layar sempit, judul halaman cukup "Dashboard" saja —
+     subjudul ("Overview sistem & analytics") disembunyikan supaya
+     header tidak sesak di HP. */
+  .tb-sub { display: none; }
 }
 
 /* Responsif 360px: kartu & form menumpuk, tanpa overflow horizontal */
@@ -1191,6 +1197,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         <div class="stat s2"><div class="stat-lbl">WATCH TIME (JAM)</div><div class="stat-val" id="st-watch" style="color:var(--accent2)">0</div><div class="stat-note">Est. 90 hari</div><div class="stat-ico">⏱</div></div>
         <div class="stat s3"><div class="stat-lbl">SUBSCRIBERS</div><div class="stat-val" id="st-subs" style="color:var(--accent3)">0</div><div class="stat-note">Total</div><div class="stat-ico">👥</div></div>
         <div class="stat s4"><div class="stat-lbl">ACTIVE TASKS</div><div class="stat-val" id="st-active" style="color:var(--green)">0</div><div class="stat-note">Running</div><div class="stat-ico">⚡</div></div>
+        <div class="stat s5"><div class="stat-lbl">CHANNEL</div><div class="stat-val" id="st-channels" style="color:var(--yellow)">0</div><div class="stat-note">Terhubung</div><div class="stat-ico">📺</div></div>
       </div>
 
       <div class="dashboard-overview">
@@ -2850,6 +2857,7 @@ function pollSysStats() {
       }
     }
     document.getElementById('st-active').textContent = d.active_tasks || 0;
+    if (document.getElementById('st-channels')) document.getElementById('st-channels').textContent = d.channels || 0;
   }).catch(() => {});
 }
 
@@ -6101,6 +6109,15 @@ function _fmtNum(v) { return (v === null || v === undefined) ? '—' : Number(v)
 // dari /api/get_youtube_analytics) digabung `channels` (nama/thumbnail/
 // status/paused dari /api/get_channels). Semua nama/angka lewat escapeHtml().
 // Dipanggil dari renderAnalytics() dan renderDashboardChannels().
+// 🔥 v1.3.25: sort tabel KESIAPAN MONETISASI — klik header kolom.
+// State bertahan selama halaman dibuka; render ulang dari analyticsData
+// (cache, tanpa fetch ulang). Angka default desc, channel default A-Z.
+let _monSort = { key: null, dir: 1 };
+function monSortBy(key) {
+  if (_monSort.key === key) { _monSort.dir = -_monSort.dir; }
+  else { _monSort.key = key; _monSort.dir = (key === 'channel') ? 1 : -1; }
+  renderChannelTable();
+}
 function renderChannelTable() {
   const tb = document.getElementById('ch-detail-tbody'); if (!tb) return;
   const rows = analyticsData || [];
@@ -6173,8 +6190,32 @@ function renderChannelTable() {
     let h = '<div style="border-top:1px solid var(--border);padding-top:10px">'
       + '<div style="font-weight:700;font-size:12px;margin-bottom:4px">💰 KESIAPAN MONETISASI</div>'
       + '<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">Syarat saat ini: ' + escapeHtml(rule.rule_label || '') + (rule.rule_next ? '<br>' + escapeHtml(rule.rule_next) : '') + '</div>'
-      + '<div style="overflow-x:auto"><table class="monet-table"><thead><tr><th>Channel</th><th>Subs</th><th>Jam Tayang est.</th><th>Shorts 90 hari</th><th>Status</th></tr></thead><tbody>';
-    rows.forEach(d => {
+      + '<div style="overflow-x:auto"><table class="monet-table"><thead><tr>'
+      + ['channel|Channel', 'subs|Subs', 'watch|Jam Tayang est.', 'shorts|Shorts 90 hari', 'status|Status'].map(function (kv) {
+          const p = kv.split('|');
+          const arrow = _monSort.key === p[0] ? (_monSort.dir === 1 ? ' ▲' : ' ▼') : '';
+          return '<th class="sortable" onclick="monSortBy(\'' + p[0] + '\')" style="cursor:pointer;white-space:nowrap" title="Klik untuk mengurutkan">' + p[1] + arrow + '</th>';
+        }).join('')
+      + '</tr></thead><tbody>';
+    const mrows = rows.slice();
+    if (_monSort.key) {
+      const keyVal = d => {
+        const m = d.monetization || {};
+        if (_monSort.key === 'channel') return (d.name || '').toLowerCase();
+        if (_monSort.key === 'subs') return m.subs || 0;
+        if (_monSort.key === 'watch') return m.watch_est == null ? -1 : m.watch_est;
+        if (_monSort.key === 'shorts') return m.shorts_complete ? (m.shorts_views || 0) : -1;
+        if (_monSort.key === 'status') return m.status === 'monetized' ? 3 : m.status === 'ready' ? 2 : 1;
+        return 0;
+      };
+      mrows.sort((a, b) => {
+        const va = keyVal(a), vb = keyVal(b);
+        if (va < vb) return -1 * _monSort.dir;
+        if (va > vb) return 1 * _monSort.dir;
+        return (a.name || '').localeCompare(b.name || '');
+      });
+    }
+    mrows.forEach(d => {
       const m = d.monetization || {};
       const statusBadge = m.status === 'monetized' ? '<span class="pill p-green">💰 Monetisasi Aktif</span>'
         : m.status === 'ready' ? '<span class="pill p-green">✅ Siap Monet (est.)</span>'

@@ -1,3 +1,6 @@
+## 1.3.55
+- Kolom EMAIL di tabel Channel Terhubung Dashboard (home) disembunyikan — email tetap tampil + bisa diisi manual di Task Monitor, dan tetap tercatat otomatis saat login Analytics.
+
 ## 1.3.54
 - Kolom EMAIL di tabel channel bisa diisi manual: klik emailnya, ketik, lalu ✓ (Enter juga bisa, Esc batal). Kosongkan untuk menghapus. Email juga tetap terisi otomatis saat login Analytics.
 

@@ -3,6 +3,9 @@
 Catatan perubahan per versi. Dibaca operator saat start dan ditampilkan di
 pesan restart Telegram, supaya Bos langsung tahu apa yang berubah.
 
+## 1.3.35
+- Kolom "Jadwal Berikutnya" sekarang juga menampilkan video yang sudah di-upload tapi belum tayang (misal yang tayang jam 19:00), dengan penanda "sudah di-upload" — sebelumnya kolom ini selalu kosong karena semua video publish langsung.
+
 ## 1.3.34
 - Tombol header (Light Mode, Hub, Update) sekarang ikon saja tanpa teks, di semua lebar layar.
 - Angka RAM/DISK di header ditumpuk atas-bawah (dipakai di atas, total di bawah) supaya tidak sempit.

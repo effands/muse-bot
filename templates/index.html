@@ -2959,14 +2959,29 @@ function renderChannelsGrid() {
 // dirender/diunggah ikut dihitung (waktunya sudah lewat tapi belum tayang).
 function nextScheduleFor(yt_id) {
   const act = (typeof serverData !== 'undefined' && serverData.active) || [];
+  const hist = (typeof serverData !== 'undefined' && serverData.history) || [];
   let best = null, bestKey = null;
-  act.forEach(t => {
+  const consider = (t) => {
     const yt = (t.blueprint && t.blueprint.yt_id) || t.yt_id || '';
     if (yt !== yt_id) return;
     const tm = String(t.time || '');
     const m = tm.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
     const key = m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime() : Infinity;
     if (best === null || key < bestKey) { best = t; bestKey = key; }
+  };
+  act.forEach(consider);
+  // 🔥 v1.3.35: video yang sudah di-upload tapi belum tayang (riwayat
+  // dengan jam di masa depan, bukan Gagal) juga tampil sebagai jadwal
+  // berikutnya — supaya kolom ini berguna di pola publish-langsung.
+  const nowKey = Date.now();
+  hist.forEach(t => {
+    if (String(t.status || '').includes('Gagal')) return;
+    const tm = String(t.time || '');
+    const m = tm.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+    if (!m) return;
+    const key = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime();
+    if (key <= nowKey) return;
+    consider(t);
   });
   return best;
 }
@@ -3021,7 +3036,7 @@ function channelTableHtml(list, withMode, showNext, fill) {
     const nx = showNext ? nextScheduleFor(c.yt_id) : null;
     const nextCell = !showNext ? '' : (!nx
       ? `<td style="color:var(--muted);font-family:var(--font-m);font-size:11px;white-space:nowrap">Belum ada video dijadwalkan</td>`
-      : `<td style="font-size:11px"><span style="display:flex;gap:6px;align-items:baseline;min-width:0"><span style="white-space:nowrap;color:var(--muted)">📅 ${escapeHtml(shortDate(nx.time))}</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">${escapeHtml(nx.title || 'Video')}</span></span></td>`);
+      : `<td style="font-size:11px"><span style="display:flex;gap:6px;align-items:baseline;min-width:0"><span style="white-space:nowrap;color:var(--muted)">📅 ${escapeHtml(shortDate(nx.time))}</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">${escapeHtml(nx.title || 'Video')}</span>${((typeof serverData !== 'undefined' && serverData.history) || []).includes(nx) ? '<span style="white-space:nowrap;color:var(--muted);font-size:10px">· sudah di-upload</span>' : ''}</span></td>`);
     const lu = showNext ? lastUpdateFor(c.yt_id) : null;
     const lastCell = !showNext ? '' : (!lu
       ? `<td style="color:var(--muted);font-family:var(--font-m);font-size:11px;white-space:nowrap">Belum ada video tayang</td>`

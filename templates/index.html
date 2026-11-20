@@ -524,7 +524,10 @@ body::before {
 .tbl th { font-family:var(--font-m); font-size:9px; color:var(--muted); letter-spacing:.12em; text-align:left; padding:0 0 10px; border-bottom:1px solid var(--border); }
 .tbl td { padding:10px 0; border-bottom:1px solid var(--border); vertical-align:middle; }
 .tbl tr:last-child td { border-bottom:none; }
-.ch-tbl thead th { position:sticky; top:0; background:var(--card); z-index:1; }
+.ch-tbl thead th { position:sticky; top:0; background:var(--card); z-index:1; padding-bottom:6px; }
+/* 🔥 v1.3.23: baris tabel channel lebih rapat (padding 10px -> 5px) —
+   7 channel muat tanpa scroll, scroll baru muncul di 9+ channel. */
+.ch-tbl td { padding:5px 0; }
 
 .fg { display:flex; flex-direction:column; gap:5px; margin-bottom:14px; }
 .fg:last-child { margin-bottom:0; }

@@ -3,6 +3,9 @@
 Catatan perubahan per versi. Dibaca operator saat start dan ditampilkan di
 pesan restart Telegram, supaya Bos langsung tahu apa yang berubah.
 
+## 1.3.23
+- Baris tabel Channel Terhubung dibuat lebih rapat — 7 channel sekarang muat tanpa scroll.
+
 ## 1.3.22
 - Kolom WATCH 30D di tabel Detail Channel dibuat lebih ramping.
 - Tabel Kesiapan Monetisasi lebih enak dibaca: jam tayang yang belum ada datanya tampil "-" saja (bukan "-/4.000"), dan aturan syaratnya kini dua baris.

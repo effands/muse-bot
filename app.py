@@ -12619,28 +12619,38 @@ def _playlist_do_research(yt_id, theme, min_duration_sec=None, max_duration_sec=
                                  else "Riset memakai ~101 unit kuota per tier yang dicoba (tier berikutnya hanya bila tier sebelumnya kosong).")}, 200
 
 
-def _playlist_find_duplicate(jobs, job_id, yt_id, video_id, now_wib, window_min=120):
+def _playlist_find_duplicate(jobs, job_id, yt_id, video_id, now_wib, window_min=120,
+                             ref_title=None, done_window_min=1440):
     """Cari job LAIN untuk channel + referensi yang sama dalam `window_min`
     menit terakhir. Mencegah order dobel (pernah: jembatan + konfirmasi bot
     membuat 2 batch Malaysia yang sama). Kembalikan job dict yang cocok,
-    atau None. Job yang sudah gagal / tanpa task & tidak live tidak dihitung."""
-    if not yt_id or not video_id:
+    atau None. Job yang sudah gagal / tanpa task & tidak live tidak dihitung.
+    🔥 v1.3.31: job SELESAI video_id-nya dibersihkan (None) sehingga
+    referensi yang sudah tayang lolos dari cek ini — hrry9gea9PI dipakai
+    3x dalam sehari (05:35, 09:21, 10:15). Job 'done' kini dicocokkan
+    lewat ref_title dalam `done_window_min` menit (24 jam)."""
+    if not yt_id or (not video_id and not ref_title):
         return None
     for j in jobs or []:
         if j.get('job_id') == job_id:
             continue
         if j.get('yt_id') != yt_id:
             continue
-        if j.get('video_id') != video_id:
+        _jvid = j.get('video_id')
+        _same_live = bool(_jvid and _jvid == video_id)
+        _same_done = (not _jvid and ref_title and j.get('ref_title') == ref_title
+                      and j.get('status') == 'done')
+        if not (_same_live or _same_done):
             continue
-        if j.get('task_id') is None and j.get('status') not in ('downloading', 'preparing', 'queued'):
+        if not _same_done and j.get('task_id') is None and j.get('status') not in ('downloading', 'preparing', 'queued'):
             continue
         ts_raw = j.get('updated_at') or j.get('created_at') or ''
         try:
             ts = datetime.strptime(str(ts_raw)[:16], '%Y-%m-%d %H:%M').replace(tzinfo=ZoneInfo('Asia/Jakarta'))
         except Exception:
             continue
-        if (now_wib - ts).total_seconds() <= window_min * 60:
+        _win = done_window_min if _same_done else window_min
+        if (now_wib - ts).total_seconds() <= _win * 60:
             return j
     return None
 
@@ -12663,8 +12673,12 @@ def _playlist_do_create(job_id, video_id, publish_date='', privacy='public',
     # 🔥 v1.3.6: cegah order dobel — referensi yang sama untuk channel yang
     # sama dalam 2 jam terakhir (pernah dibuat 2x: jembatan + konfirmasi bot).
     _dup = _playlist_find_duplicate(_playlist_jobs_load().get('jobs', []),
-                                    job_id, job.get('yt_id'), video_id, _wib_now())
+                                    job_id, job.get('yt_id'), video_id, _wib_now(),
+                                    ref_title=cand.get('title'))
     if _dup:
+        if _dup.get('status') == 'done':
+            return False, ("Video referensi ini sudah dipakai channel ini dalam 24 jam terakhir — "
+                           "pilih video lain supaya tidak dobel konten."), 409
         return False, ("Playlist referensi ini sudah dibuat untuk channel ini "
                        "dalam 2 jam terakhir — tidak dibuat dobel."), 409
     pub = (publish_date or '').strip()

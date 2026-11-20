@@ -4408,7 +4408,11 @@ def _stagger_publish_date(base, index, step_min=15):
     beruntun per channel (channel ke-0 tayang jam dasar, ke-1 +15 mnt,
     dst.). Gagal parse → kembalikan base apa adanya."""
     try:
-        dt = datetime.datetime.strptime(base, '%Y-%m-%d %H:%M') + datetime.timedelta(minutes=step_min * int(index))
+        # 🔥 v1.3.31: modul ini memakai `from datetime import datetime,
+        # timedelta` (datetime = KELAS) — datetime.datetime/timedelta
+        # melempar AttributeError diam-diam sehingga semua channel
+        # dapat jam dasar yang sama (10:15 WIB: 7 channel semua 16:00).
+        dt = datetime.strptime(base, '%Y-%m-%d %H:%M') + timedelta(minutes=step_min * int(index))
         return dt.strftime('%Y-%m-%d %H:%M')
     except Exception:
         return base
@@ -7665,7 +7669,9 @@ def _nlu_ask_confirm(token, chat_id, pending):
     elif pending.get('intent') == 'hentikan_antrean':
         extra = "\n⚠️ Antrean yang dihentikan tidak bisa dibatalkan."
     send_message(token, chat_id,
-                 f"Maksud Bos: {_nlu_describe(pending)}?{extra}",
+                 f"Maksud Bos: {_nlu_describe(pending)}?{extra}\n\n"
+                 "Kalau mau diubah, ketik saja yang mau diubah ya Bos "
+                 "(mis. `jam 5 sore` / `tema lofi` / `cuma Aruya`) — tidak perlu batal.",
                  reply_markup={"inline_keyboard": [[
                      {"text": "✅ Ya, benar", "callback_data": "nlu:yes"},
                      {"text": "❌ Bukan, batal", "callback_data": "nlu:no"},
@@ -8203,6 +8209,9 @@ def _execute_nlu_create_playlist_multi(token, chat_id, pending, chs):
     lines = []
     made = []
     _last_tier_label = None
+    # 🔥 v1.3.31: referensi yang sudah dipakai di batch ini (supaya tiap
+    # channel dapat video sumber yang beda — judul laporan tidak sama semua).
+    used_refs = set()
     for _ci, ch in enumerate(chs):
         name = _channel_display_name(ch)
         yt = ch.get('yt_id')
@@ -8230,7 +8239,10 @@ def _execute_nlu_create_playlist_multi(token, chat_id, pending, chs):
                 made.append(False)
                 continue
             cands = (data or {}).get('candidates') or []
-            best, _tier_lbl = _playlist_pick_best(cands, slots.get('duration_min_sec'),
+            # 🔥 v1.3.31: pilih kandidat terbaik yang BELUM dipakai channel
+            # lain di batch ini; bila semua sudah dipakai, pakai daftar penuh.
+            _avail0 = [c for c in cands if c.get('video_id') not in used_refs]
+            best, _tier_lbl = _playlist_pick_best(_avail0 or cands, slots.get('duration_min_sec'),
                                                   slots.get('duration_max_sec'))
             _last_tier_label = _tier_lbl
             if not best:
@@ -8245,15 +8257,36 @@ def _execute_nlu_create_playlist_multi(token, chat_id, pending, chs):
             pub = _playlist_publish_now_date()
         else:
             pub = _next_slot_for_channel(ch)
-        ok2, info2, _resp2 = _operator_post('/api/operator/playlist_create',
-                                            {'job_id': (data or {}).get('job_id', ''),
-                                             'video_id': best.get('video_id'),
-                                             'publish_date': pub, 'privacy': 'public',
-                                             'pixabay_theme': slots.get('pixabay_theme') or ''})
+        # 🔥 v1.3.31: bila create ditolak dedupe (referensi sudah dipakai
+        # 24 jam terakhir), coba kandidat terbaik berikutnya (maks 3x).
+        ok2 = False
+        info2 = ''
+        _resp2 = None
+        _tried = set()
+        for _attempt in range(3):
+            ok2, info2, _resp2 = _operator_post('/api/operator/playlist_create',
+                                                {'job_id': (data or {}).get('job_id', ''),
+                                                 'video_id': best.get('video_id'),
+                                                 'publish_date': pub, 'privacy': 'public',
+                                                 'pixabay_theme': slots.get('pixabay_theme') or ''})
+            if ok2:
+                break
+            if 'sudah dibuat' not in (info2 or '') and 'sudah dipakai' not in (info2 or ''):
+                break
+            _tried.add(best.get('video_id'))
+            _next, _tl = _playlist_pick_best(
+                [c for c in (cands if not _src_url else [])
+                 if c.get('video_id') not in _tried and c.get('video_id') not in used_refs],
+                slots.get('duration_min_sec'), slots.get('duration_max_sec'))
+            if not _next:
+                break
+            best = _next
         if not ok2:
             lines.append(f"• *{_tg_escape(name)}*: gagal dibuat — {_tg_escape(info2)} (dilewati)")
             made.append(False)
             continue
+        if not _src_url:
+            used_refs.add(best.get('video_id'))
         views_txt = f"{best.get('views') or 0:,}".replace(',', '.')
         made.append(True)
         if _src_url:
@@ -8280,6 +8313,10 @@ def _execute_nlu_create_playlist_multi(token, chat_id, pending, chs):
         lines.append("")
         lines.append("Yang loginnya mati (tidak dibuatkan): " + ", ".join(_tg_escape(n) for n in dead_names)
                      + " — tautkan ulang dari panel (Settings → Tambah Channel, device login).")
+    if any(made):
+        lines.append("")
+        lines.append("Judul di atas itu judul video SUMBER-nya ya Bos — judul final tiap channel beda-beda "
+                     "(ditulis ulang pakai rumus SEO), bisa dicek di panel Task Monitor begitu task-nya muncul.")
     send_message(token, chat_id, "\n".join(lines) or "Tidak ada playlist yang dibuat Bos.")
 
 
@@ -8515,6 +8552,47 @@ def _nlu_suggest(clean):
     return [cmd for _s, cmd in scored[:2]]
 
 
+def _nlu_try_revise_pending(pending, raw_cmd, clean_cmd):
+    """🔥 v1.3.31: koreksi slot pending yang sedang dikonfirmasi
+    ('jam 5 sore' / 'tema lofi' / 'cuma Aruya'). True bila ada slot
+    yang berubah (pemanggil menyimpan + advance ulang untuk konfirmasi
+    baru). Satu koreksi sekali balas; konfirmasi baru yang muncul bisa
+    dikoreksi lagi. Jawaban murni ya/tidak BUKAN revisi."""
+    if set((clean_cmd or '').split()) <= {'ya', 'iya', 'iyes', 'ok', 'oke', 'setuju', 'lanjut', 'benar',
+                                          'tidak', 'nggak', 'gak', 'bukan', 'batal', 'ngga', 'salah'}:
+        return False
+    slots = pending.setdefault('slots', {})
+    intent = pending.get('intent')
+    # 1. Jam/waktu ("jam 5", "jam 5 sore", "besok jam 9").
+    ndt, nnote = _parse_natural_datetime(raw_cmd)
+    if ndt:
+        slots['publish_date'] = ndt
+        if nnote:
+            slots['publish_note'] = nnote
+        else:
+            slots.pop('publish_note', None)
+        return True
+    # 2. Channel ("Aruya aja", "cuma Cozy Sax", "semua") — dicek
+    # SEBELUM tema supaya 'cuma Aruya' tidak dibaca jadi tema 'cuma'.
+    matched, all_flag = _nlu_match_channels(clean_cmd, load_channels())
+    if all_flag:
+        slots['channels'] = [c.get('yt_id') for c in load_channels()]
+        slots.pop('login_checked', None)
+        return True
+    if matched:
+        slots['channels'] = [c.get('yt_id') for c in matched]
+        slots.pop('login_checked', None)
+        return True
+    # 3. Tema playlist ("tema lofi", "temanya nostalgia").
+    if intent in ('buat_playlist', 'jadwalkan_playlist'):
+        th = _nlu_extract_playlist_theme(clean_cmd, load_channels())
+        if th:
+            slots['playlist_theme'] = th
+            slots.pop('playlist_source_url', None)
+            return True
+    return False
+
+
 def _nlu_try_complete_pending(token, chat_id, raw_cmd, clean_cmd):
     """Jawaban singkat atas klarifikasi yang sedang menunggu (nama channel /
     angka / niche / mode / ya-tidak). Kembalikan True bila pending
@@ -8530,6 +8608,13 @@ def _nlu_try_complete_pending(token, chat_id, raw_cmd, clean_cmd):
             pending['confirmed'] = True
             _nlu_audit_log(raw_cmd, {"intent": pending.get('intent'), "confidence": None, "slots": slots},
                            'confirmed')
+            _save_nlu_pending(chat_id, pending)
+            _nlu_advance(token, chat_id, pending)
+            return True
+        # 🔥 v1.3.31: REVISI dicek SEBELUM kata batal — "gak, jam 5 aja"
+        # itu koreksi jam, bukan pembatalan. ("ya" sudah ditangani di
+        # atas; jawaban murni ya/tidak tidak sampai ke sini sebagai revisi.)
+        if _nlu_try_revise_pending(pending, raw_cmd, clean_cmd):
             _save_nlu_pending(chat_id, pending)
             _nlu_advance(token, chat_id, pending)
             return True

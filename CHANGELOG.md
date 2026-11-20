@@ -1,3 +1,7 @@
+## 1.3.62
+- Musik Playlist: judul besar "♫ Musik Playlist" dihapus (tinggal deskripsi singkatnya); tombol "🔍 Riset Playlist" kini sejajar dalam 1 baris dengan keempat field — tepat di samping Durasi Max (grid 5 kolom; 2 kolom di layar sempit, 1 kolom di HP).
+- Riwayat Job Playlist: judul job kini berwarna sesuai temanya (1 tema = 1 warna tetap, dari palet 8 warna) + titik warna di depan judul; arahkan kursor ke judul untuk melihat nama temanya.
+
 ## 1.3.61
 - Kalender Jadwal kini TABEL beneran (TANGGAL | JAM | JUDUL | CHANNEL | STATUS): 1 baris per video, semua sebaris, judul dipotong "…" + tooltip; tanggal pakai rowspan bila 1 hari ada >1 video; yang terlambat jadi baris pemisah merah di atas. Muat jauh lebih banyak dalam 1 layar.
 - Pemetaan Channel → Client dirapikan: label client tidak dobel lagi ("project-musik-1" bukan "project-musik-1 (project project-musik-1)"; client Desktop tampil "desktop (project-musik-1)") — dua client di project yang sama kini bisa dibedakan; badge Terhubung yang jadi client utama ditandai ★; kolom tabel dikunci lebarnya + ada keterangan di bawah tabel.

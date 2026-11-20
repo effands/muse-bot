@@ -520,6 +520,7 @@ body::before {
 .g2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
 .g3 { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
 .g4 { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+.g5 { display:grid; grid-template-columns:repeat(5,1fr); gap:10px; }
 .g21 { display:grid; grid-template-columns:2fr 1fr; gap:14px; }
 
 .pill { font-family:var(--font-m); font-size:9px; font-weight:700; padding:3px 8px; border-radius:20px; display:inline-block; white-space:nowrap; }
@@ -662,6 +663,7 @@ input[type=color] { padding:0; height:36px; width:100%; border:1px solid var(--b
 #panel-playlist .g2 { gap:10px; }
 #panel-playlist .btn-row { margin-top:8px; }
 @media (max-width: 900px) { #panel-playlist .g4 { grid-template-columns:1fr 1fr; } }
+@media (max-width: 900px) { #panel-playlist .g5 { grid-template-columns:1fr 1fr; } }
 
 /* 🔥 CSS BARU COLLAPSE & PAGINATION */
 .ch-group-head { cursor: pointer; user-select: none; transition: 0.2s; }
@@ -814,7 +816,7 @@ input[type=color] { padding:0; height:36px; width:100%; border:1px solid var(--b
   .sm-lbl { font-size: 7px; }
   .sm-val { font-size: 10px; }
   .stats-grid { grid-template-columns: repeat(2, 1fr) !important; gap: 10px; }
-  .g2, .g3, .g4, .g21, .sm-steps { grid-template-columns: 1fr !important; gap: 12px; }
+  .g2, .g3, .g4, .g5, .g21, .sm-steps { grid-template-columns: 1fr !important; gap: 12px; }
   .sh { flex-direction: column; align-items: flex-start; gap: 10px; }
   .sh select { width: 100% !important; }
   .card-head { flex-direction: column; align-items: flex-start; gap: 10px; }
@@ -2115,19 +2117,19 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
     </div>
     <div id="panel-playlist" class="panel">
       <div class="sh" style="margin-bottom:12px">
-        <div><div class="sh-title"><svg class="nav-ic" style="width:18px;height:18px;vertical-align:-3px"><use href="#ic-music"/></svg> Musik Playlist</div><div class="sh-sub">Riset playlist YouTube yang lagi meledak (30 hari terakhir, &gt;20rb views) → kompilasi musik 16:9 → upload ke channel tujuan</div></div>
+        <div><div class="sh-sub">Riset playlist YouTube yang lagi meledak (30 hari terakhir, &gt;20rb views) → kompilasi musik 16:9 → upload ke channel tujuan</div></div>
       </div>
       <div class="card" style="margin-bottom:12px">
         <div class="card-head"><span class="card-title">🔍 RISET PLAYLIST</span></div>
         <div class="card-body">
           <details class="data-note" style="margin:0 0 10px"><summary>ⓘ Tentang riset ini</summary><div>Riset memakai ~101 unit kuota YouTube Data API per pencarian (hasilnya di-cache 1 jam — riset ulang tema yang sama tanpa kuota). Audio referensi dipakai apa adanya; judul &amp; deskripsi ditulis ulang, thumbnail dimodifikasi sedikit. Footage dari Pixabay (butuh API key di Settings — gratis).</div></details>
-          <div class="g4">
+          <div class="g5">
             <div class="fg"><label class="fl">Channel Tujuan</label><select id="pl-channel"><option value="">-- Pilih Channel --</option></select></div>
             <div class="fg"><label class="fl">Tema / Kata Kunci</label><input type="text" id="pl-theme" placeholder="mis. lofi, piano santai, lagu anak"></div>
             <div class="fg"><label class="fl">Durasi Min (menit, opsional)</label><input type="number" id="pl-dur-min" min="0" placeholder="mis. 40"></div>
             <div class="fg"><label class="fl">Durasi Max (menit, opsional)</label><input type="number" id="pl-dur-max" min="0" placeholder="mis. 70"></div>
+            <div class="fg" style="justify-content:flex-end"><label class="fl">&nbsp;</label><button class="btn btn-p" id="btn-pl-research" onclick="playlistResearch()" style="width:100%">🔍 Riset Playlist</button></div>
           </div>
-          <div class="btn-row"><button class="btn btn-p" id="btn-pl-research" onclick="playlistResearch()">🔍 Riset Playlist</button></div>
           <div id="pl-candidates" style="margin-top:10px"></div>
           <div id="pl-create-wrap" style="display:none;margin-top:10px">
             <div class="g2">
@@ -4875,6 +4877,10 @@ function playlistCreate() {
 function fetchPlaylistJobs() {
   fetch('/api/playlist_jobs').then(r => r.json()).then(d => renderPlaylistJobs(d.jobs || [])).catch(() => {});
 }
+// 🔥 v1.3.62: warna judul job sesuai tema — 1 tema selalu 1 warna yang sama
+// (hash nama tema → palet), jadi tema gampang dikenali sekilas.
+const _themeColors = ['#4cc2ff', '#4ade80', '#facc15', '#fb923c', '#f472b6', '#c084fc', '#2dd4bf', '#f87171'];
+function themeColor(s) { let h = 0; const str = String(s || '?'); for (const ch of str) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return _themeColors[h % _themeColors.length]; }
 function renderPlaylistJobs(jobs) {
   const box = document.getElementById('pl-jobs');
   if (!box) return;
@@ -4882,11 +4888,12 @@ function renderPlaylistJobs(jobs) {
   const stMap = { researched: ['🔍 Riset selesai', 'p-cyan'], downloading: ['⬇️ Mengunduh', 'p-yellow'], preparing: ['🛠️ Menyiapkan', 'p-yellow'], queued: ['⏳ Menunggu approval/antrean', 'p-yellow'], done: ['✅ Tayang', 'p-green'], failed: ['❌ Gagal', 'p-red'] };
   box.innerHTML = jobs.map(j => {
     const st = stMap[j.status] || [j.status || '—', 'p-muted'];
+    const tc = themeColor(j.theme || j.new_title || '?');
     const link = j.video_url ? ` <a href="${escapeHtml(j.video_url)}" target="_blank" style="color:var(--accent)">[Lihat]</a>` : '';
     const err = j.error ? `<div class="task-meta" style="color:var(--accent2)">Alasan: ${escapeHtml(j.error)}</div>` : '';
     const rm = j.render_method ? ` · render ${escapeHtml(j.render_method)}` : '';
     const fb = j.pixabay_fallback ? ` · footage fallback ke tema musik` : (j.pixabay_theme_used ? ` · footage: ${escapeHtml(j.pixabay_theme_used)}` : '');
-    return `<div class="task-row"><div class="task-icon">🎵</div><div class="task-info"><div class="task-name">${escapeHtml(j.new_title || j.ref_title || j.theme || '?')}</div><div class="task-meta">${escapeHtml(j.channel_name || '')} · ${escapeHtml(j.created_at || '')}${rm}${fb}${link}</div><div class="task-meta">${escapeHtml(j.progress || '')}</div>${err}</div><span class="pill ${st[1]}" style="flex-shrink:0;max-width:220px;white-space:normal;line-height:1.3">${st[0]}</span></div>`;
+    return `<div class="task-row"><div class="task-icon">🎵</div><div class="task-info"><div class="task-name" title="Tema: ${escapeHtml(j.theme || '—')}"><span style="color:${tc}">●</span> <span style="color:${tc}">${escapeHtml(j.new_title || j.ref_title || j.theme || '?')}</span></div><div class="task-meta">${escapeHtml(j.channel_name || '')} · ${escapeHtml(j.created_at || '')}${rm}${fb}${link}</div><div class="task-meta">${escapeHtml(j.progress || '')}</div>${err}</div><span class="pill ${st[1]}" style="flex-shrink:0;max-width:220px;white-space:normal;line-height:1.3">${st[0]}</span></div>`;
   }).join('');
 }
 

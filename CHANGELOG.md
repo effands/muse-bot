@@ -1,3 +1,6 @@
+## 1.3.53
+- Tombol Tambah Channel di Dashboard kembali ke device login (TV) — login lebih cepat. Jalur 1x login browser tetap tersedia di Settings → GOOGLE OAUTH 2.0 API → Tambah Channel — 1x Login (dipakai untuk Analytics + email).
+
 ## 1.3.52
 - Tambah channel kini konfirmasi dulu: sesudah login, panel menampilkan channel yang terdeteksi (nama + email) sebelum disimpan — 1 akun Google bisa punya beberapa channel, yang terdeteksi adalah channel yang sedang AKTIF di akun itu. Tombol Tambah Channel di Dashboard kini membuka jalur 1x login browser (device login tetap tersedia sebagai cadangan).
 

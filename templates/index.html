@@ -1227,7 +1227,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
           <span class="card-title">📊 DETAIL CHANNEL</span>
           <span style="display:flex;gap:8px;align-items:center">
             <span class="pill p-cyan" id="ch-detail-count">0 channel</span>
-            <button type="button" class="btn btn-p btn-sm" onclick="goAddChannel()" title="Tambah channel YouTube baru (1x login browser)">➕ Tambah Channel</button>
+            <button type="button" class="btn btn-p btn-sm" onclick="openAddChannelModal()" title="Tautkan channel YouTube baru (device login, sama seperti di Settings)">➕ Tambah Channel</button>
           </span>
         </div>
         <div class="card-body" style="padding:6px 16px 10px">
@@ -6641,11 +6641,6 @@ function renderChannelTable() {
 let _addChTimer = null;
 let _addChPolling = false;
 
-function goAddChannel() {
-  go('settings');
-  toast('Tambah channel lewat 1x login browser di bawah — sekali login, semua izin.', 'info');
-  setTimeout(() => { const el = document.getElementById('ca-block'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 350);
-}
 function openAddChannelModal() {
   const modal = document.getElementById('add-ch-modal');
   const body = document.getElementById('add-ch-body');

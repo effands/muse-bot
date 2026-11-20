@@ -1,3 +1,6 @@
+## 1.3.56
+- Langkah 3 /playlist (Durasi) kini pakai tombol tinggal klik: 40–70 menit, 1 jam, 60 menit, Semua durasi, + ✏️ Custom (ketik sendiri). Nilai tombol dipakai ulang parser teks yang sama, jadi artinya identik dengan ketikan. Tap kedua ditolak (anti riset ganda).
+
 ## 1.3.55
 - Kolom EMAIL di tabel Channel Terhubung Dashboard (home) disembunyikan — email tetap tampil + bisa diisi manual di Task Monitor, dan tetap tercatat otomatis saat login Analytics.
 

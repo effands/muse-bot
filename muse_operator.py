@@ -3058,6 +3058,46 @@ def handle_callback_query(token, chat_id, callback_query):
             _save_nlu_pending(chat_id, pending)
             _nlu_advance(token, chat_id, pending)
         return
+    # --- v1.3.56: tombol durasi Langkah 3 /playlist ---
+    if data.startswith('mkplaylist:dur:'):
+        draft = _load_make_draft(chat_id)
+        if not draft or draft.get('expired') or draft.get('kind') != 'playlist':
+            answer_callback(token, cq_id, "Draft-nya sudah tidak ada 😅")
+            send_message(token, chat_id,
+                         "🤖 *Eh Bos, draft-nya sudah tidak ada* 😅\nKetik /playlist untuk mulai lagi ya Bos!")
+            return
+        # 🔥 v1.3.33 pattern: tap kedua ditolak — step sudah berubah jadi
+        # 'research' saat tap pertama diproses, jadi riset tidak jalan dua
+        # kali (kuota + job yatim).
+        if draft.get('step') != 'duration':
+            answer_callback(token, cq_id, "Sudah dijawab Bos 😅")
+            return
+        choice = data.rsplit(':', 1)[-1]
+        d = draft.get('data') or {}
+        if choice == 'custom':
+            answer_callback(token, cq_id, "Siap Bos, ketik durasinya ya ✏️")
+            send_message(token, chat_id,
+                         "✏️ *Durasi custom*\n\nKetik durasinya Bos — mis. `40-70`, `1 jam`, angka `60`, atau `lewati` untuk semua durasi.")
+            return
+        if choice == 'all':
+            answer_callback(token, cq_id, "Siap Bos, semua durasi 😎")
+            d['duration_min_sec'] = None
+            d['duration_max_sec'] = None
+            d['duration_note'] = ''
+        else:
+            # Nilai tombol dipakai ulang parser teks yang sama ('40-70',
+            # '1jam', '60') — jadi arti tombol = arti ketikan yang sama.
+            parsed = _parse_playlist_duration(choice)
+            if not parsed:
+                answer_callback(token, cq_id, "Hmm, pilihan itu tidak dikenal 😅")
+                return
+            answer_callback(token, cq_id, "Siap Bos 😎")
+            d['duration_min_sec'], d['duration_max_sec'], d['duration_note'] = parsed
+        draft['step'] = 'research'
+        draft['data'] = d
+        _save_make_draft(chat_id, draft)
+        _pl_run_research(token, chat_id, draft)
+        return
     # --- v1.3.13: tawaran "yang paling dekat" di /playlist ---
     if data in ('mkplaylist:closest:yes', 'mkplaylist:closest:no'):
         draft = _load_make_draft(chat_id)
@@ -4054,8 +4094,17 @@ def _make_ask_step(token, chat_id, draft):
             send_message(token, chat_id,
                          "🖼️ *Langkah 2: Tema footage Pixabay*\n\nTema footage-nya apa Bos? (mis. `autumn`, `pantai`, `kota malam`)\nKetik `lewati` untuk auto (pakai tema musik).")
         elif step == 'duration':
+            # 🔥 v1.3.56: tombol durasi tinggal klik + Custom (ketik sendiri).
+            # Nilai tombol dipakai ulang oleh parser yang sama
+            # (_parse_playlist_duration) di callback mkplaylist:dur:*.
             send_message(token, chat_id,
-                         "⏱️ *Langkah 3: Durasi video*\n\nDurasi videonya berapa menit, Bos? (mis. `40-70`, `1 jam`, atau angka `60`)\nKetik `lewati` untuk semua durasi.")
+                         "⏱️ *Langkah 3: Durasi video*\n\nDurasi videonya berapa menit, Bos? Pencet salah satu di bawah, atau ketik sendiri.",
+                         reply_markup={"inline_keyboard": [
+                             [{"text": "40–70 menit", "callback_data": "mkplaylist:dur:40-70"},
+                              {"text": "1 jam", "callback_data": "mkplaylist:dur:1jam"}],
+                             [{"text": "60 menit", "callback_data": "mkplaylist:dur:60"},
+                              {"text": "Semua durasi", "callback_data": "mkplaylist:dur:all"}],
+                             [{"text": "✏️ Custom (ketik sendiri)", "callback_data": "mkplaylist:dur:custom"}]]})
         elif step == 'research':
             _pl_run_research(token, chat_id, draft)
         elif step == 'pick':
@@ -5915,7 +5964,7 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
                 parsed = _parse_playlist_duration(ans)
                 if not parsed:
                     send_message(token, chat_id,
-                                 "😅 *Format durasinya belum saya pahami Bos* — coba `40-70`, `1 jam`, angka `60`, atau ketik `lewati` untuk semua durasi.")
+                                 "😅 *Format durasinya belum saya pahami Bos* — pencet tombol di atas, atau coba `40-70`, `1 jam`, angka `60`, atau ketik `lewati` untuk semua durasi.")
                     return True
                 d['duration_min_sec'], d['duration_max_sec'], d['duration_note'] = parsed
             draft['step'] = _playlist_next_step(d)

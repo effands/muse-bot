@@ -1538,7 +1538,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
       </div>
       <div class="card">
         <div class="card-head"><span class="card-title">📋 LOG AKTIVITAS</span><span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-          <select id="log-source" onchange="loadLogs()" style="width:130px" title="Sumber log"><option value="panel">Panel</option><option value="operator">Operator</option></select>
+          <span class="pill p-cyan" title="Satu log aktivitas: task dibuat, render mulai, tayang/gagal (v1.3.71)">Aktivitas</span>
           <button class="btn btn-g btn-sm" onclick="loadLogs()" title="Muat ulang log">🔄 Refresh</button>
           <button class="btn btn-g btn-sm" onclick="copyLogs()" title="Salin isi log ke clipboard">📋 Copy</button>
           <button class="btn btn-g btn-sm" onclick="clearLogs()" title="Kosongkan file log">🧹 Clear</button>
@@ -2812,8 +2812,9 @@ function go(id, el) {
 // ────────────────────────────────────────────────────────
 let logTimer = null;
 function loadLogs() {
-  const sel = document.getElementById('log-source');
-  const src = (sel && sel.value) || 'panel';
+  // 🔥 v1.3.71: SATU log aktivitas (logs/activity.log) — dropdown sumber
+  // Panel/Operator dihapus; log polling GET tidak ada di sini.
+  const src = 'aktivitas';
   const el = document.getElementById('log-view');
   if (!el) return;
   fetch('/api/logs?source=' + encodeURIComponent(src) + '&lines=200')
@@ -2861,8 +2862,7 @@ function copyLogs() {
   } else fallback();
 }
 function clearLogs() {
-  const sel = document.getElementById('log-source');
-  const src = (sel && sel.value) || 'panel';
+  const src = 'aktivitas';  // 🔥 v1.3.71: satu log saja
   themedConfirm('Kosongkan log ' + src + '?\nIsi file log dihapus dan tidak bisa dikembalikan.', { title: 'Kosongkan Log', okLabel: 'Ya, Kosongkan' }).then(ok => {
     if (!ok) return;
     fetch('/api/logs/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source: src }) })

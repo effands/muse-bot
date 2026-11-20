@@ -1,3 +1,6 @@
+## 1.3.71
+- LOG AKTIVITAS jadi SATU log (logs/activity.log): task dibuat (Shorts/Playlist/Zumo/VOD), render mulai, task selesai (Tayang ✅ / Gagal ❌ / Ditolak 🚫) — semua dengan jam WIB. Dropdown sumber Panel/Operator dihapus; log polling GET tidak ada lagi di tampilan. Riwayat 100 task terakhir di-backfill sekali saat deploy.
+
 ## 1.3.70
 - Dashboard: kolom GROUP disembunyikan dari tabel CHANNEL TERHUBUNG (tetap ada di Task Monitor + DETAIL CHANNEL, di sanalah group diatur); TREN CHANNEL dikecilkan (grid 2fr → 1.5fr) supaya tabel muat tanpa scroll menyamping; label mode "Full-Auto" disingkat jadi "Auto" (panel saja).
 

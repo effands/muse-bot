@@ -1915,6 +1915,7 @@ def move_to_history(task_id, final_status):
                 history_tasks.insert(0, t)
                 active_tasks.remove(t)
                 if len(history_tasks) > 2000: history_tasks.pop() # Limit di perbesar
+                _activity_task_finished(t, final_status)  # 🔥 v1.3.71: catat ke log aktivitas
                 break
     save_tasks_db()
     # Auto-cleanup: buang entri riwayat >90 hari setiap ada task baru masuk.
@@ -3938,6 +3939,7 @@ def _background_worker_loop():
                     d['progress_pct'] = 0
                     d['progress_stage'] = 'render'
         save_tasks_db()
+        _activity_log(f"🎬 Render mulai: {task.get('title') or '(tanpa judul)'} [{_activity_channel_name(yt_id)}]")  # 🔥 v1.3.71
         
         temp_files = [
             os.path.join(BASE_UPLOAD, f"temp_a_{task_id}.mp3"),
@@ -4797,8 +4799,59 @@ def clear_notifications():
         system_notifications.clear()
     return jsonify({"status": "success"})
 
-# ---- Log aktivitas (v1.3.11) ----
-_LOG_SOURCES = {'panel': 'panel.log', 'operator': 'operator.log'}
+# ---- Log aktivitas (v1.3.11, v1.3.71) ----
+# 🔥 v1.3.71: SATU log aktivitas — dulu LOG AKTIVITAS punya 2 sumber
+# (Panel = access log penuh polling GET tiap detik, Operator = pesan
+# startup bot) dan TIDAK ADA yang mencatat aktivitas pabrik. Sekarang
+# satu file logs/activity.log, ditulis dari titik-titik penting: task
+# dibuat, render mulai, task selesai/gagal. Format per baris:
+# [YYYY-MM-DD HH:MM WIB] pesan. Operator (proses lain) menulis ke file
+# yang sama via append — aman untuk 1 baris.
+_LOG_SOURCES = {'aktivitas': 'activity.log'}
+_ACTIVITY_LOG_FILE = os.path.join(BASE_DIR, 'logs', 'activity.log')
+_ACTIVITY_LOG_MAX_BYTES = 262144  # ~256 KB, lalu potong 500 baris tertua
+_activity_lock = threading.Lock()
+
+
+def _activity_log(msg):
+    """Tulis 1 baris aktivitas ke logs/activity.log (WIB). Gagal diam-diam
+    — log tidak boleh mematikan alur utama."""
+    try:
+        line = f"[{_wib_now().strftime('%Y-%m-%d %H:%M')} WIB] {msg}\n"
+        with _activity_lock:
+            os.makedirs(os.path.dirname(_ACTIVITY_LOG_FILE), exist_ok=True)
+            with open(_ACTIVITY_LOG_FILE, 'a', encoding='utf-8') as f:
+                f.write(line)
+            try:
+                if os.path.getsize(_ACTIVITY_LOG_FILE) > _ACTIVITY_LOG_MAX_BYTES:
+                    with open(_ACTIVITY_LOG_FILE, encoding='utf-8') as f:
+                        lines = f.read().splitlines()
+                    with open(_ACTIVITY_LOG_FILE, 'w', encoding='utf-8') as f:
+                        f.write('\n'.join(lines[-1500:]) + '\n')
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _activity_channel_name(yt_id):
+    try:
+        for c in database_channel:
+            if c.get('yt_id') == yt_id:
+                return c.get('name') or yt_id
+    except Exception:
+        pass
+    return yt_id
+
+
+def _activity_task_created(kind_label, title, yt_id):
+    _activity_log(f"📝 Task dibuat: {kind_label} — {title or '(tanpa judul)'} [{_activity_channel_name(yt_id)}]")
+
+
+def _activity_task_finished(t, final_status):
+    s = str(final_status or '')
+    icon = '✅' if 'Tayang' in s else ('❌' if 'Gagal' in s else ('🚫' if 'Ditolak' in s or 'Batal' in s else '🏁'))
+    _activity_log(f"{icon} {s}: {t.get('title') or '(tanpa judul)'} [{_activity_channel_name(t.get('yt_id'))}]")
 
 
 def _log_file_for(source):
@@ -4839,10 +4892,11 @@ def _read_log_tail(path, nlines, max_bytes=262144):
 @app.route('/api/logs')
 def logs_api():
     """Baris-baris terakhir log aktivitas (butuh login panel; GET saja).
-    ?source=panel|operator&lines=200."""
-    source = (request.args.get('source') or 'panel').strip().lower()
+    ?source=aktivitas&lines=200 — v1.3.71: satu-satunya sumber adalah
+    logs/activity.log (task dibuat, render, tayang/gagal)."""
+    source = (request.args.get('source') or 'aktivitas').strip().lower()
     if source not in _LOG_SOURCES:
-        source = 'panel'
+        source = 'aktivitas'
     path = _log_file_for(source)
     try:
         lines = int(request.args.get('lines') or 200)
@@ -9898,6 +9952,7 @@ def _create_shorts_muse_task(data):
             "title_cleaned": title_cleaned,
             "blueprint": blueprint,
         })
+        _activity_task_created("📱 Shorts Muse", title, yt_id)  # 🔥 v1.3.71: catat ke log aktivitas
         for c in database_channel:
             if c['yt_id'] == yt_id:
                 c['last_scheduled_date'] = v_date_str
@@ -11564,6 +11619,7 @@ def _playlist_create_task(data):
             "title_cleaned": title_cleaned,
             "blueprint": blueprint,
         })
+        _activity_task_created("🎵 Musik Playlist", title, yt_id)  # 🔥 v1.3.71: catat ke log aktivitas
         for c in database_channel:
             if c['yt_id'] == yt_id:
                 c['last_scheduled_date'] = v_date_str
@@ -12413,6 +12469,7 @@ def _zumo_create_task(data):
             "title_cleaned": title_cleaned,
             "blueprint": blueprint,
         })
+        _activity_task_created("🎵 Zumo Playlist", title, yt_id)  # 🔥 v1.3.71: catat ke log aktivitas
         for c in database_channel:
             if c['yt_id'] == yt_id:
                 c['last_scheduled_date'] = v_date_str
@@ -13984,6 +14041,7 @@ def _create_long_batch(data, max_count=BATCH_MAX_COUNT):
                 "title_cleaned": _title_cleaned,
                 "blueprint": blueprint
             })
+            _activity_task_created("📺 VOD", blueprint['title'], yt_id)  # 🔥 v1.3.71: catat ke log aktivitas
         if auto_mode and not channel_paused:
             auto_blueprints.append(blueprint)
         previews.append({

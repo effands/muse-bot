@@ -1219,9 +1219,21 @@ def telegram_status_report_worker():
             events = tg_event_queue[:MAX_FLUSH]
             tg_event_queue = tg_event_queue[MAX_FLUSH:]
             last_flush = time.time()
-            msg = "🔔 *Ziqva Muse Bot — Laporan Kejadian*\n\n" + "\n\n".join(events)
+            msg = "🔔 *Update dari Ziqva Muse Bot*\n\n" + "\n\n".join(events)
             try: send_tg_message(msg)
             except Exception: pass
+
+def _short_tayang_date(publish_date):
+    """Tanggal tayang singkat untuk pesan Telegram: '2026-11-20 05:35'
+    -> '20 Nov 05:35'. Bila format tidak dikenal, kembalikan apa adanya."""
+    s = (publish_date or '').strip()
+    if not s:
+        return '—'
+    try:
+        return datetime.strptime(s, "%Y-%m-%d %H:%M").strftime("%d %b %H:%M")
+    except Exception:
+        return s
+
 
 def notify_event(emoji, title, status, reply_markup=None):
     """🔥 BARU: masukkan event notifikasi (selesai/gagal) ke buffer Telegram.
@@ -4335,18 +4347,24 @@ def background_worker():
                             # dalam status dulu tampil sebagai teks mentah karena
                             # panel meng-escape status (perlindungan XSS).
                             move_to_history(task_id, "Tayang! ✅")
-                            _shorts_pfx = "📱 Shorts " if task.get('kind') == SHORTS_MUSE_KIND else ""
+                            # v1.3.10: pesan Tayang dirapikan — channel dulu
+                            # (langsung ketahuan channel mana), judul video
+                            # lengkap, tanggal singkat; referensi dibuang
+                            # (isinya sama dengan judul).
                             _audio_note = (task.get('shorts_audio') or '').strip()
-                            _pl_note = ""
-                            if task.get('kind') == PLAYLIST_KIND:
-                                _pl_note = (f"\n🎵 Musik Playlist"
-                                            f" (referensi: {(task.get('playlist_ref_title') or '')[:50]})")
+                            _tayang_title = f"{ch_name} — Tayang"
+                            if task.get('kind') == SHORTS_MUSE_KIND:
+                                _tayang_title = f"Shorts {ch_name} — Tayang"
+                            _tayang_status = (f"🎵 {task['title']}\n"
+                                              f"🕔 {_short_tayang_date(task.get('publish_date') or '')}")
+                            if _audio_note:
+                                _tayang_status += f"\n🎙️ Suara: {_audio_note}"
                             if task.get('kind') == ZUMO_KIND:
                                 _zt = task.get('zumo_tracks') or []
                                 _zc = task.get('zumo_credits') or 0
-                                _pl_note = (f"\n🎵 Playlist Zumo ({len(_zt)} lagu"
-                                            + (f", kredit Kie {_zc}" if _zc else "") + ")")
-                            notify_event("✅", task['title'], f"{_shorts_pfx}udah tayang di YouTube {ch_name} 😎\nJadwal tayang: {task['publish_date']}" + (f"\n🎙️ Suara: {_audio_note}" if _audio_note else "") + _pl_note)
+                                _tayang_status += (f"\n🎵 Playlist Zumo ({len(_zt)} lagu"
+                                                   + (f", kredit Kie {_zc}" if _zc else "") + ")")
+                            notify_event("✅", _tayang_title, _tayang_status)
                             upload_berhasil = True
                             # 🔥 v1.2.25: catat kredensial/project yang
                             # benar-benar dipakai (untuk hitungan kuota
@@ -9943,12 +9961,8 @@ def _seo_title_id(clean, year, kind, duration_sec, channel_key=''):
         tail.append(w)
     if tail:
         base = base + ' - ' + ' '.join(tail)
-    # v1.3.4: buang akhir menggantung ('... Cocok Untuk') + sudut per
-    # channel (satu referensi -> judul beda di tiap channel).
-    base = _seo_strip_dangling(base)
-    angle = _seo_channel_angle(channel_key, 'id')
-    if angle and angle.lower() not in base.lower() and len(base + ' ' + angle) <= 100:
-        base = base + ' ' + angle
+    # v1.3.10: sudut ditempel sesuai pola per channel (depan/belakang).
+    base = _seo_apply_angle(base, _seo_channel_angle(channel_key, 'id'), channel_key)
     if len(base) < 60 and duration_sec:
         dur = _seo_duration_label(duration_sec, 'id')
         if dur and len(base + ' - ' + dur) <= 100:
@@ -10012,11 +10026,8 @@ def _seo_title_en(clean, year, kind, duration_sec, channel_key=''):
         return ''
     if kind and kind.strip('()').lower() not in base.lower():
         base = base + ' ' + kind
-    # v1.3.4: buang akhir menggantung + sudut per channel.
-    base = _seo_strip_dangling(base)
-    angle = _seo_channel_angle(channel_key, 'en')
-    if angle and angle.lower() not in base.lower() and len(base + ' ' + angle) <= 100:
-        base = base + ' ' + angle
+    # v1.3.10: sudut ditempel sesuai pola per channel (depan/belakang).
+    base = _seo_apply_angle(base, _seo_channel_angle(channel_key, 'en'), channel_key)
     if duration_sec:
         dur = _seo_duration_label(duration_sec, 'en')
         if dur and len(base + ' - ' + dur) <= 100:
@@ -10034,12 +10045,9 @@ def _seo_title_fallback(clean, channel_key=''):
             if len(head) >= 15:
                 core = head
                 break
-    # v1.3.4: buang akhir menggantung + sudut per channel.
+    # v1.3.10: sudut ditempel sesuai pola per channel (depan/belakang).
     core = _seo_strip_dangling(core[:90]) or 'Musik Pilihan'
-    angle = _seo_channel_angle(channel_key, _seo_detect_lang(core))
-    if angle and angle.lower() not in core.lower() and len(core + ' ' + angle) <= 100:
-        core = core + ' ' + angle
-    return core
+    return _seo_apply_angle(core, _seo_channel_angle(channel_key, _seo_detect_lang(core)), channel_key)
 
 
 def _seo_ensure_different(new, clean):
@@ -10080,6 +10088,45 @@ def _seo_channel_angle(channel_key, lang='id'):
         return ''
     angles = _SEO_ANGLE_EN if lang == 'en' else _SEO_ANGLE_ID
     return angles[zlib.crc32(key.encode('utf-8')) % len(angles)]
+
+
+def _seo_channel_pattern(channel_key):
+    """Pola susunan judul per channel (0-3), diturunkan dari indeks sudut
+    (12 sudut -> 4 pola: indeks // 3). Deterministik: satu channel selalu
+    memakai pola yang sama, dan ke-4 channel yang ada sekarang memakai
+    4 pola yang berbeda (Aruya 3, Barang 2, Cozy 0, Romantic 1)."""
+    key = (channel_key or '').strip()
+    if not key:
+        return 0
+    idx = zlib.crc32(key.encode('utf-8')) % len(_SEO_ANGLE_ID)
+    return idx // 3
+
+
+def _seo_apply_angle(base, angle, channel_key):
+    """Tempel sudut ke judul sesuai pola channel: 0 = akhir (lama),
+    1 = depan pakai ':', 2 = akhir pakai '|', 3 = depan pakai '-'.
+    Bila sudut sudah ada di judul atau tidak muat (maks 100 karakter),
+    kembalikan base apa adanya. Hasil dirapikan (buang akhir
+    menggantung)."""
+    base = (base or '').strip()
+    angle = (angle or '').strip()
+    if not base:
+        return ''
+    if not angle or angle.lower() in base.lower():
+        return _seo_strip_dangling(base[:100])
+    pat = _seo_channel_pattern(channel_key)
+    if pat == 1:
+        cand = f"{angle}: {base}"
+    elif pat == 2:
+        cand = f"{base} | {angle}"
+    elif pat == 3:
+        cand = f"{angle} - {base}"
+    else:
+        cand = f"{base} {angle}"
+    if len(cand) > 100:
+        cand2 = f"{base} {angle}"
+        cand = cand2 if len(cand2) <= 100 else base
+    return _seo_strip_dangling(cand[:100])
 
 
 def _seo_strip_dangling(title):

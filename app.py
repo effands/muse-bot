@@ -9820,9 +9820,13 @@ def _playlist_search_one_tier(channel, search_q, days, max_results, min_views,
     cands kosong (bukan error) bila tier ini tidak menemukan apa-apa —
     pemanggil lanjut ke tier berikutnya yang lebih longgar."""
     def _do(youtube):
+        # v1.3.13: filter KERAS di API seperti filter YouTube web (tangkapan
+        # layar Bos 08:13 WIB: JENIS Video + DURASI "Lebih dari 20 menit" +
+        # TANGGAL UPLOAD minggu/bulan ini) — videoDuration 'long' = >20 mnt.
+        # Tanpa ini API mengembalikan klip 5 menit yang lalu menang views.
         kwargs = {'part': 'snippet', 'q': search_q, 'type': 'video',
                   'videoCategoryId': '10', 'order': 'viewCount',
-                  'maxResults': max_results}
+                  'videoDuration': 'long', 'maxResults': max_results}
         if days is not None:
             kwargs['publishedAfter'] = (datetime.now(timezone.utc)
                                         - timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -12485,6 +12489,41 @@ def _playlist_duration_range_text(mn, mx):
     return f"maksimal {mx // 60} menit"
 
 
+def _playlist_duration_text(sec):
+    """'77 menit' / '1 jam 17 mnt' untuk satu durasi (detik)."""
+    try:
+        s = int(sec or 0)
+    except Exception:
+        s = 0
+    if s >= 3600:
+        m = (s % 3600) // 60
+        return f"{s // 3600} jam {m} mnt" if m else f"{s // 3600} jam"
+    return f"{max(s // 60, 1)} mnt"
+
+
+def _playlist_closest(all_cands, mn, mx, n=3):
+    """Kandidat TERDEKAT dari rentang durasi yang diminta — untuk ditawarkan
+    saat filter durasi mengosongkan hasil (v1.3.13: bot tidak boleh mati
+    begitu saja padahal ada video yang hampir cocok). Urut: jarak dari
+    rentang dulu, views tertinggi dulu. all_cands sudah urut views."""
+    def _dist(c):
+        d = c.get('duration_sec') or 0
+        if mn is not None and d < mn:
+            return mn - d
+        if mx is not None and d > mx:
+            return d - mx
+        return 0
+    out = []
+    for c in sorted(all_cands, key=lambda c: (_dist(c), -(c.get('views') or 0)))[:n]:
+        dur = c.get('duration_sec') or 0
+        out.append({'video_id': c.get('video_id'), 'title': c.get('title', ''),
+                    'duration_sec': dur,
+                    'duration_text': _playlist_duration_text(dur),
+                    'views': c.get('views') or 0,
+                    'channel': c.get('channel', '')})
+    return out
+
+
 def _playlist_do_research(yt_id, theme, min_duration_sec=None, max_duration_sec=None):
     """Riset kandidat trending 30 hari terakhir. Kembalikan
     (ok, payload, http); payload berisi job_id + candidates + quota_note
@@ -12512,6 +12551,10 @@ def _playlist_do_research(yt_id, theme, min_duration_sec=None, max_duration_sec=
     all_cands = cands or []
     dur_txt = _playlist_duration_range_text(mn, mx)
     filter_note = ''
+    closest = []
+    # v1.3.13: referensi playlist minimal 20 menit — klip 5 menit bukan
+    # playlist (pernah: 'lewati' lalu bot menawarkan video 5 menit).
+    PLAYLIST_MIN_REF_SEC = 20 * 60
     if mn is not None or mx is not None:
         # duration_sec 0 = durasi tak diketahui → tidak lolos filter aktif.
         cands = [c for c in all_cands
@@ -12521,8 +12564,13 @@ def _playlist_do_research(yt_id, theme, min_duration_sec=None, max_duration_sec=
         if not cands and all_cands:
             filter_note = (f"Tidak ada video {dur_txt} pada tier {tier_label or 'yang dipakai'} untuk tema ini — "
                            "coba ubah tema atau rentang durasi, atau kirim link YouTube dengan 'jiplak playlist ini'.")
+            closest = _playlist_closest(all_cands, mn, mx)
     else:
-        cands = all_cands
+        cands = [c for c in all_cands
+                 if (c.get('duration_sec') or 0) >= PLAYLIST_MIN_REF_SEC]
+        if not cands and all_cands:
+            filter_note = ("Semua kandidat untuk tema ini di bawah 20 menit — playlist butuh video panjang. "
+                           "Coba tema lain, atau kirim link YouTube dengan 'jiplak playlist ini'.")
     if not all_cands:
         # Semua tier sudah dicoba (sampai evergreen >=1rb) dan tetap
         # kosong — gagal jujur, bukan karang video. Arahkan ke jiplak link.
@@ -12537,6 +12585,7 @@ def _playlist_do_research(yt_id, theme, min_duration_sec=None, max_duration_sec=
         'job_id': job_id, 'yt_id': yt_id,
         'channel_name': channel.get('name', ''), 'theme': q,
         'status': 'researched', 'candidates': cands or [],
+        'closest': closest,
         'research_tier': tier_no, 'tier_label': tier_label,
         'min_duration_sec': mn, 'max_duration_sec': mx,
         'created_at': _wib_now().strftime('%Y-%m-%d %H:%M'),
@@ -12547,7 +12596,7 @@ def _playlist_do_research(yt_id, theme, min_duration_sec=None, max_duration_sec=
     })
     return True, {"status": "success", "job_id": job_id, "candidates": cands or [],
                   "min_duration_sec": mn, "max_duration_sec": mx,
-                  "filter_note": filter_note,
+                  "filter_note": filter_note, "closest": closest,
                   "research_tier": tier_no, "tier_label": tier_label,
                   "quota_note": ("Riset dari cache (0 unit kuota)." if from_cache
                                  else "Riset memakai ~101 unit kuota per tier yang dicoba (tier berikutnya hanya bila tier sebelumnya kosong).")}, 200

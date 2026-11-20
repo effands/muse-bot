@@ -2894,6 +2894,35 @@ def handle_callback_query(token, chat_id, callback_query):
             return
         finally:
             _cb_in_flight.discard(data)
+    # --- v1.3.13: tawaran "yang paling dekat" di /playlist ---
+    if data in ('mkplaylist:closest:yes', 'mkplaylist:closest:no'):
+        draft = _load_make_draft(chat_id)
+        if not draft or draft.get('expired') or draft.get('kind') != 'playlist':
+            answer_callback(token, cq_id, "Draft-nya sudah tidak ada 😅")
+            send_message(token, chat_id,
+                         "🤖 *Eh Bos, draft-nya sudah tidak ada* 😅\nKetik /playlist untuk mulai lagi ya Bos!")
+            return
+        d = draft.get('data') or {}
+        if data.endswith(':no'):
+            answer_callback(token, cq_id, "Siap Bos, ganti durasi ya")
+            d.pop('closest', None)
+            draft['step'] = 'duration'
+            draft['data'] = d
+            _save_make_draft(chat_id, draft)
+            _make_ask_step(token, chat_id, draft)
+            return
+        # yes: pakai yang paling dekat — riset ulang TANPA filter durasi
+        # (job baru berisi video itu; create menolak video di luar job).
+        answer_callback(token, cq_id, "Siap Bos, pakai yang paling dekat 😎")
+        d['duration_min_sec'] = None
+        d['duration_max_sec'] = None
+        d['duration_note'] = ''
+        d.pop('closest', None)
+        draft['step'] = 'research'
+        draft['data'] = d
+        _save_make_draft(chat_id, draft)
+        _pl_run_research(token, chat_id, draft)
+        return
     # --- BUAT VIDEO/PLAYLIST/ZUMO: konfirmasi ✅ / batal ❌ dari ringkasan
     # /buatshort & /buatlong & /buatplaylist & /zumo ---
     if data in ('mkshort:yes', 'mkshort:no', 'mklong:yes', 'mklong:no',
@@ -4434,6 +4463,18 @@ def _pl_auto_pick(token, chat_id, draft):
     _make_ask_step(token, chat_id, draft)
 
 
+def _pl_closest_offer_text(closest, dur_txt):
+    """Pesan tawaran saat filter durasi mengosongkan hasil (v1.3.13):
+    tunjukkan video yang PALING DEKAT supaya Bos tinggal pencet ✅."""
+    lines = [f"😅 *Tidak ada video {dur_txt} untuk tema ini Bos* — tapi ada yang paling dekat:"]
+    for i, c in enumerate(closest, 1):
+        v = c.get('views') or 0
+        vtxt = f"{v:,}".replace(',', '.') + " views"
+        lines.append(f"{i}. *{_tg_escape((c.get('title') or '')[:80])}* — {c.get('duration_text') or ''} · {vtxt}")
+    lines.append("Pencet ✅ kalau mau pakai yang paling dekat, atau ❌ untuk ganti durasi.")
+    return "\n".join(lines)
+
+
 def _pl_run_research(token, chat_id, draft):
     """Jalankan riset kandidat playlist (YouTube API, ~101 unit kuota;
     cache panel 1 jam). Dipanggil otomatis saat draft sampai langkah
@@ -4493,12 +4534,27 @@ def _pl_run_research(token, chat_id, draft):
         filter_note = (data or {}).get('filter_note') or ''
         if filter_note and (d.get('duration_min_sec') is not None
                             or d.get('duration_max_sec') is not None):
+            closest = (data or {}).get('closest') or []
+            if closest:
+                # v1.3.13: TAWARKAN yang paling dekat (tombol ✅/❌) — jangan
+                # tanya ulang Langkah 3 begitu saja; itulah yang terasa bodoh.
+                d['closest'] = closest
+                draft['step'] = 'closest'
+                draft['data'] = d
+                _save_make_draft(chat_id, draft)
+                send_message(token, chat_id,
+                             _pl_closest_offer_text(closest, d.get('duration_note') or ''),
+                             reply_markup={"inline_keyboard": [
+                                 [{"text": "✅ Pakai yang paling dekat", "callback_data": "mkplaylist:closest:yes"},
+                                  {"text": "❌ Ganti durasi", "callback_data": "mkplaylist:closest:no"}]]})
+                return
             draft['step'] = 'duration'
             _save_make_draft(chat_id, draft)
             send_message(token, chat_id,
                          f"😅 *{_tg_escape(filter_note)}*\n\n"
                          "Balas rentang durasi yang lain (mis. `30-90`), atau ketik `lewati` untuk semua durasi.")
-            _make_ask_step(token, chat_id, draft)
+            # TANPA _make_ask_step: pesan di atas SUDAH jadi prompt-nya.
+            # Dulu Langkah 3 dikirim ulang persis setelah pesan ini.
             return
         draft['step'] = 'theme'
         _save_make_draft(chat_id, draft)
@@ -5590,6 +5646,49 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
         elif step == 'pixabay':
             d['pixabay_theme'] = '' if low in ('lewati', '-', 'skip', 'auto') else ans[:100]
             draft['step'] = _playlist_next_step(d)
+        elif step == 'closest':
+            # v1.3.13: jawaban atas tawaran "yang paling dekat".
+            if low in ('lewati', '-', 'skip', 'semua', 'bebas'):
+                d['duration_min_sec'] = None
+                d['duration_max_sec'] = None
+                d['duration_note'] = ''
+                d.pop('closest', None)
+                draft['step'] = 'research'
+                draft['data'] = d
+                _save_make_draft(chat_id, draft)
+                _pl_run_research(token, chat_id, draft)
+                return True
+            if low in ('ya', 'pakai', 'oke', 'ok', '✅', 'lanjut', 'mau') or (
+                    ans.strip().isdigit() and 1 <= int(ans.strip()) <= len(d.get('closest') or [])):
+                d['duration_min_sec'] = None
+                d['duration_max_sec'] = None
+                d['duration_note'] = ''
+                d.pop('closest', None)
+                draft['step'] = 'research'
+                draft['data'] = d
+                _save_make_draft(chat_id, draft)
+                _pl_run_research(token, chat_id, draft)
+                return True
+            if low in ('tidak', 'batal', '❌', 'ganti', 'cancel'):
+                d.pop('closest', None)
+                draft['step'] = 'duration'
+                draft['data'] = d
+                _save_make_draft(chat_id, draft)
+                _make_ask_step(token, chat_id, draft)
+                return True
+            parsed = _parse_playlist_duration(ans)
+            if parsed:
+                d['duration_min_sec'], d['duration_max_sec'], d['duration_note'] = parsed
+                d.pop('closest', None)
+                draft['step'] = 'research'
+                draft['data'] = d
+                _save_make_draft(chat_id, draft)
+                _pl_run_research(token, chat_id, draft)
+                return True
+            send_message(token, chat_id,
+                         "👆 *Pencet tombol di atas ya Bos* — ✅ Pakai yang paling dekat, atau ❌ Ganti durasi. "
+                         "Atau balas rentang durasi baru / `lewati`.")
+            return True
         elif step == 'duration':
             if low in ('lewati', '-', 'skip', 'semua', 'bebas'):
                 d['duration_min_sec'] = None
@@ -6480,6 +6579,10 @@ def _nlu_extract_playlist_theme(clean, channels):
     # v1.3.5 koreksi: kata perintah/pengisi bukan tema — 'jadwalkan ke 4
     # channel saya, cari lagu ... saja' -> sisanya cuma tema musiknya.
     t = re.sub(r'\b(jadwalkan|jadwal|jadwalin|saya|aku|cari|carikan|saja|aja|dong|nih|deh)\b', ' ', t)
+    # v1.3.13: kata jadwal/bukan-tema — "jadwal sebulan konten lagu
+    # malaysia" temanya 'lagu malaysia', bukan 'sebulan konten lagu
+    # malaysia' (pernah: 'sebulan' malah cocok ke video 'Gaji Sebulan').
+    t = re.sub(r'\b(sebulan|seminggu|sehari|selama|konten|bulan|minggu)\b', ' ', t)
     # Kata sisa durasi (bila segmen durasi lolos karena format aneh).
     t = re.sub(r'\b(minimal|maksimal|minimum|maksimum|durasi|menit|mnt)\b', ' ', t)
     for c in (channels or []):

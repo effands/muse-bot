@@ -10630,37 +10630,169 @@ def _seo_duration_label(sec, lang):
     return f"{m} Menit" if lang == 'id' else f"{m} Minutes"
 
 
-def _seo_title_id(clean, year, kind, duration_sec, channel_key=''):
-    """Rumus Indonesia: KATA KUNCI + TAHUN (+ jenis) - ekor suasana."""
-    words = clean.split()
-    if year:
-        try:
-            idx = words.index(year)
-            kw = ' '.join(words[:idx + 1]) if idx <= 8 else ' '.join(words[:4])
-        except ValueError:
-            kw = ' '.join(words[:4])
-    else:
-        kw = ' '.join(words[:4])
-    if len(kw) < 5:
+# 🔥 v1.3.73: ANALISA SEO — judul playlist TIDAK lagi menyalin judul
+# referensi (komplain Bos 21 Nov 2026: "kemaren kan sudah dibilangin...
+# kalau harus dianalisa, ditentukan SEO-nya... bukan cuma copy gak ada
+# improve" — janji 20 Nov 2026 belum ditepati v1.3.32 yang cuma menambal
+# tempelan sudut). Referensi diurai jadi komponen (genre, asal, mood,
+# era, jenis, tahun, sisa kata), lalu judul BARU disusun dari komponen
+# itu dengan susunan kata berbeda per channel (pola slot 0-3) + sudut
+# per channel. Urutan kata referensi dihancurkan — yang dipertahankan
+# hanya komponen SEO-nya. Satu referensi yang sama tetap menghasilkan
+# judul yang benar-benar berbeda strukturnya antar channel.
+_SEO_GENRE_ID = (
+    ('slow rock', 'Slow Rock'),
+    ('rock', 'Rock'),
+    ('reggae', 'Reggae'),
+    ('dangdut', 'Dangdut'),
+    ('koplo', 'Koplo'),
+    ('pop', 'Pop'),
+    ('jazz', 'Jazz'),
+    ('saxophone', 'Saxophone'), ('sax', 'Saxophone'),
+    ('piano', 'Piano'),
+    ('gitar', 'Gitar'), ('guitar', 'Gitar'),
+    ('keroncong', 'Keroncong'),
+    ('melayu', 'Melayu'),
+    ('lofi', 'Lofi'),
+    ('akustik', 'Akustik'), ('acoustic', 'Akustik'),
+    ('sholawat', 'Sholawat'),
+    ('anak', 'Anak'),
+    ('klasik', 'Klasik'),
+    ('remix', 'Remix'), ('dj', 'DJ'),
+)
+_SEO_ORIGIN_ID = (
+    ('malaysia', 'Malaysia'),
+    ('indonesia', 'Indonesia'),
+    ('barat', 'Barat'),
+    ('korea', 'Korea'),
+    ('jawa', 'Jawa'), ('sunda', 'Sunda'), ('minang', 'Minang'),
+)
+_SEO_MOOD_ID = (
+    ('menyentuh hati', 'Menyentuh Hati'),
+    ('paling menyentuh', 'Paling Menyentuh'),
+    ('romantis', 'Romantis'),
+    ('santai', 'Santai'),
+    ('syahdu', 'Syahdu'),
+    ('adem', 'Adem'),
+    ('galau', 'Galau'),
+    ('sedih', 'Sedih'),
+    ('rindu', 'Rindu'),
+    ('tenang', 'Tenang'),
+    ('ceria', 'Ceria'),
+    ('merdu', 'Merdu'),
+    ('enak didengar', 'Enak Didengar'),
+    ('paling hits', 'Paling Hits'),
+)
+_SEO_ERA_ID = (
+    ('lawas', 'Lawas'),
+    ('nostalgia', 'Nostalgia'),
+    ('80an', '80an'), ('90an', '90an'), ('70an', '70an'),
+    ('2000an', '2000an'),
+    ('terbaru', 'Terbaru'),
+    ('jadul', 'Jadul'),
+    ('tempo dulu', 'Tempo Dulu'),
+)
+# Kata generik yang dibuang dari judul (bukan komponen SEO):
+# 'lagu'/'musik' sudah tersirat, 'viral'/'trending' sudah lewat masanya
+# saat video tayang, 'paling'/'terbaik' sendirian menggantung atau dobel
+# dengan sudut channel, 'buat' kata kerja yang butuh objek.
+_SEO_TITLE_NOISE = frozenset(
+    'viral trending lagu musik paling terbaik buat best top hits official video audio hd 4k'.split())
+
+
+def _seo_analyze_id(clean, year='', kind=''):
+    """Urai judul referensi (sudah bersih) jadi komponen SEO: genre,
+    asal, mood, era, jenis, tahun, sisa kata bermakna. Mengembalikan
+    dict; komponen yang tidak ditemukan = '' (genre/asal/mood/era)
+    atau [] (rest)."""
+    low = ' ' + (clean or '').lower() + ' '
+    used = set()
+
+    def _match(cands):
+        for src, label in cands:
+            if re.search(r'(?<!\w)' + re.escape(src) + r'(?!\w)', low):
+                for w in src.split():
+                    used.add(w)
+                return label
         return ''
-    base = kw
-    if kind and kind.strip('()').lower() not in base.lower():
-        base = base + ' ' + kind
-    kw_set = set(w.lower() for w in kw.split())
-    tail = []
-    for w in words:
+
+    genre = _match(_SEO_GENRE_ID)
+    origin = _match(_SEO_ORIGIN_ID)
+    mood = _match(_SEO_MOOD_ID)
+    era_parts = []
+    for src, label in _SEO_ERA_ID:
+        if re.search(r'(?<!\w)' + re.escape(src) + r'(?!\w)', low):
+            if label.lower() not in [e.lower() for e in era_parts]:
+                era_parts.append(label)
+                for w in src.split():
+                    used.add(w)
+    era = ' '.join(era_parts)
+    # 'Melayu' tanpa 'Malaysia' = asal Malaysia; bila asal sudah
+    # Malaysia, 'Melayu' redundan — buang supaya tidak dobel.
+    if 'melayu' in low.split():
+        if not origin:
+            origin = 'Malaysia'
+        used.add('melayu')
+    rest = []
+    for w in (clean or '').split():
         lw = w.lower()
-        if lw in kw_set or lw in _SEO_KIND_WORDS or lw in _SEO_STOPWORDS:
+        if lw in used or lw in _SEO_STOPWORDS or lw in _SEO_TITLE_NOISE or lw in _SEO_KIND_WORDS:
             continue
         if lw == (year or '').lower():
             continue
-        if lw in [t.lower() for t in tail]:
+        if lw in [r.lower() for r in rest]:
             continue
-        if len(base + ' - ' + ' '.join(tail + [w])) > 72:
+        rest.append(w)
+    return {'genre': genre, 'origin': origin, 'mood': mood, 'era': era,
+            'kind': kind, 'year': year, 'rest': rest}
+
+
+def _seo_title_id(clean, year, kind, duration_sec, channel_key=''):
+    """Judul BARU dari hasil analisa (v1.3.73): komponen disusun ulang
+    dengan susunan kata berbeda per channel (pola slot 0-3) + sudut per
+    channel. Bukan salinan judul referensi. Bila tidak ada komponen
+    yang dikenali → '' (jatuh ke _seo_title_fallback)."""
+    comp = _seo_analyze_id(clean, year, kind)
+    genre, origin, mood, era = comp['genre'], comp['origin'], comp['mood'], comp['era']
+    if not (genre or origin or mood or era):
+        return ''
+    pat = _seo_channel_pattern(channel_key)
+    # Empat susunan — kata PERTAMA selalu beda antar pola, supaya judul
+    # tidak lagi berbagi awal kalimat yang sama bila satu komponen
+    # kosong (mis. tanpa era, pola 0 dan 2 dulu identik "Reggae Malaysia").
+    if pat == 0:
+        head = ' '.join(p for p in (genre, origin, era) if p)
+        tail = mood or era
+    elif pat == 1:
+        head = ' '.join(p for p in (mood, genre, origin) if p)
+        tail = era or mood
+    elif pat == 2:
+        head = ' '.join(p for p in (era, origin, genre) if p)
+        if not era and not genre:
+            # tanpa era & genre, "Malaysia" saja = sama dengan pola 0 —
+            # balik: mood dulu
+            head = ' '.join(p for p in (mood, origin) if p) or head
+        tail = mood or era
+    else:
+        head = ' '.join(p for p in (genre, mood, origin, era) if p)
+        if not genre and not era:
+            head = ' '.join(p for p in (origin, mood) if p) or head
+        tail = ''
+    base = head
+    if tail and tail.lower() not in base.lower():
+        base = base + ' - ' + tail
+    if kind and kind.strip('()').lower() not in base.lower():
+        base = base + ' ' + kind
+    if year and year not in base:
+        base = base + ' ' + year
+    for w in comp['rest'][:2]:
+        if w.lower() in base.lower():
+            continue
+        if len(base + ' ' + w) > 72:
             break
-        tail.append(w)
-    if tail:
-        base = base + ' - ' + ' '.join(tail)
+        base = base + ' ' + w
+    if len(base) < 5:
+        return ''
     # v1.3.10: sudut ditempel sesuai pola per channel (depan/belakang).
     base = _seo_apply_angle(base, _seo_channel_angle(channel_key, 'id'), channel_key)
     if len(base) < 60 and duration_sec:
@@ -10839,7 +10971,12 @@ def _seo_apply_angle(base, angle, channel_key):
     angle = (angle or '').strip()
     if not base:
         return ''
-    if not angle or angle.lower() in base.lower():
+    # 🔥 v1.3.73: sudut yang kata intinya sudah ada di judul ikut
+    # diganti — mis. 'Paling Menyentuh' di judul yang sudah berisi
+    # 'Menyentuh Hati' bikin judul berulang ("... Menyentuh Hati
+    # Paling Menyentuh").
+    _angle_core = angle.lower().replace('paling ', '').strip()
+    if not angle or angle.lower() in base.lower() or (_angle_core and _angle_core in base.lower()):
         # 🔥 v1.3.33 (audit m4): sudut tidak bisa ditempel (sudah ada
         # di judul atau kosong) — coba sudut cadangan (slot+1) supaya
         # judul tetap beda antar channel; bila itu pun tidak bisa,

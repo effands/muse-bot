@@ -1,3 +1,21 @@
+## 1.3.47
+- Aktivasi Analytics: jam tayang asli 365 hari untuk syarat 4.000 jam — login browser sekali per channel di Settings → OAuth → Analytics (device login tetap tidak bisa, Google menolak). WATCH 30D + KESIAPAN MONETISASI pakai angka asli (tanda ✓) bila sudah aktif.
+
+## 1.3.46
+- Halaman Hub (home) tidak scroll — muat satu layar; konten dipadatkan, layar pendek makin dipadatkan, HP tetap boleh scroll.
+
+## 1.3.45
+- Saldo Kie.ai yang selalu "tidak terbaca" diperbaiki (API mengembalikan angka, bukan objek); saldo tampil per key + total + perkiraan generate; tombol Refresh Saldo.
+
+## 1.3.44
+- Kalender Jadwal kini menampilkan video yang sudah di-upload tapi belum tayang (pill "Sudah di-upload") — sebelumnya selalu 0 karena hanya membaca antrean aktif.
+
+## 1.3.43
+- Judul JADWAL BERIKUTNYA + UPDATE TERAKHIR dipendekkan (maks 40 karakter, potong di batas kata, sufiks tetap kelihatan); jarak kolom STATUS diperlebar; kolom STATUS rata tengah.
+
+## 1.3.42
+- HISTORY tiap baris kini tampilkan jam tayang + ikon jenis video (Short/Playlist/Long), tetap satu baris.
+
 # Changelog Zimuse Bot
 
 Catatan perubahan per versi. Dibaca operator saat start dan ditampilkan di

@@ -534,7 +534,8 @@ body::before {
 .ch-tbl thead th { position:sticky; top:0; background:var(--card); z-index:1; padding-bottom:6px; }
 /* 🔥 v1.3.23: baris tabel channel lebih rapat (padding 10px -> 5px) —
    7 channel muat tanpa scroll, scroll baru muncul di 9+ channel. */
-.ch-tbl td { padding:5px 0; }
+.ch-tbl td { padding:5px 12px 5px 0; }
+.ch-tbl th:nth-child(2), .ch-tbl td:nth-child(2) { text-align:center; }
 
 .fg { display:flex; flex-direction:column; gap:5px; margin-bottom:14px; }
 .fg:last-child { margin-bottom:0; }
@@ -681,6 +682,7 @@ input[type=color] { padding:0; height:36px; width:100%; border:1px solid var(--b
 .hist-tbl tbody tr:hover td { background:rgba(255,255,255,.025); }
 .hist-id { font-family:var(--font-m); font-size:10px; color:var(--muted); white-space:nowrap; }
 .hist-title { display:block; min-width:0; flex:1; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.hist-time { font-family:var(--font-m); font-size:10px; color:var(--muted); white-space:nowrap; flex-shrink:0; }
 .hist-dur { margin:0; flex-shrink:0; font-family:var(--font-m); font-size:10px; color:var(--green); white-space:nowrap; }
 .hist-sub { display:inline; margin:0 0 0 6px; font-size:10px; color:var(--text2); font-weight:400; white-space:nowrap; }
 .hist-tbl .hist-del { width:28px; height:28px; padding:0; display:inline-flex; align-items:center; justify-content:center; }
@@ -2195,6 +2197,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
       <div class="card card-tight" style="margin-bottom:16px">
         <div class="card-head">
           <span class="card-title">🎵 API KEY KIE.AI (Zumo — Lagu Orisinal)</span>
+          <button class="btn btn-g btn-sm" id="kie-refresh-btn" onclick="refreshKieBalances()" title="Perbarui saldo kredit dari Kie.ai sekarang">🔄 Refresh Saldo</button>
         </div>
         <div class="card-body">
           <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:12px">Dipakai untuk generate lagu orisinal (12 kredit/generate, 2 varian) untuk Playlist Zumo. Daftar/ambil key di <a href="https://kie.ai" target="_blank" style="color:var(--accent)">kie.ai</a> → API Keys. Bisa simpan <b style="color:var(--text)">lebih dari 1 key</b>: bila satu key bermasalah (tidak valid / kredit habis), sistem otomatis pindah ke key berikutnya. Key hanya ditampilkan dalam bentuk masked (****abcd) dan juga bisa dikelola lewat Telegram (<code>/kiekey</code>, <code>/kiekeys</code>, <code>/kiedel</code>). JANGAN pernah menempel key di chat biasa.</div>
@@ -2230,6 +2233,27 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
           <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px solid var(--border);align-items:center">
             <span style="font-size:12px;color:var(--muted)">Device login pakai client:</span>
             <select id="tv-client-select" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;min-width:220px"></select>
+          </div>
+          <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">
+            <div style="font-size:12px;font-weight:700;margin-bottom:2px">📊 Analytics — Jam Tayang Asli (4.000 jam)</div>
+            <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:8px">Login browser sekali per channel supaya jam tayang 365 hari dibaca langsung dari YouTube Analytics — bukan estimasi. Device login tidak bisa memberi izin ini (Google menolak scope Analytics). Bila client Desktop belum ada di daftar, upload dulu JSON-nya lewat tombol Upload API Key di atas.</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+              <div class="fg" style="min-width:180px;flex:1;margin-bottom:0"><label class="fl">Channel</label><select id="an-channel" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;width:100%"></select></div>
+              <div class="fg" style="min-width:180px;flex:1;margin-bottom:0"><label class="fl">Client OAuth (Desktop)</label><select id="an-client" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px;width:100%"></select></div>
+              <button class="btn btn-g btn-sm" onclick="analyticsMakeUrl()">🔗 Buat Link Login</button>
+            </div>
+            <div id="an-url-box" style="display:none;margin-top:8px">
+              <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:4px">1) Buka link ini di Edge (akun Google pemilik channel) → izinkan → browser akan gagal membuka http://localhost, itu normal. 2) Salin <b>code</b> dari address bar (setelah <code>code=</code>) → tempel di bawah → Simpan Kode.</div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <input type="text" id="an-url-out" readonly style="flex:1;font-family:var(--font-m);font-size:11px" placeholder="Link login akan muncul di sini">
+                <button class="btn btn-g btn-sm" onclick="analyticsOpenUrl()">Buka Link</button>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+                <input type="text" id="an-code" placeholder="Tempel kode dari Google di sini" autocomplete="off" style="flex:1">
+                <button class="btn btn-p btn-sm" onclick="analyticsSaveCode()">💾 Simpan Kode</button>
+              </div>
+            </div>
+            <div id="an-status" style="margin-top:8px;font-size:12px;color:var(--muted)"></div>
           </div>
         </div>
       </div>
@@ -3019,8 +3043,14 @@ function statusPillHTML(st, small) {
 // lengkapnya ada di tooltip (title) saat kursor diarahkan.
 function shortTitle(t) {
   const s = String(t || 'Video');
-  if (s.length <= 60) return s;
-  return s.slice(0, 42) + '…' + s.slice(-16);
+  if (s.length <= 40) return s;
+  let head = s.slice(0, 25);
+  const sp = head.lastIndexOf(' ');
+  if (sp > 15) head = head.slice(0, sp);
+  let tail = s.slice(-16);
+  const sp2 = tail.indexOf(' ');
+  if (sp2 > 0 && sp2 < 6) tail = tail.slice(sp2 + 1);
+  return head + '…' + tail;
 }
 // 🔥 v1.3.34: UPDATE TERAKHIR per channel — entri history 'Tayang' terbaru
 // (waktu tayang paling akhir). Jenis: Short (kind shorts_muse), Playlist
@@ -3176,6 +3206,23 @@ function renderCalendar() {
   const chs = calData.channels || [];
   const active = calData.active || [];
   const filter = (document.getElementById('cal-filter') || {}).value || '';
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const endDate = new Date(todayStart.getTime() + 30 * 86400000);
+  // 🔥 v1.3.44: video yang sudah di-upload tapi belum tayang (history,
+  // jam tayang masih di depan) ikut dihitung + ditampilkan — sebelumnya
+  // kalender hanya membaca antrean aktif sehingga selalu 0.
+  const _histFuture = (calData.history || []).filter(h => {
+    const dt = calParseDt(h.time || (h.blueprint && h.blueprint.publish_date) || '');
+    return dt && dt >= now && dt <= endDate && !String(h.status || '').includes('Gagal');
+  });
+  const _upcomingByCh = {};
+  const _countUpcoming = (t) => {
+    const yt = (t.blueprint && t.blueprint.yt_id) || t.yt_id || '';
+    _upcomingByCh[yt] = (_upcomingByCh[yt] || 0) + 1;
+  };
+  active.forEach(t => { const dt = calParseDt(t.time || (t.blueprint && t.blueprint.publish_date) || ''); if (dt && dt >= now && dt <= endDate) _countUpcoming(t); });
+  _histFuture.forEach(_countUpcoming);
 
   // — Strip channel: status jeda + tombol Jeda/Lanjutkan —
   if (!chs.length) {
@@ -3183,7 +3230,7 @@ function renderCalendar() {
   } else {
     strip.innerHTML = chs.map(c => {
       const paused = !!c.paused;
-      const upcoming = active.filter(t => ((t.blueprint && t.blueprint.yt_id) || t.yt_id || '') === c.yt_id).length;
+      const upcoming = _upcomingByCh[c.yt_id] || 0;
       return `<div class="card" style="padding:14px">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
           <div class="ch-con-av">${c.thumbnail ? `<img src="${escapeHtml(c.thumbnail)}">` : escapeHtml(c.name[0])}</div>
@@ -3201,9 +3248,6 @@ function renderCalendar() {
   }
 
   // — Jadwal 30 hari ke depan, dikelompokkan per tanggal —
-  const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const endDate = new Date(todayStart.getTime() + 30 * 86400000);
   const chName = (yt_id) => { const c = chs.find(x => x.yt_id === yt_id); return c ? c.name : (yt_id ? 'Channel Tidak Dikenal' : 'Tanpa Channel'); };
   const isPaused = (yt_id) => { const c = chs.find(x => x.yt_id === yt_id); return !!(c && c.paused); };
 
@@ -3225,6 +3269,16 @@ function renderCalendar() {
     groups[key].push({ dt, t });
   });
   overdue.sort((a, b) => a.dt - b.dt);
+  _histFuture.forEach(h => {
+    const yt = (h.blueprint && h.blueprint.yt_id) || h.yt_id || '';
+    if (filter && yt !== filter) return;
+    const dt = calParseDt(h.time || (h.blueprint && h.blueprint.publish_date) || '');
+    if (!dt) return;
+    totalUpcoming++;
+    const key = dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0');
+    if (!groups[key]) groups[key] = [];
+    groups[key].push({ dt, t: h, fromHistory: true });
+  });
 
   const pausedCount = chs.filter(c => c.paused).length;
   if (sumEl) sumEl.textContent = `${totalUpcoming} video terjadwal 30 hari ke depan · ${totalPending} menunggu approval · ${totalPaused} ditahan (channel dijeda) · ${pausedCount} channel dijeda` + (overdue.length ? ` · ⚠️ ${overdue.length} terlambat` : '');
@@ -3243,14 +3297,14 @@ function renderCalendar() {
     const d0 = items[0].dt;
     const dayLbl = d0.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
     html += `<div class="card" style="margin-bottom:14px"><div class="card-head"><span class="card-title">📅 ${dayLbl}</span><span class="pill p-cyan">${items.length} video</span></div><div style="padding:6px 16px 10px">` +
-      items.map(({ dt, t }) => calDayRow(dt, t, chName, isPaused)).join('') + `</div></div>`;
+      items.map(({ dt, t, fromHistory }) => calDayRow(dt, t, chName, isPaused, fromHistory)).join('') + `</div></div>`;
   });
   daysEl.innerHTML = html;
 }
 
-function calDayRow(dt, t, chName, isPaused) {
+function calDayRow(dt, t, chName, isPaused, fromHistory) {
   const yt = (t.blueprint && t.blueprint.yt_id) || t.yt_id || '';
-  const s = calTaskStatus(t, isPaused(yt));
+  const s = fromHistory ? { txt: '📤 Sudah di-upload', cls: 'p-cyan' } : calTaskStatus(t, isPaused(yt));
   const hhmm = String(dt.getHours()).padStart(2, '0') + ':' + String(dt.getMinutes()).padStart(2, '0');
   return `<div class="task-row"><div class="task-icon">🗓</div><div class="task-info"><div class="task-name">${escapeHtml(t.title || 'Task')}</div><div class="task-meta">${hhmm} · ${escapeHtml(chName(yt))}</div></div><span class="pill ${s.cls}" style="flex-shrink:0">${s.txt}</span></div>`;
 }
@@ -4770,22 +4824,35 @@ async function pixabayKeyDel(ident) {
 }
 
 function loadKieKeys() {
-  fetch('/api/zumo_kie_keys').then(r => r.json()).then(d => renderKieKeys(d.keys || [])).catch(() => {});
-  fetch('/api/zumo_status').then(r => r.json()).then(d => {
+  const p1 = fetch('/api/zumo_kie_keys').then(r => r.json()).then(d => renderKieKeys(d.keys || [])).catch(() => {});
+  const p2 = fetch('/api/zumo_status').then(r => r.json()).then(d => {
     const el = document.getElementById('zumo-status-line');
     if (!el) return;
     el.textContent = (d.balance_note || '') + ' Model aktif: ' + (d.model || '-');
   }).catch(() => {});
+  return Promise.all([p1, p2]);
+}
+function refreshKieBalances() {
+  const b = document.getElementById('kie-refresh-btn');
+  if (b) { b.disabled = true; b.textContent = '⏳ Memperbarui…'; }
+  toast('Memperbarui saldo Kie…', 'info');
+  loadKieKeys().finally(() => {
+    if (b) { b.disabled = false; b.textContent = '🔄 Refresh Saldo'; }
+  });
 }
 function renderKieKeys(keys) {
   const box = document.getElementById('kie-keys-list');
   if (!box) return;
   if (!keys.length) { box.innerHTML = '<div style="color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada key — tambah satu di atas (atau lewat Telegram: /kiekey &lt;key&gt;).</div>'; return; }
+  const total = keys.reduce((a, k) => a + (k.balance != null ? Number(k.balance) : 0), 0);
+  const readable = keys.filter(k => k.balance != null).length;
   box.innerHTML = keys.map(k =>
     `<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-top:1px solid var(--border)">
       <span style="font-family:var(--font-m)">${k.index}. <b>${escapeHtml(k.masked)}</b>${k.disabled ? ' <span class="pill p-red" title="Aktif lagi otomatis 24 jam setelah ditolak">nonaktif</span>' : ''}</span>
+      ${k.balance != null ? '<span class="pill p-cyan" title="Saldo kredit Kie.ai key ini">' + Number(k.balance).toLocaleString('en-US') + ' kredit</span>' : '<span class="pill p-muted" title="Saldo tidak terbaca">tidak terbaca</span>'}
       <button type="button" class="btn btn-g btn-sm" style="margin-left:auto" onclick="kieKeyDel('${escapeHtml(k.last4 || String(k.index))}')">Hapus</button>
-    </div>`).join('');
+    </div>`).join('')
+    + `<div style="padding:6px 0 2px;font-size:12px;color:var(--muted)">Total: <b style="color:var(--text)">${total.toLocaleString('en-US')} kredit</b> (≈ ${Math.floor(total / 12)} generate · ${readable}/${keys.length} key terbaca)</div>`;
 }
 function kieKeyAdd() {
   const inp = document.getElementById('kie-key-new');
@@ -5720,7 +5787,7 @@ function renderTasks() {
             const ytLink = vid ? ` <a href="https://youtu.be/${vid}" target="_blank" rel="noopener" style="color:var(--accent)">▶ Lihat</a>` : '';
             const dl = histDownloadUrl(t);
             const dlLink = dl ? ` <a href="${escapeHtml(dl)}" target="_blank" rel="noopener" style="color:var(--accent)">[Download]</a>` : '';
-            return `<tr><td class="hist-id-cell"><span class="hist-id" title="#${t.id}">#${String(t.id).slice(-6)}</span></td><td><span style="display:flex;gap:8px;align-items:baseline;min-width:0"><span class="hist-title" title="${escapeHtml(t.title || '—')}">${escapeHtml(t.title || '—')}</span>${renderInfo}</span></td><td style="color:${c};font-weight:600">${escapeHtml(histCleanStatus(t))}${ytLink}${dlLink}${t.thumb_status ? `<span class="hist-sub">🖼️ ${escapeHtml(t.thumb_status)}</span>` : ''}</td><td style="text-align:center"><button class="btn btn-g btn-sm hist-del" title="Hapus entri ini dari riwayat" onclick="deleteHistoryItem(${t.id})">🗑️</button></td></tr>`;
+            return `<tr><td class="hist-id-cell"><span class="hist-id" title="#${t.id}">#${String(t.id).slice(-6)}</span></td><td><span style="display:flex;gap:8px;align-items:baseline;min-width:0"><span class="hist-time" title="Jam tayang">${shortDate(t.time)}</span><span title="${t.kind === 'shorts_muse' ? 'Short' : ((t.blueprint && (t.blueprint.playlist_job_id || t.blueprint.playlist_render_method)) ? 'Playlist' : 'Video panjang')}">${t.kind === 'shorts_muse' ? '📱' : ((t.blueprint && (t.blueprint.playlist_job_id || t.blueprint.playlist_render_method)) ? '🎵' : '🎬')}</span><span class="hist-title" title="${escapeHtml(t.title || '—')}">${escapeHtml(t.title || '—')}</span>${renderInfo}</span></td><td style="color:${c};font-weight:600">${escapeHtml(histCleanStatus(t))}${ytLink}${dlLink}${t.thumb_status ? `<span class="hist-sub">🖼️ ${escapeHtml(t.thumb_status)}</span>` : ''}</td><td style="text-align:center"><button class="btn btn-g btn-sm hist-del" title="Hapus entri ini dari riwayat" onclick="deleteHistoryItem(${t.id})">🗑️</button></td></tr>`;
           }).join('');
           
           html += `<tbody>${rows}</tbody>`;
@@ -6145,6 +6212,60 @@ function renderOAuthClients() {
       <button class="btn btn-danger btn-sm" onclick="oauthClientDelete('${escapeHtml(c.client_id)}')">Hapus</button>
     </div>`).join('');
   renderOAuthMapping();
+  loadAnalyticsBlock();
+}
+
+// ────────────────────────────────────────────────────────
+//  ANALYTICS — AKTIVASI JAM TAYANG ASLI (v1.3.47)
+// ────────────────────────────────────────────────────────
+function loadAnalyticsBlock() {
+  const selCh = document.getElementById('an-channel');
+  const selCl = document.getElementById('an-client');
+  const st = document.getElementById('an-status');
+  if (!selCh || !selCl) return;
+  if (!(channels || []).length) { if (st) st.textContent = 'Channel belum dimuat — buka Dashboard dulu.'; return; }
+  selCh.innerHTML = (channels || []).map(c => `<option value="${escapeHtml(c.yt_id)}">${escapeHtml(c.name || c.yt_id)}</option>`).join('');
+  selCl.innerHTML = _oauthClients.map(c => `<option value="${escapeHtml(c.client_id)}"${c.primary ? ' selected' : ''}>${escapeHtml(_oauthClientLabel(c))}</option>`).join('');
+  if (st) st.textContent = 'Memeriksa status Analytics per channel…';
+  fetch('/api/get_youtube_analytics').then(r => r.json()).then(rows => {
+    if (!st) return;
+    const act = (rows || []).filter(d => d.watch_365h_real != null);
+    st.innerHTML = act.length
+      ? '✅ Analytics aktif: ' + act.map(d => escapeHtml(d.name) + ' (' + Number(d.watch_365h_real).toLocaleString('en-US') + ' jam/365 hari)').join(', ')
+      : 'Belum ada channel dengan Analytics aktif — buat link login di bawah untuk satu channel dulu.';
+  }).catch(() => { if (st) st.textContent = 'Status Analytics tidak bisa dimuat.'; });
+}
+function analyticsMakeUrl() {
+  const yt = (document.getElementById('an-channel') || {}).value || '';
+  const cid = (document.getElementById('an-client') || {}).value || '';
+  const box = document.getElementById('an-url-box');
+  const out = document.getElementById('an-url-out');
+  if (!yt) { toast('Pilih channel dulu.', 'error'); return; }
+  if (box) box.style.display = 'block';
+  if (out) out.value = 'Membuat link…';
+  _fetch('/api/analytics_auth_url', { method: 'POST', body: JSON.stringify({ yt_id: yt, client_id: cid }) })
+    .then(d => {
+      if (d.status !== 'success') { toast(d.message || 'Gagal membuat link.', 'error'); if (out) out.value = ''; return; }
+      if (out) out.value = d.auth_url || '';
+      toast('Link login dibuat — buka di Edge, izinkan, salin kodenya.', 'success');
+    }).catch(() => toast('Gagal membuat link.', 'error'));
+}
+function analyticsOpenUrl() {
+  const u = document.getElementById('an-url-out');
+  if (u && u.value) window.open(u.value, '_blank');
+}
+function analyticsSaveCode() {
+  const yt = (document.getElementById('an-channel') || {}).value || '';
+  const cid = (document.getElementById('an-client') || {}).value || '';
+  const code = ((document.getElementById('an-code') || {}).value || '').trim();
+  if (!yt || !code) { toast('Pilih channel dan tempel kodenya dulu.', 'error'); return; }
+  _fetch('/api/analytics_auth_code', { method: 'POST', body: JSON.stringify({ yt_id: yt, client_id: cid, code }) })
+    .then(d => {
+      if (d.status !== 'success') { toast(d.message || 'Kode ditolak.', 'error'); return; }
+      toast(d.message || 'Analytics aktif.', 'success');
+      const el = document.getElementById('an-code'); if (el) el.value = '';
+      loadAnalyticsBlock();
+    }).catch(() => toast('Gagal menyimpan kode.', 'error'));
 }
 
 // 🔥 v1.2.27: token_client_ids per channel HANYA ada di /api/oauth_clients
@@ -6319,6 +6440,8 @@ function renderChannelTable() {
     const v28title = d.snap_28d ? 'Periode ' + d.snap_28d + ' → ' + (d.snap_ref || '') : 'Butuh snapshot 28 hari';
     const v48title = d.snap_48h ? 'Periode ' + d.snap_48h + ' → ' + (d.snap_ref || '') : 'Butuh snapshot 2 hari';
     const w30title = d.snap_30d ? 'Views 30 hari (' + d.snap_30d + ' → ' + (d.snap_ref || '') + ') × durasi rata-rata blueprint video long — estimasi kasar' : 'Butuh riwayat snapshot / video long pabrik';
+    const w30real = d.watch_30d_real != null;
+    const w30v = w30real ? d.watch_30d_real : d.watch_30d_est_hours;
     return '<tr style="border-bottom:1px solid var(--border)">'
       + '<td style="padding:6px 8px">' + thumb + '<b>' + escapeHtml(d.name) + '</b></td>'
       + '<td style="padding:6px 8px">' + statusPillHTML(d.status) + (paused ? ' <span class="pill p-yellow">⏸️ Dijeda</span>' : '') + '</td>'
@@ -6328,7 +6451,7 @@ function renderChannelTable() {
       + '<td style="padding:6px 8px;text-align:right" title="' + escapeHtml(v28title) + '">' + _fmtNum(d.views_28d) + '</td>'
       + '<td style="padding:6px 8px;text-align:right" title="' + escapeHtml(v48title) + '">' + _fmtNum(d.views_48h) + '</td>'
       + '<td style="padding:6px 8px">' + trend + '</td>'
-      + '<td style="padding:6px 8px;text-align:right" title="' + escapeHtml(w30title) + '">' + (d.watch_30d_est_hours == null ? '—' : Number(d.watch_30d_est_hours).toLocaleString() + ' jam') + '</td>'
+      + '<td style="padding:6px 8px;text-align:right" title="' + escapeHtml(w30real ? 'Jam tayang asli (Analytics API, 30 hari)' : w30title) + '">' + (w30v == null ? '—' : Number(w30v).toLocaleString() + ' jam' + (w30real ? ' ✓' : '')) + '</td>'
       + '<td style="padding:6px 8px;text-align:right">' + _fmtNum(d.avg_views) + '</td>'
       + '<td style="padding:6px 8px">' + escapeHtml(d.age_label || '—') + '</td>'
       + '<td style="padding:6px 8px">' + monBadge + '</td>'
@@ -6391,7 +6514,7 @@ function renderChannelTable() {
         : m.status === 'ready' ? '<span class="pill p-green">✅ Siap Monet (est.)</span>'
         : '<span class="pill p-yellow">⏳ Belum Siap</span>';
       const subsTxt = _fmtNum(m.subs) + '/' + _fmtNum(m.subs_required);
-      const wTxt = m.watch_est == null ? '—' : '~' + Number(m.watch_est).toLocaleString() + '/' + _fmtNum(m.watch_required);
+      const wTxt = m.watch_est == null ? '—' : (m.watch_real ? '' : '~') + Number(m.watch_est).toLocaleString() + '/' + _fmtNum(m.watch_required) + (m.watch_real ? ' ✓' : '');
       const shortsCell = m.shorts_complete
         ? bar(Number(m.shorts_views || 0).toLocaleString() + '/' + Number(m.shorts_required || 0).toLocaleString(), pctOf(m.shorts_views, m.shorts_required))
         : '<span class="muted" style="font-size:11px">belum bisa dihitung (klip Clipper tidak terlacak)</span>';

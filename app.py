@@ -1,6 +1,7 @@
 import os, sys, time, queue, threading, subprocess, random, json, shutil, math, re, hmac, wave, zlib
 import unicodedata
 import html as _html
+import urllib.parse
 import numpy as np
 import cv2, librosa, imageio
 import datetime as dt
@@ -4984,11 +4985,13 @@ def get_youtube_analytics():
         avg_h = avg_dur.get(yt_id)
         watch30 = round(v30 * avg_h, 1) if (v30 is not None and avg_h) else None
         watch90 = round(v90 * avg_h, 1) if (v90 is not None and avg_h) else None
+        watch365_real, watch30_real = _fetch_watch_hours_real(c, yt_id, cache)
         shorts_views, shorts_complete = _shorts_views_90d(yt_id, vid_info, vid_snaps, cached_videos, ref)
         readiness = _channel_monetization_readiness(
             subs=subs, watch_90d_est_hours=watch90,
             shorts_views_90d=shorts_views, shorts_complete=shorts_complete,
-            monetized=bool(c.get('monetized')), today_str=today_str)
+            monetized=bool(c.get('monetized')), today_str=today_str,
+            watch_real_hours=watch365_real)
         data.append({
             "yt_id": yt_id,
             "name": c.get('name', 'Tanpa Nama'),
@@ -5010,6 +5013,9 @@ def get_youtube_analytics():
             "trend": trend,
             "avg_views": avg_views,
             "watch_30d_est_hours": watch30,
+            "watch_30d_real": watch30_real,
+            "watch_365h_real": watch365_real,
+            "analytics_scope": _analytics_scope_state(cache, yt_id),
             "watch_90d_est_hours": watch90,
             # watch_hours dipakai kartu WATCH TIME di atas + progress TARGET
             # MONETISASI: estimasi jam tayang 90 hari terakhir (0 bila belum
@@ -5060,32 +5066,34 @@ def _monetization_rule_for(date_str):
 
 
 def _channel_monetization_readiness(*, subs, watch_90d_est_hours, shorts_views_90d,
-                                   shorts_complete, monetized, today_str):
+                                   shorts_complete, monetized, today_str, watch_real_hours=None):
     """SATU tempat perhitungan kesiapan monetisasi — dipakai panel dan
-    (nanti) laporan Telegram pagi/sore. PENTING: jam tayang di sini HANYA
-    ESTIMASI (snapshot views 90 hari terakhir × durasi rata-rata blueprint
-    video long channel). Jam tayang asli butuh YouTube Analytics API yang
-    tidak diizinkan di device flow; keputusan akhir monetisasi ada di
-    YouTube Studio. Jalur Shorts hanya dipakai bila shorts_complete=True
-    (baseline bisa dihitung jujur dari snapshot); bila tidak, badge tidak
-    pernah 'ready' lewat jalur Shorts."""
+    (nanti) laporan Telegram pagi/sore. Jam tayang: ASLI dari Analytics
+    API (365 hari) bila watch_real_hours diberikan, kalau tidak ESTIMASI
+    (snapshot views 90 hari terakhir × durasi rata-rata blueprint video
+    long channel). Keputusan akhir monetisasi ada di YouTube Studio.
+    Jalur Shorts hanya dipakai bila shorts_complete=True (baseline bisa
+    dihitung jujur dari snapshot); bila tidak, badge tidak pernah 'ready'
+    lewat jalur Shorts."""
     rule = _monetization_rule_for(today_str)
+    _watch = watch_real_hours if watch_real_hours is not None else watch_90d_est_hours
     base = {"subs": subs or 0, "subs_required": rule["subs"],
-            "watch_est": watch_90d_est_hours, "watch_required": rule["watch_hours"],
+            "watch_est": _watch, "watch_real": watch_real_hours is not None,
+            "watch_required": rule["watch_hours"],
             "shorts_views": shorts_views_90d, "shorts_required": rule["shorts_views_90d"],
             "shorts_complete": bool(shorts_complete),
             "rule_label": rule["label"], "rule_next": rule["rule_next"]}
     if monetized:
         return dict(base, status="monetized", badge="💰 Monetisasi Aktif", via=None)
     subs_ok = (subs or 0) >= rule["subs"]
-    hours_ok = watch_90d_est_hours is not None and watch_90d_est_hours >= rule["watch_hours"]
+    hours_ok = _watch is not None and _watch >= rule["watch_hours"]
     shorts_ok = bool(shorts_complete) and (shorts_views_90d or 0) >= rule["shorts_views_90d"]
     ready = subs_ok and (hours_ok or shorts_ok)
     via = None
     if ready:
         via = "shorts" if (shorts_ok and not hours_ok) else "hours"
     return dict(base, status="ready" if ready else "progress",
-                badge="✅ Siap Monet (est.)" if ready else "⏳ Belum Siap", via=via)
+                badge=("✅ Siap Monet" if watch_real_hours is not None else "✅ Siap Monet (est.)") if ready else "⏳ Belum Siap", via=via)
 
 
 def _snapshot_delta(totals, days, ref_date=None):
@@ -5515,14 +5523,29 @@ def _query_analytics(channel, metrics, start_date, end_date, dimensions=None, fi
     tidak diubah). Fungsi ini murni: tidak membaca/menulis file cache,
     pemanggil yang menyimpan state scope.
 
-    ⚠️ NONAKTIF: bila ANALYTICS_SCOPE tidak ada di SCOPES (login device
-    tidak mengizinkan scope Analytics — lihat komentar SCOPES), jangan
-    panggil API sama sekali: kembalikan (None, None) supaya channel
-    TIDAK ditandai 'perlu taut ulang' dan tidak ada panggilan 403 yang
-    sia-sia. Subs tetap None ('—'), RPM jatuh ke manual."""
-    if ANALYTICS_SCOPE not in SCOPES:
-        return None, None
+    🔥 v1.3.47: guard lama mematikan SEMUA panggilan Analytics selama
+    scope tidak ada di SCOPES (device flow menolaknya). Sekarang izin
+    dicek per token tersimpan: lanjut bila ada token yang scopes-nya
+    memuat yt-analytics.readonly, atau token tanpa info scopes (token
+    lama — coba sekali, 403 ditangani di bawah)."""
     creds_list = channel.get('creds_list', [channel.get('creds_json')])
+    if ANALYTICS_SCOPE not in SCOPES:
+        _has, _unknown = False, False
+        for _cs in creds_list:
+            if not _cs:
+                continue
+            try:
+                _sc = json.loads(_cs).get('scopes')
+            except Exception:
+                _sc = None
+            if isinstance(_sc, list):
+                if ANALYTICS_SCOPE in _sc:
+                    _has = True
+                    break
+            else:
+                _unknown = True
+        if not _has and not _unknown:
+            return None, None
     saw_403 = False
     for cred_str in creds_list:
         if not cred_str:
@@ -5547,6 +5570,46 @@ def _query_analytics(channel, metrics, start_date, end_date, dimensions=None, fi
     if saw_403:
         return None, False
     return None, None
+
+
+def _fetch_watch_hours_real(channel, yt_id, cache):
+    """Jam tayang ASLI dari YouTube Analytics API (estimatedMinutesWatched):
+    365 hari (syarat monetisasi 4.000/8.000 jam) + 30 hari (kolom WATCH
+    30D). Cache 1 jam di video_stats_cache. Kembalikan (hours_365,
+    hours_30) atau (None, None) bila token channel belum punya scope
+    Analytics (belum diaktifkan lewat login browser)."""
+    wr = cache.setdefault('watch_real', {})
+    st = wr.get(yt_id) or {}
+    if st and time.time() - float(st.get('at', 0)) < VIDEO_STATS_CACHE_TTL:
+        return st.get('h365'), st.get('h30')
+    today = _wib_now().date()
+    end = today.strftime('%Y-%m-%d')
+    seen_scope = None
+
+    def _hrs(days):
+        nonlocal seen_scope
+        start = (today - timedelta(days=days)).strftime('%Y-%m-%d')
+        rows, has_scope = _query_analytics(channel, 'estimatedMinutesWatched', start, end)
+        if has_scope is not None:
+            seen_scope = has_scope
+        if rows is None:
+            return None
+        total = sum(float(r[0]) for r in rows if r) if rows else 0.0
+        return round(total / 60.0, 1)
+
+    h365 = _hrs(365)
+    h30 = _hrs(30)
+    if seen_scope is not None:
+        try:
+            _set_analytics_scope_state(cache, yt_id, seen_scope)
+        except Exception:
+            pass
+    wr[yt_id] = {'h365': h365, 'h30': h30, 'at': time.time()}
+    try:
+        _save_video_stats_cache(cache)
+    except Exception:
+        pass
+    return h365, h30
 
 
 def _fetch_video_subs(channel, yt_id, video_ids):
@@ -8766,6 +8829,103 @@ def device_code_json():
                     "device_code": res['device_code'],
                     "expires_in": res.get('expires_in', 900),
                     "interval": res.get('interval', 5)})
+
+
+@app.route('/api/analytics_auth_url', methods=['POST'])
+def analytics_auth_url():
+    """Buat URL login browser untuk AKTIVASI ANALYTICS (jam tayang asli).
+    Device flow Google MENOLAK scope Analytics — jadi login memakai alur
+    auth-code browser dengan client 'installed' (Desktop) + redirect
+    http://localhost (manual: user salin kode dari address bar).
+    Kembalikan {auth_url} — user buka di Edge, izinkan, salin `code`."""
+    data = request.get_json(silent=True) or {}
+    yt_id = (data.get('yt_id') or '').strip()
+    if not yt_id:
+        return jsonify({"status": "error", "message": "yt_id channel wajib diisi."}), 400
+    _cid = (data.get('client_id') or '').strip() or None
+    entry = _oauth_client_by_id(_cid) if _cid else _oauth_primary_client()
+    if not entry:
+        return jsonify({"status": "error", "message": "Belum ada client OAuth. Upload dulu JSON client Desktop di Settings."}), 400
+    c_id, _c_sec = _oauth_client_conf(entry)
+    if not c_id:
+        return jsonify({"status": "error", "message": "Client OAuth tidak bisa dibaca. Upload ulang JSON-nya."}), 400
+    qs = urllib.parse.urlencode({
+        'client_id': c_id, 'redirect_uri': 'http://localhost',
+        'response_type': 'code', 'scope': ' '.join(SCOPES + [ANALYTICS_SCOPE]),
+        'access_type': 'offline', 'prompt': 'consent', 'state': yt_id})
+    return jsonify({"status": "success",
+                    "auth_url": "https://accounts.google.com/o/oauth2/v2/auth?" + qs,
+                    "client_name": entry.get('name') or entry.get('project_id') or ''})
+
+
+@app.route('/api/analytics_auth_code', methods=['POST'])
+def analytics_auth_code():
+    """Tukar `code` dari login browser menjadi token + simpan ke channel.
+    Token disimpan dengan scope Analytics (menggantikan token lama dari
+    client yang sama bila ada). Setelah ini, jam tayang asli langsung
+    terbaca di tabel (cache lama dibersihkan)."""
+    data = request.get_json(silent=True) or {}
+    yt_id = (data.get('yt_id') or '').strip()
+    code = (data.get('code') or '').strip()
+    if not yt_id or not code:
+        return jsonify({"status": "error", "message": "Channel dan kode wajib diisi."}), 400
+    _cid = (data.get('client_id') or '').strip() or None
+    entry = _oauth_client_by_id(_cid) if _cid else _oauth_primary_client()
+    if not entry:
+        return jsonify({"status": "error", "message": "Belum ada client OAuth."}), 400
+    c_id, c_sec = _oauth_client_conf(entry)
+    if not c_id or not c_sec:
+        return jsonify({"status": "error", "message": "Client OAuth tidak bisa dibaca."}), 400
+    try:
+        res = requests.post('https://oauth2.googleapis.com/token',
+            data={'code': code, 'client_id': c_id, 'client_secret': c_sec,
+                  'redirect_uri': 'http://localhost', 'grant_type': 'authorization_code'},
+            timeout=20).json()
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Tidak bisa menghubungi Google: {e}"}), 502
+    if 'error' in res:
+        return jsonify({"status": "error", "message": f"Error Google: {res.get('error_description') or res['error']}"}), 400
+    if not res.get('refresh_token'):
+        return jsonify({"status": "error", "message": "Google tidak mengembalikan refresh_token — ulangi login dan pastikan memilih akun Google yang benar."}), 400
+    try:
+        creds = Credentials(token=res['access_token'], refresh_token=res['refresh_token'],
+                            token_uri='https://oauth2.googleapis.com/token',
+                            client_id=c_id, client_secret=c_sec,
+                            scopes=SCOPES + [ANALYTICS_SCOPE])
+        creds_json = creds.to_json()
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Gagal menyimpan token: {e}"}), 500
+    channels = load_channels()
+    ch = next((x for x in channels if x.get('yt_id') == yt_id), None)
+    if not ch:
+        return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
+    with db_lock:
+        lst = [s for s in (ch.get('creds_list') or []) if s]
+        out, replaced = [], False
+        for s in lst:
+            try:
+                _cid2 = json.loads(s).get('client_id')
+            except Exception:
+                _cid2 = None
+            if _cid2 == c_id and not replaced:
+                out.append(creds_json)
+                replaced = True
+            elif _cid2 == c_id:
+                continue
+            else:
+                out.append(s)
+        if not replaced:
+            out.append(creds_json)
+        ch['creds_list'] = out
+        save_channels(channels)
+    try:
+        cache = _load_video_stats_cache()
+        (cache.get('watch_real') or {}).pop(yt_id, None)
+        (cache.get('analytics_scope') or {}).pop(yt_id, None)
+        _save_video_stats_cache(cache)
+    except Exception:
+        pass
+    return jsonify({"status": "success", "message": f"Analytics aktif untuk {ch.get('name') or yt_id} — jam tayang asli akan muncul di tabel."})
 
 
 @app.route('/api/generate_tv_link')

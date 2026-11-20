@@ -438,6 +438,11 @@ def kie_get_balance(api_key):
         data = _kie_get(api_key, KIE_CREDIT_URL, timeout=30)
     except Exception:
         return None
+    # 🔥 v1.3.45: API Kie mengembalikan `data` sebagai ANGKA (mis. 43.5),
+    # bukan dict — versi lama menolaknya sehingga saldo selalu 'tidak
+    # terbaca' padahal key valid (terbukti live: 43.5 / 80.0 / 9990.0).
+    if isinstance(data, (int, float)):
+        return float(data)
     if not isinstance(data, dict):
         return None
     for k in ('credits', 'credit', 'balance', 'remaining', 'remainingCredits'):

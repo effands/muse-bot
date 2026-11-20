@@ -342,13 +342,15 @@
             .feature-grid { grid-template-columns: 1fr 1fr; }
         }
         @media (max-height: 760px) {
-            body { overflow-y: auto; }
+            .hero-sub { display: none; }
+            .studio-signal { display: none; }
+            .module-box { padding: 0.75rem !important; }
         }
     </style>
     <link rel="icon" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/studio.css">
 </head>
-<body class="studio-hub min-h-screen w-full overflow-x-hidden flex flex-col justify-between p-3 sm:p-5 select-none relative">
+<body class="studio-hub h-screen w-full overflow-hidden flex flex-col justify-between p-3 sm:p-4 select-none relative">
     <!-- 🔒 #12: token CSRF per-sesi (diisi server saat render). -->
     <script>window.CSRF_TOKEN = "{{ csrf_token }}";</script>
     <div class="bg-mesh"></div>
@@ -356,7 +358,7 @@
     <div class="aurora aurora-b"></div>
     <div class="aurora aurora-c"></div>
 
-    <main class="hub-shell relative z-10 w-full max-w-6xl mx-auto flex-1 flex flex-col justify-between gap-3 sm:gap-4">
+    <main class="hub-shell relative z-10 w-full max-w-6xl mx-auto flex-1 min-h-0 flex flex-col justify-between gap-2 sm:gap-3">
 
         <!-- ════════ COMPACT HEADER ════════ -->
         <header class="glass-card rounded-xl px-4 py-2.5 sm:px-5 sm:py-3 flex items-center justify-between gap-3 reveal d1">
@@ -402,10 +404,10 @@
         </header>
 
         <!-- ════════ HERO ════════ -->
-        <section class="hero rounded-xl px-4 py-4 sm:px-6 sm:py-5 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-6 reveal d2">
+        <section class="hero rounded-xl px-4 py-3 sm:px-6 sm:py-3 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-6 reveal d2">
             <div class="flex-1 min-w-0">
                 <p class="text-[10px] font-bold tracking-[0.22em] text-cyan-400 mono mb-1">ZIMUSE BOT / HUB</p>
-                <h1 class="hero-title text-xl sm:text-2xl font-black text-white tracking-tight leading-snug">
+                <h1 class="hero-title text-lg sm:text-xl font-black text-white tracking-tight leading-snug">
                     Ruang produksi<br><span class="grad-text">konten Anda.</span>
                 </h1>
                 <p class="hero-sub text-xs sm:text-sm text-slate-400 mt-1 leading-relaxed">
@@ -420,13 +422,13 @@
                 </div>
             </div>
             <div class="hero-badges flex items-center gap-2 flex-shrink-0">
-                <span class="hero-badge flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold text-slate-300">
+                <span class="hero-badge flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold text-slate-300">
                     <i class="fa-solid fa-server text-emerald-400 text-xs"></i> VPS Aktif
                 </span>
-                <span class="hero-badge flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold text-slate-300">
+                <span class="hero-badge flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold text-slate-300">
                     <i class="fa-solid fa-bolt text-amber-400 text-xs"></i> FFmpeg 24/7
                 </span>
-                <span class="hero-badge flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold text-slate-300">
+                <span class="hero-badge flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold text-slate-300">
                     <i class="fa-brands fa-telegram text-cyan-400 text-xs"></i> Operator Siaga
                 </span>
             </div>
@@ -436,7 +438,7 @@
         <section class="hub-modules grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-5 flex-1 items-stretch reveal d4" aria-label="Modul produksi">
 
             <!-- 1. FACTORY CARD -->
-            <div class="module-box rounded-xl p-4 sm:p-6 flex flex-col justify-between">
+            <div class="module-box rounded-xl p-4 flex flex-col justify-between">
                 <div>
                     <div class="flex items-center justify-between mb-3">
                         <div class="flex items-center gap-3">
@@ -455,34 +457,34 @@
                     </p>
 
                     <!-- Feature Matrix -->
-                    <div class="feature-grid grid grid-cols-2 gap-2 text-[11px] text-slate-300 mb-4">
-                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
+                    <div class="feature-grid grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px] text-slate-300 mb-3">
+                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2 py-1 rounded-lg">
                             <i class="fa-solid fa-sliders text-cyan-400 text-xs"></i>
                             <span>Resep Durasi &amp; Preset</span>
                         </div>
-                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
+                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2 py-1 rounded-lg">
                             <i class="fa-solid fa-wave-square text-cyan-400 text-xs"></i>
                             <span>Visualizer Waveform</span>
                         </div>
-                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
+                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2 py-1 rounded-lg">
                             <i class="fa-brands fa-youtube text-red-400 text-xs"></i>
                             <span>OAuth Device Flow</span>
                         </div>
-                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
+                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2 py-1 rounded-lg">
                             <i class="fa-solid fa-calendar-days text-cyan-400 text-xs"></i>
                             <span>Jadwal 30 Hari Sekali Klik</span>
                         </div>
                     </div>
                 </div>
 
-                <a href="/factory" class="w-full py-3 px-4 rounded-xl font-bold text-slate-950 bg-cyan-400 hover:bg-cyan-300 flex items-center justify-center gap-2 text-xs sm:text-sm uppercase tracking-wider transition-all btn-glow-cyan">
+                <a href="/factory" class="w-full py-2 px-4 rounded-xl font-bold text-slate-950 bg-cyan-400 hover:bg-cyan-300 flex items-center justify-center gap-2 text-xs sm:text-sm uppercase tracking-wider transition-all btn-glow-cyan">
                     <span>Masuk ke Studio Musik</span>
                     <i class="fa-solid fa-arrow-right module-arrow"></i>
                 </a>
             </div>
 
             <!-- 2. CLIPPER CARD -->
-            <div class="module-box module-clipper rounded-xl p-4 sm:p-6 flex flex-col justify-between">
+            <div class="module-box module-clipper rounded-xl p-4 flex flex-col justify-between">
                 <div>
                     <div class="flex items-center justify-between mb-3">
                         <div class="flex items-center gap-3">
@@ -501,27 +503,27 @@
                     </p>
 
                     <!-- Feature Matrix -->
-                    <div class="feature-grid grid grid-cols-2 gap-2 text-[11px] text-slate-300 mb-4">
-                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
+                    <div class="feature-grid grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px] text-slate-300 mb-3">
+                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2 py-1 rounded-lg">
                             <i class="fa-solid fa-wand-magic-sparkles text-purple-400 text-xs"></i>
                             <span>Whisper AI Auto Subtitle</span>
                         </div>
-                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
+                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2 py-1 rounded-lg">
                             <i class="fa-solid fa-mobile-screen-button text-purple-400 text-xs"></i>
                             <span>Format Shorts Vertikal (9:16)</span>
                         </div>
-                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
+                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2 py-1 rounded-lg">
                             <i class="fa-solid fa-cloud-arrow-down text-purple-400 text-xs"></i>
                             <span>yt-dlp Direct Stream</span>
                         </div>
-                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1.5 rounded-lg">
+                        <div class="feature-chip flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2 py-1 rounded-lg">
                             <i class="fa-solid fa-share-nodes text-purple-400 text-xs"></i>
                             <span>Ekspor Multi-Platform</span>
                         </div>
                     </div>
                 </div>
 
-                <a href="/clipper" class="w-full py-3 px-4 rounded-xl font-bold text-white bg-purple-600 hover:bg-purple-500 flex items-center justify-center gap-2 text-xs sm:text-sm uppercase tracking-wider transition-all btn-glow-purple">
+                <a href="/clipper" class="w-full py-2 px-4 rounded-xl font-bold text-white bg-purple-600 hover:bg-purple-500 flex items-center justify-center gap-2 text-xs sm:text-sm uppercase tracking-wider transition-all btn-glow-purple">
                     <span>Masuk ke Shorts AI</span>
                     <i class="fa-solid fa-arrow-right module-arrow"></i>
                 </a>
@@ -530,14 +532,14 @@
         </section>
 
         <!-- ════════ SLIM TELEMETRY BOARD (NO SCROLL) ════════ -->
-        <section class="hub-telemetry glass-card rounded-xl p-3 sm:p-4 reveal d3" aria-label="Statistik produksi">
+        <section class="hub-telemetry glass-card rounded-xl p-3 reveal d3" aria-label="Statistik produksi">
             <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
                 <!-- Stat 1 -->
                 <div class="stat-card bg-slate-900/90 rounded-lg p-2.5 border border-slate-800 flex items-center justify-between">
                     <div>
                         <span class="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Factory Render</span>
                         <div class="flex items-baseline gap-1.5 mt-0.5">
-                            <span class="text-xl sm:text-2xl font-black text-white mono" id="stat-factory">0</span>
+                            <span class="text-lg sm:text-xl font-black text-white mono" id="stat-factory">0</span>
                             <span class="text-[10px] text-slate-500">tugas aktif</span>
                         </div>
                     </div>
@@ -551,7 +553,7 @@
                     <div>
                         <span class="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Clipper Jobs</span>
                         <div class="flex items-baseline gap-1.5 mt-0.5">
-                            <span class="text-xl sm:text-2xl font-black text-white mono" id="stat-clipper">0</span>
+                            <span class="text-lg sm:text-xl font-black text-white mono" id="stat-clipper">0</span>
                             <span class="text-[10px] text-slate-500">klip AI</span>
                         </div>
                     </div>
@@ -565,7 +567,7 @@
                     <div>
                         <span class="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Beban CPU</span>
                         <div class="flex items-baseline gap-1.5 mt-0.5">
-                            <span class="text-xl sm:text-2xl font-black text-amber-400 mono" id="stat-cpu">0%</span>
+                            <span class="text-lg sm:text-xl font-black text-amber-400 mono" id="stat-cpu">0%</span>
                             <span class="text-[10px] text-slate-500">VPS Core</span>
                         </div>
                     </div>
@@ -590,7 +592,7 @@
         </section>
 
         <!-- ════════ SLIM COMPACT FOOTER WITH ZIMUSE BOT WATERMARK ════════ -->
-        <footer class="glass-card rounded-xl px-4 py-2 flex items-center justify-between text-[11px] text-slate-400 reveal d5">
+        <footer class="glass-card rounded-xl px-4 py-1.5 flex items-center justify-between text-[11px] text-slate-400 reveal d5">
             <div class="flex items-center gap-2">
                 <i class="fa-solid fa-robot text-cyan-400"></i>
                 <span class="truncate">Powered by <strong class="text-white">Zimuse Bot</strong> • Autonomous Cloud Production System © 2026</span>

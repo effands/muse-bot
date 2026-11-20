@@ -1062,7 +1062,7 @@ def _shorts_views_90d(yt_id, history, cached_videos, vid_snaps, ref_date):
 
 
 def _channel_monetization_readiness(*, subs, watch_90d_est_hours, shorts_views_90d,
-                                   shorts_complete, monetized, today_str):
+                                   shorts_complete, monetized, today_str, watch_real_hours=None):
     """SATU tempat perhitungan kesiapan monetisasi di operator (kembaran
     helper panel). PENTING: jam tayang di sini HANYA ESTIMASI (snapshot
     views 90 hari terakhir × durasi rata-rata blueprint video long channel).
@@ -1071,22 +1071,24 @@ def _channel_monetization_readiness(*, subs, watch_90d_est_hours, shorts_views_9
     Shorts hanya dipakai bila shorts_complete=True; bila tidak, badge tidak
     pernah 'ready' lewat jalur Shorts."""
     rule = _monetization_rule_for(today_str)
+    _watch = watch_real_hours if watch_real_hours is not None else watch_90d_est_hours
     base = {"subs": subs or 0, "subs_required": rule["subs"],
-            "watch_est": watch_90d_est_hours, "watch_required": rule["watch_hours"],
+            "watch_est": _watch, "watch_real": watch_real_hours is not None,
+            "watch_required": rule["watch_hours"],
             "shorts_views": shorts_views_90d, "shorts_required": rule["shorts_views_90d"],
             "shorts_complete": bool(shorts_complete),
             "rule_label": rule["label"], "rule_next": rule["rule_next"]}
     if monetized:
         return dict(base, status="monetized", badge="💰 Monetisasi Aktif", via=None)
     subs_ok = (subs or 0) >= rule["subs"]
-    hours_ok = watch_90d_est_hours is not None and watch_90d_est_hours >= rule["watch_hours"]
+    hours_ok = _watch is not None and _watch >= rule["watch_hours"]
     shorts_ok = bool(shorts_complete) and (shorts_views_90d or 0) >= rule["shorts_views_90d"]
     ready = subs_ok and (hours_ok or shorts_ok)
     via = None
     if ready:
         via = "shorts" if (shorts_ok and not hours_ok) else "hours"
     return dict(base, status="ready" if ready else "progress",
-                badge="✅ Siap Monet (est.)" if ready else "⏳ Belum Siap", via=via)
+                badge=("✅ Siap Monet" if watch_real_hours is not None else "✅ Siap Monet (est.)") if ready else "⏳ Belum Siap", via=via)
 
 
 # Definisi "segera siap" (dipakai ringkasan laporan): channel belum siap dan

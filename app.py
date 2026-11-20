@@ -4812,9 +4812,18 @@ def logs_clear_api():
 @app.route('/api/get_dashboard_stats')
 def get_dashboard_stats():
     sys = get_system_stats()
+    # 🔥 v1.3.22: info DISK untuk header sys-monitor (shutil.disk_usage
+    # saja — murah, tanpa jalan-jalan direktori seperti _disk_usage_info).
+    try:
+        _du = shutil.disk_usage(BASE_DIR)
+        _disk_pct = round(_du.used / max(1, _du.total) * 100, 1)
+        _disk_text = f"{round(_du.used / (1024 ** 3), 1)}GB / {round(_du.total / (1024 ** 3), 1)}GB"
+    except Exception:
+        _disk_pct, _disk_text = 0, '–/–GB'
     return jsonify({
         "channels": len(database_channel), "active_tasks": len(active_tasks), "history_tasks": len(history_tasks),
-        "sys_cpu": sys["cpu"], "sys_ram_pct": sys["ram_pct"], "sys_ram_text": f"{sys['ram_used']}GB / {sys['ram_total']}GB"
+        "sys_cpu": sys["cpu"], "sys_ram_pct": sys["ram_pct"], "sys_ram_text": f"{sys['ram_used']}GB / {sys['ram_total']}GB",
+        "sys_disk_pct": _disk_pct, "sys_disk_text": _disk_text
     })
 
 @app.route('/api/get_youtube_analytics')

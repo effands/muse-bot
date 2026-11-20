@@ -559,7 +559,7 @@ input[type=color] { padding:0; height:36px; width:100%; border:1px solid var(--b
 .vb { color:var(--accent); font-family:var(--font-m); font-size:11px; background:rgba(0,212,255,.08); padding:1px 6px; border-radius:4px; }
 
 .pb-bg { height:4px; background:var(--border); border-radius:2px; overflow:hidden; }
-.pb-fill { height:100%; border-radius:2px; transition:width .4s; }
+.pb-fill { height:100%; border-radius:2px; transition:width .4s; background:linear-gradient(90deg, var(--accent), var(--accent3)); }
 
 .sh { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
 .sh-title { font-size:17px; font-weight:700; }
@@ -1168,6 +1168,9 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         <div style="width:1px;height:22px;background:var(--border)"></div>
         <div class="sm-item"><span class="sm-lbl">RAM</span><span class="sm-val" id="sys-ram" style="color:var(--green)">–%</span></div>
         <div class="sm-item"><span style="font-family:var(--font-m);font-size:9px;color:var(--muted)" id="sys-ram-txt">–/–GB</span></div>
+        <div style="width:1px;height:22px;background:var(--border)"></div>
+        <div class="sm-item"><span class="sm-lbl">DISK</span><span class="sm-val" id="sys-disk" style="color:var(--accent3)">–%</span></div>
+        <div class="sm-item"><span style="font-family:var(--font-m);font-size:9px;color:var(--muted)" id="sys-disk-txt">–/–GB</span></div>
       </div>
     </div>
   </div>
@@ -1212,7 +1215,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
                 <th style="padding:6px 8px">CHANNEL</th><th style="padding:6px 8px">STATUS</th><th style="padding:6px 8px">UPDATED</th>
                 <th style="padding:6px 8px;text-align:right">SUBSCRIBE</th><th style="padding:6px 8px;text-align:right">VIDEOS</th>
                 <th style="padding:6px 8px;text-align:right">VIEW 28D</th><th style="padding:6px 8px;text-align:right">VIEW 48H</th>
-                <th style="padding:6px 8px">TREND</th><th style="padding:6px 8px;text-align:right">WATCH 30D (est.)</th>
+                <th style="padding:6px 8px">TREND</th><th style="padding:6px 8px;text-align:right;width:64px" title="WATCH 30D (est.) — estimasi kasar, bukan data YouTube">WATCH 30D</th>
                 <th style="padding:6px 8px;text-align:right">AVG</th><th style="padding:6px 8px">AGE</th>
                 <th style="padding:6px 8px">MONETISASI</th><th style="padding:6px 8px">OPEN</th>
               </tr></thead>
@@ -2838,6 +2841,10 @@ function pollSysStats() {
       document.getElementById('sys-cpu').textContent = d.sys_cpu + '%';
       document.getElementById('sys-ram').textContent = d.sys_ram_pct + '%';
       document.getElementById('sys-ram-txt').textContent = d.sys_ram_text;
+      if (d.sys_disk_pct !== undefined) {
+        document.getElementById('sys-disk').textContent = d.sys_disk_pct + '%';
+        document.getElementById('sys-disk-txt').textContent = d.sys_disk_text;
+      }
     }
     document.getElementById('st-active').textContent = d.active_tasks || 0;
   }).catch(() => {});
@@ -6161,7 +6168,7 @@ function renderChannelTable() {
     const bar = (curTxt, pct) => '<div class="monet-bar"><div class="pb-bg"><div class="pb-fill" style="width:' + pct + '%"></div></div><span class="pb-num">' + curTxt + '</span></div><span class="muted" style="font-size:10px">' + pct + '%</span>';
     let h = '<div style="border-top:1px solid var(--border);padding-top:10px">'
       + '<div style="font-weight:700;font-size:12px;margin-bottom:4px">💰 KESIAPAN MONETISASI</div>'
-      + '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">Syarat saat ini: ' + escapeHtml(rule.rule_label || '') + (rule.rule_next ? ' · ' + escapeHtml(rule.rule_next) : '') + '</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.6">Syarat saat ini: ' + escapeHtml(rule.rule_label || '') + (rule.rule_next ? '<br>' + escapeHtml(rule.rule_next) : '') + '</div>'
       + '<div style="overflow-x:auto"><table class="monet-table"><thead><tr><th>Channel</th><th>Subs</th><th>Jam Tayang est.</th><th>Shorts 90 hari</th><th>Status</th></tr></thead><tbody>';
     rows.forEach(d => {
       const m = d.monetization || {};
@@ -6169,7 +6176,7 @@ function renderChannelTable() {
         : m.status === 'ready' ? '<span class="pill p-green">✅ Siap Monet (est.)</span>'
         : '<span class="pill p-yellow">⏳ Belum Siap</span>';
       const subsTxt = _fmtNum(m.subs) + '/' + _fmtNum(m.subs_required);
-      const wTxt = (m.watch_est == null ? '—' : '~' + Number(m.watch_est).toLocaleString()) + '/' + _fmtNum(m.watch_required);
+      const wTxt = m.watch_est == null ? '—' : '~' + Number(m.watch_est).toLocaleString() + '/' + _fmtNum(m.watch_required);
       const shortsCell = m.shorts_complete
         ? bar(Number(m.shorts_views || 0).toLocaleString() + '/' + Number(m.shorts_required || 0).toLocaleString(), pctOf(m.shorts_views, m.shorts_required))
         : '<span class="muted" style="font-size:11px">belum bisa dihitung (klip Clipper tidak terlacak)</span>';

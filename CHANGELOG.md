@@ -3,6 +3,11 @@
 Catatan perubahan per versi. Dibaca operator saat start dan ditampilkan di
 pesan restart Telegram, supaya Bos langsung tahu apa yang berubah.
 
+## 1.3.34
+- Tombol header (Light Mode, Hub, Update) sekarang ikon saja tanpa teks, di semua lebar layar.
+- Angka RAM/DISK di header ditumpuk atas-bawah (dipakai di atas, total di bawah) supaya tidak sempit.
+- Tabel channel di Task Monitor punya kolom baru "Update Terakhir": jenis video terakhir (Short/Playlist/Long), judul, dan jam tayangnya; video yang gagal tidak dihitung.
+
 ## 1.3.33
 - Audit penuh semua fungsi: 86 temuan, 25 diperbaiki di versi ini — sisanya dicatat untuk batch berikutnya.
 - Perintah "publish langsung" sekarang hanya jalan kalau Bos benar-benar menyuruh tayang (kalimat "jadwal besok jangan lupa dicek" tidak lagi salah dibaca), dan selalu minta konfirmasi dulu.

@@ -1,3 +1,6 @@
+## 1.3.70
+- Dashboard: kolom GROUP disembunyikan dari tabel CHANNEL TERHUBUNG (tetap ada di Task Monitor + DETAIL CHANNEL, di sanalah group diatur); TREN CHANNEL dikecilkan (grid 2fr → 1.5fr) supaya tabel muat tanpa scroll menyamping; label mode "Full-Auto" disingkat jadi "Auto" (panel saja).
+
 ## 1.3.69
 - Kolom GROUP di tabel DETAIL CHANNEL kini dropdown juga (sama seperti tabel CHANNEL TERHUBUNG) — sebelumnya cuma tampil "—" tanpa tombol; buat/pindah/keluar group bisa langsung dari tabel ini. Render ulang tiap 5 menit dijaga supaya tidak menghapus input group baru yang sedang dibuka.
 

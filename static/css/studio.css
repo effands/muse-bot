@@ -331,7 +331,9 @@ body[class*="studio-"] :focus-visible {
 .auth-theme:hover { border-color: var(--studio-accent); }
 .dashboard-overview {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  /* 🔥 v1.3.70: TREN CHANNEL dikecilkan (2fr → 1.5fr) — kartu CHANNEL
+     TERHUBUNG dapat ruang lebih lega, tabel muat tanpa scroll menyamping. */
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
   gap: .875rem;
   /* 🔥 v1.3.24: presisi — kedua kartu dipaksa setinggi kartu tetangga
      (dulu v1.2.34 align-items:start bikin kartu channel lebih pendek

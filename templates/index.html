@@ -2352,7 +2352,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         </div>
         <div class="card-body">
           <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Satu Short otomatis per channel per hari, di jam yang kamu tentukan.</div>
-          <details class="data-note" style="margin:0 0 10px"><summary>Penjelasan</summary><div>Judul, hook, naskah &amp; CTA dibuat otomatis dari tema dan berputar tiap hari. Bila jam tayang sudah lewat pada hari pembuatan, tayang digeser ke esok harinya. Short butuh minimal 1 background di galeri channel — bila galeri kosong, jadwal hari itu dilewati dan bot memberi tahu di Telegram. Mode Approval: short menunggu persetujuanmu dulu; Full-Auto: langsung masuk antrean.</div></details>
+          <details class="data-note" style="margin:0 0 10px"><summary>Penjelasan</summary><div>Judul, hook, naskah &amp; CTA dibuat otomatis dari tema dan berputar tiap hari. Bila jam tayang sudah lewat pada hari pembuatan, tayang digeser ke esok harinya. Short butuh minimal 1 background di galeri channel — bila galeri kosong, jadwal hari itu dilewati dan bot memberi tahu di Telegram. Mode Approval: short menunggu persetujuanmu dulu; Auto: langsung masuk antrean.</div></details>
           <div id="auto-shorts-list"></div>
         </div>
       </div>
@@ -3023,15 +3023,15 @@ function renderChannelsGrid() {
           <span class="pill p-green">${escapeHtml(c.status)}</span>
           ${c.paused ? `<span class="pill p-yellow">⏸️ Dijeda</span>` : ''}
           ${c.oauth_client_id ? `<span class="pill p-muted" title="Client OAuth utama channel ini">Project ${_oauthProjectOfClientId(c.oauth_client_id)}</span>` : ''}
-          ${c.autopilot === 'auto' ? `<span class="pill p-cyan">🤖 Full-Auto</span>` : `<span class="pill p-muted">👀 Approval</span>`}
+          ${c.autopilot === 'auto' ? `<span class="pill p-cyan">🤖 Auto</span>` : `<span class="pill p-muted">👀 Approval</span>`}
           ${c.monetized ? `<span class="pill p-green">💰 Monetisasi Aktif</span>` : ''}
           ${c.analytics_scope === false ? `<span class="pill p-yellow" title="Token channel ini belum punya scope YouTube Analytics — taut ulang channel (kode device baru) untuk mengaktifkan subs per video & RPM otomatis">⚠️ Perlu taut ulang (Analytics)</span>` : ''}
         </div>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
         ${c.autopilot === 'auto'
-          ? `<button class="btn btn-g btn-sm" onclick="toggleChannelAutopilot('${c.yt_id}', 'approval')" style="border-color:var(--accent); color:var(--accent);" title="Batch baru langsung jalan tanpa approval — klik untuk kembali ke mode Approval">🤖 Full-Auto</button>`
-          : `<button class="btn btn-g btn-sm" onclick="toggleChannelAutopilot('${c.yt_id}', 'auto')" style="border-color:var(--muted); color:var(--muted);" title="Batch baru menunggu approval — klik untuk Full-Auto">👀 Approval</button>`}
+          ? `<button class="btn btn-g btn-sm" onclick="toggleChannelAutopilot('${c.yt_id}', 'approval')" style="border-color:var(--accent); color:var(--accent);" title="Batch baru langsung jalan tanpa approval — klik untuk kembali ke mode Approval">🤖 Auto</button>`
+          : `<button class="btn btn-g btn-sm" onclick="toggleChannelAutopilot('${c.yt_id}', 'auto')" style="border-color:var(--muted); color:var(--muted);" title="Batch baru menunggu approval — klik untuk Auto">👀 Approval</button>`}
         ${c.paused
           ? `<button class="btn btn-g btn-sm" onclick="toggleChannelPause('${c.yt_id}', false)" style="border-color:var(--green); color:var(--green);">▶️ Lanjutkan</button>`
           : `<button class="btn btn-g btn-sm" onclick="toggleChannelPause('${c.yt_id}', true)" style="border-color:var(--yellow); color:var(--yellow);">⏸️ Jeda</button>`}
@@ -3050,7 +3050,7 @@ function renderChannelsGrid() {
 // /api/get_channels, tanpa panggilan API baru). Semua nama/status lewat
 // escapeHtml(): nama channel berasal dari YouTube dan dianggap tidak tepercaya.
 // 🔥 v1.2.34: mode compact khusus kartu CHANNEL TERHUBUNG di Dashboard —
-// satu baris per channel (nama + Connected + Full-Auto), tanpa wrap, gap
+// satu baris per channel (nama + Connected + Auto), tanpa wrap, gap
 // rapat; pill dikecilkan via inline style lokal (bukan .pill global).
 // Task Monitor tetap memakai tampilan lama (compact tidak aktif).
 // 🔥 v1.3.12: jadwal terdekat per channel untuk kartu CHANNEL TERHUBUNG
@@ -3144,8 +3144,11 @@ function lastUpdateFor(yt_id) {
   return { type: type, icon: icon, time: best.time || '', title: best.title || 'Video' };
 }
 // 🔥 v1.3.55: param showEmail — false = sembunyikan kolom EMAIL (dipakai Dashboard); default tampil (Task Monitor).
-function channelTableHtml(list, withMode, showNext, fill, showEmail) {
-  const head = `<thead><tr><th>CHANNEL</th><th>STATUS</th><th>GROUP</th>${showEmail === false ? '' : '<th>EMAIL</th>'}${withMode ? '<th>MODE</th>' : ''}${showNext ? '<th>JADWAL BERIKUTNYA</th><th>UPDATE TERAKHIR</th>' : ''}</tr></thead>`;
+function channelTableHtml(list, withMode, showNext, fill, showEmail, showGroup) {
+  // 🔥 v1.3.70: GROUP disembunyikan di Dashboard (showGroup=false) — tabel
+  // jadi muat di kartu tanpa scroll menyamping; di Task Monitor + DETAIL
+  // CHANNEL group tetap tampil (di sanalah group diatur).
+  const head = `<thead><tr><th>CHANNEL</th><th>STATUS</th>${showGroup === false ? '' : '<th>GROUP</th>'}${showEmail === false ? '' : '<th>EMAIL</th>'}${withMode ? '<th>MODE</th>' : ''}${showNext ? '<th>JADWAL BERIKUTNYA</th><th>UPDATE TERAKHIR</th>' : ''}</tr></thead>`;
   const rows = list.map(c => {
     const nx = showNext ? nextScheduleFor(c.yt_id) : null;
     const nextCell = !showNext ? '' : (!nx
@@ -3161,9 +3164,9 @@ function channelTableHtml(list, withMode, showNext, fill, showEmail) {
       + (c.paused ? ` <span class="pill p-yellow" style="font-size:9px;padding:2px 6px">⏸️ Dijeda</span>` : '')
       + (c.monetized ? ` <span class="pill p-green" style="font-size:9px;padding:2px 6px">💰 Monetisasi Aktif</span>` : '')
       + `</td>`
-      + `<td style="white-space:nowrap">${groupSelectHtml(c)}</td>`
+      + (showGroup === false ? '' : `<td style="white-space:nowrap">${groupSelectHtml(c)}</td>`)
       + (showEmail === false ? '' : `<td title="${escapeHtml(c.owner_email || '')} — klik untuk isi/ubah email" style="font-family:var(--font-m);font-size:11px;color:${c.owner_email ? 'var(--text)' : 'var(--muted)'};white-space:nowrap"><span onclick="editEmail('${c.yt_id}', this)" title="Klik untuk isi/ubah email" style="display:inline-block;max-width:190px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;cursor:pointer;border-bottom:1px dashed var(--muted)">${escapeHtml(c.owner_email || '—')}</span></td>`)
-      + (withMode ? `<td style="white-space:nowrap"><span onclick="go('panel-tasks')" title="Lihat antrean approval" style="cursor:pointer">${c.autopilot === 'auto' ? '<span class="pill p-cyan" style="font-size:9px;padding:2px 6px">🤖 Full-Auto</span>' : '<span class="pill p-muted" style="font-size:9px;padding:2px 6px">👀 Approval</span>'}</span></td>` : '')
+      + (withMode ? `<td style="white-space:nowrap"><span onclick="go('panel-tasks')" title="Lihat antrean approval" style="cursor:pointer">${c.autopilot === 'auto' ? '<span class="pill p-cyan" style="font-size:9px;padding:2px 6px">🤖 Auto</span>' : '<span class="pill p-muted" style="font-size:9px;padding:2px 6px">👀 Approval</span>'}</span></td>` : '')
       + nextCell
       + lastCell
       + `</tr>`;
@@ -3281,7 +3284,7 @@ function renderDashboardChannels() {
   const prev = el.querySelector('div');
   const sl = prev ? prev.scrollLeft : 0, st = prev ? prev.scrollTop : 0;
   el.innerHTML = channels.length
-    ? channelTableHtml(channels, true, false, true, false) // 🔥 v1.3.55: EMAIL disembunyikan di Dashboard
+    ? channelTableHtml(channels, true, false, true, false, false) // 🔥 v1.3.55: EMAIL disembunyikan di Dashboard; v1.3.70: GROUP juga disembunyikan di sini
     : `<div style="padding:10px 0;color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada channel tertaut — tautkan dari Settings.</div>`;
   const cur = el.querySelector('div');
   if (cur) { cur.scrollLeft = sl; cur.scrollTop = st; }
@@ -3541,7 +3544,7 @@ async function toggleChannelAutopilot(yt_id, mode) {
   const c = (calData.channels || []).concat(channels || []).find(x => x.yt_id === yt_id);
   const name = c ? c.name : yt_id;
   const msg = mode === 'auto'
-    ? `Aktifkan Full-Auto untuk channel "${name}"?\nBatch baru langsung masuk antrean render TANPA approval. Pakai untuk channel terpercaya saja.`
+    ? `Aktifkan Auto untuk channel "${name}"?\nBatch baru langsung masuk antrean render TANPA approval. Pakai untuk channel terpercaya saja.`
     : `Kembalikan channel "${name}" ke mode Approval?\nBatch baru akan menunggu persetujuan dulu (preview ke Telegram).`;
   if (!(await themedConfirm(msg, { danger: false, okLabel: 'Ya' }))) return;
   fetch('/api/set_channel_autopilot', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ yt_id, autopilot: mode }) })

@@ -1460,10 +1460,11 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         <div style="display:flex;gap:8px"><button class="btn btn-g btn-sm" onclick="recoverFailedTasks()">♻️ Pulihkan Task Gagal</button></div>
       </div>
 
-      <div class="stats-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:18px">
+      <div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:18px">
         <div class="stat s3"><div class="stat-lbl">CHANNELS</div><div class="stat-val" id="tm-ch" style="color:var(--accent3)">0</div><div class="stat-note">Connected</div></div>
         <div class="stat s1"><div class="stat-lbl">ACTIVE</div><div class="stat-val" id="tm-act" style="color:var(--accent)">0</div><div class="stat-note">Running</div></div>
         <div class="stat s4"><div class="stat-lbl">DONE</div><div class="stat-val" id="tm-done" style="color:var(--green)">0</div><div class="stat-note">History</div></div>
+        <div class="stat s2"><div class="stat-lbl">DIJADWALKAN</div><div class="stat-val" id="tm-sched" style="color:var(--accent2)">0</div><div class="stat-note" id="tm-sched-next">Belum tayang</div></div>
       </div>
 
       <!-- 🔥 v1.3.28: ringkasan upload HARI INI (per channel) -->
@@ -5558,6 +5559,20 @@ function renderTasks() {
   const badge = document.getElementById('task-badge');
   if (allActive.length) { badge.style.display = 'inline'; badge.textContent = allActive.length; } else badge.style.display = 'none';
   document.getElementById('tm-ch').textContent = channels.length; document.getElementById('tm-act').textContent = allActive.length; document.getElementById('tm-done').textContent = (serverData.history || []).length;
+  // 🔥 v1.3.36: DIJADWALKAN — video yang sudah dijadwalkan tapi belum tayang
+  // (jam tayang di masa depan): task aktif yang dijadwalkan + riwayat yang
+  // sudah di-upload; yang Gagal tidak dihitung.
+  (function () {
+    const el = document.getElementById('tm-sched'); if (!el) return;
+    const nowKey = Date.now();
+    const parseKey = (tm) => { const m = String(tm || '').match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/); return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime() : NaN; };
+    let n = 0, nearest = null, nearestKey = Infinity;
+    const considerSched = (t) => { const k = parseKey(t.time); if (!isNaN(k) && k > nowKey) { n++; if (k < nearestKey) { nearestKey = k; nearest = t; } } };
+    (serverData.active || []).forEach(considerSched);
+    (serverData.history || []).forEach(t => { if (String(t.status || '').includes('Gagal')) return; considerSched(t); });
+    el.textContent = n;
+    const nx = document.getElementById('tm-sched-next'); if (nx) nx.textContent = nearest ? ('Terdekat ' + shortDate(nearest.time)) : 'Belum ada';
+  })();
   renderTaskChannels();
   renderTodaySummary();
   

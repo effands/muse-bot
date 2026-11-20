@@ -3,6 +3,9 @@
 Catatan perubahan per versi. Dibaca operator saat start dan ditampilkan di
 pesan restart Telegram, supaya Bos langsung tahu apa yang berubah.
 
+## 1.3.36
+- Task Monitor punya kartu ke-4 "Dijadwalkan": jumlah video yang sudah dijadwalkan tapi belum tayang + jam tayang terdekat (video yang gagal tidak dihitung).
+
 ## 1.3.35
 - Kolom "Jadwal Berikutnya" sekarang juga menampilkan video yang sudah di-upload tapi belum tayang (misal yang tayang jam 19:00), dengan penanda "sudah di-upload" — sebelumnya kolom ini selalu kosong karena semua video publish langsung.
 

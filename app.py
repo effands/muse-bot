@@ -3787,10 +3787,19 @@ def render_shorts_muse_core(task_id, task, yt_id):
         cmd += ['-stream_loop', '-1', '-i', bgm_path]
         cmd += ['-filter_complex',
                 f"[0:v]{vf}[v];"
-                f"[2:a]volume=0.16,aresample=44100[bgm];"
-                f"[bgm][1:a]sidechaincompress=threshold=0.03:ratio=6:"
+                # 🔥 v1.3.67: samakan format kedua input audio SEBELUM
+                # sidechaincompress — FFmpeg 4.4.2 di VPS gagal negosiasi
+                # format bila input s16 ("Parsed_sidechaincompress ...
+                # could not choose their formats", terverifikasi: rantai
+                # lama gagal, rantai baru jalan di ffmpeg 4.4.2 VPS).
+                # aformat fltp + stereo di kedua sisi; asplit karena
+                # voice dipakai 2x (label output filter tidak bisa
+                # dipakai ulang seperti label input).
+                f"[1:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,asplit=2[voice][voice2];"
+                f"[2:a]volume=0.16,aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo[bgm];"
+                f"[bgm][voice]sidechaincompress=threshold=0.03:ratio=6:"
                 f"attack=200:release=500[bgmd];"
-                f"[1:a][bgmd]amix=inputs=2:normalize=0[aout]",
+                f"[voice2][bgmd]amix=inputs=2:normalize=0[aout]",
                 '-map', '[v]', '-map', '[aout]',
                 '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
                 '-c:a', 'aac', '-b:a', '128k',

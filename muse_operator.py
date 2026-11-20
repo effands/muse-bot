@@ -3008,14 +3008,62 @@ def _handle_research_callback(token, chat_id, cq_id, data):
         yt_id = it.get('yt_id') or ''
         title = it.get('title') or ''
         if kind == 'playlist':
-            answer_callback(token, cq_id, "Siap Bos, saya siapkan playlist-nya 🎵")
-            _pending = {'intent': 'buat_playlist',
-                        'slots': {'channels': [yt_id] if yt_id else [],
-                                  'playlist_theme': title},
-                        'awaiting': None, 'confirmed': False,
-                        'created_at': time.time()}
-            _save_nlu_pending(chat_id, _pending)
-            _nlu_advance(token, chat_id, _pending)
+            vid, _plid = _extract_youtube_ids_from_url(it.get('url') or '')
+            if yt_id and vid:
+                # 🔥 v1.3.67: video referensi SUDAH dipilih dari riset —
+                # buat job riset ASLI dari link-nya (mode jiplak,
+                # /api/operator/playlist_from_url) supaya job_id &
+                # kandidat berisi metadata asli (durasi, views, channel)
+                # dan _playlist_do_create bisa memakainya. Durasi
+                # mengikuti video ini — langkah durasi, riset & pilih
+                # kandidat dilewati (tinggal footage → jadwal).
+                answer_callback(token, cq_id, "Siap Bos, saya siapkan playlist-nya 🎵")
+                ok, msg, data = _operator_post(
+                    '/api/operator/playlist_from_url',
+                    {'yt_id': yt_id, 'url': it.get('url')})
+                cands = (data or {}).get('candidates') or [] if ok else []
+                cand = next((c for c in cands if c.get('video_id') == vid), None) or (cands[0] if cands else None)
+                job_id = (data or {}).get('job_id', '') if ok else ''
+                if cand and job_id:
+                    dur = cand.get('duration_sec') or 0
+                    dur_txt = f" ({round(dur / 60)} mnt)" if dur else ""
+                    draft = {"kind": "playlist", "step": "theme",
+                             "data": {"yt_id": yt_id,
+                                      "channel_name": it.get('channel') or '',
+                                      "theme": title, "video_id": vid,
+                                      "ref_title": cand.get('title') or title,
+                                      "job_id": job_id,
+                                      "candidates": cands,
+                                      "duration_min_sec": None,
+                                      "duration_max_sec": None,
+                                      "duration_note": f"mengikuti video referensi{dur_txt}"}}
+                    draft['step'] = _playlist_next_step(draft['data'])
+                    _save_make_draft(chat_id, draft)
+                    send_message(token, chat_id,
+                                 f"🎵 *Siap Bos, kita buat Playlist buat channel {_tg_escape(draft['data']['channel_name'])} ya!* 😎\n"
+                                 "Jawab tiap langkah satu per satu — ketik /batal kapan saja untuk berhenti.")
+                    _make_ask_step(token, chat_id, draft)
+                    return
+                # Link gagal dibaca panel → fallback NLU lama.
+                _pending = {'intent': 'buat_playlist',
+                            'slots': {'channels': [yt_id] if yt_id else [],
+                                      'playlist_theme': title},
+                            'awaiting': None, 'confirmed': False,
+                            'created_at': time.time()}
+                _save_nlu_pending(chat_id, _pending)
+                send_message(token, chat_id,
+                             f"⚠️ *Link video sarannya gagal dibaca Bos* 😅 ({_tg_escape(msg or 'coba lagi')}) — saya lanjutkan dengan alur biasa ya.")
+                _nlu_advance(token, chat_id, _pending)
+            else:
+                # Fallback lama (tanpa channel/video): lewat NLU seperti biasa.
+                answer_callback(token, cq_id, "Siap Bos, saya siapkan playlist-nya 🎵")
+                _pending = {'intent': 'buat_playlist',
+                            'slots': {'channels': [yt_id] if yt_id else [],
+                                      'playlist_theme': title},
+                            'awaiting': None, 'confirmed': False,
+                            'created_at': time.time()}
+                _save_nlu_pending(chat_id, _pending)
+                _nlu_advance(token, chat_id, _pending)
         else:
             answer_callback(token, cq_id, "Siap Bos, kita buat Short-nya 🎬")
             draft = {"kind": "short", "step": "theme",
@@ -4098,7 +4146,8 @@ def _make_short_summary(d):
             bg_label = "acak dari galeri"
         else:
             bg_label = "gradien otomatis"
-    sched_txt = d.get('publish_date', '')
+    sched_txt = ("Langsung tayang setelah render" if d.get('publish_now')
+                 else d.get('publish_date', ''))
     if d.get('publish_note'):
         sched_txt += f" ({d['publish_note']})"
     return (
@@ -4342,7 +4391,7 @@ def _make_ask_step(token, chat_id, draft):
                                               if c.get('yt_id') == d.get('yt_id')), None))
             send_message(token, chat_id,
                          "🗓️ *Langkah 3 dari 3: Jadwal tayang*\n\nTulis jamnya — mis. `hari ini jam 9`, `besok jam 7 malam`, atau `2026-11-20 19:00`.\n"
-                         f"Ketik `lewati` untuk jadwal berikutnya (`{nxt}`).")
+                         f"Ketik `lewati` untuk jadwal berikutnya (`{nxt}`) atau `publish` untuk langsung tayang setelah render.")
         elif step == 'confirm':
             send_message(token, chat_id, _make_short_summary(d),
                          reply_markup={"inline_keyboard": [
@@ -4645,6 +4694,13 @@ def _playlist_next_step(d):
         return 'theme'
     if 'pixabay_theme' not in d:
         return 'pixabay'
+    if d.get('video_id'):
+        # 🔥 v1.3.67: referensi SUDAH dipilih (mis. tombol 🎵 dari pesan
+        # riset) — durasi mengikuti video referensi, riset & pilih
+        # kandidat dilewati.
+        if not d.get('publish_date'):
+            return 'publish'
+        return 'confirm'
     if 'duration_min_sec' not in d:
         return 'duration'
     if not d.get('job_id') or not d.get('candidates'):
@@ -4664,7 +4720,8 @@ def _playlist_next_step(d):
 # besok 19:00 oleh backend (_playlist_do_create di app.py). Karena
 # render butuh waktu, jam ini PASTI sudah lewat saat upload tiba.
 _PLAYLIST_PUBLISH_NOW_WORDS = ('publish', 'langsung', 'tayang sekarang',
-                               'tanpa jadwal')
+                               'tanpa jadwal', 'publish langsung',
+                               'langsung tayang', 'sekarang')
 
 
 def _playlist_publish_now_date():
@@ -6086,18 +6143,28 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
                 ch = next((c for c in load_channels() if c.get('yt_id') == d.get('yt_id')), None)
                 d['publish_date'] = _next_slot_for_channel(ch)
                 d.pop('publish_note', None)
+                d.pop('publish_now', None)
+            elif ' '.join(low.split()) in _PLAYLIST_PUBLISH_NOW_WORDS:
+                # 🔥 v1.3.67: 'publish' / 'langsung' / 'sekarang' = tayang
+                # langsung setelah render — publish_date = jam sekarang
+                # (mekanisme sama seperti Playlist: jadwal yang sudah
+                # lewat = publik tanpa publishAt).
+                d['publish_date'] = _playlist_publish_now_date()
+                d['publish_now'] = True
+                d.pop('publish_note', None)
             else:
                 parsed, note = _parse_natural_datetime(ans)
                 if not parsed:
                     send_message(token, chat_id,
                                  "😅 *Waktu tayangnya belum saya pahami Bos* — coba `hari ini jam 9`, `besok jam 7 malam`, "
-                                 "atau `2026-11-20 19:00` (atau `lewati` untuk jadwal berikutnya).")
+                                 "`2026-11-20 19:00`, ketik `publish` untuk langsung tayang, atau `lewati` untuk jadwal berikutnya.")
                     return True
                 d['publish_date'] = parsed
                 if note:
                     d['publish_note'] = note
                 else:
                     d.pop('publish_note', None)
+                d.pop('publish_now', None)
             draft['step'] = 'confirm'
         elif step == 'confirm':
             if set(re.findall(r'[a-z]+', low)) & {'ya', 'buat', 'ok', 'oke', 'lanjut'} or '✅' in low:

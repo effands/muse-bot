@@ -3,6 +3,9 @@
 Catatan perubahan per versi. Dibaca operator saat start dan ditampilkan di
 pesan restart Telegram, supaya Bos langsung tahu apa yang berubah.
 
+## 1.3.24
+- Kartu Tren Channel dan Channel Terhubung sekarang presisi sama tinggi — tabel channel mengisi penuh sisa ruang kartunya.
+
 ## 1.3.23
 - Baris tabel Channel Terhubung dibuat lebih rapat — 7 channel sekarang muat tanpa scroll.
 

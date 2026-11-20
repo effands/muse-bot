@@ -1196,7 +1196,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
       <div class="dashboard-overview">
         <div class="card" style="margin-bottom:18px;"><div class="card-head"><span class="card-title">TREN CHANNEL</span></div><div class="card-body" style="padding:16px"><canvas id="dashChart" style="max-height:260px;width:100%"></canvas></div></div>
         <!-- 🔥 Nama channel tertaut (diambil dari array global `channels` yang sama dengan Settings) -->
-        <div class="card" style="margin-bottom:14px">
+        <div class="card ch-fill" style="margin-bottom:14px">
           <div class="card-head"><span class="card-title">📺 CHANNEL TERHUBUNG</span><span class="pill p-cyan" id="dash-ch-count">0 channel</span></div>
           <div class="card-body" style="padding:6px 16px 10px"><div id="dash-channels" style="font-size:12px;color:var(--muted)">Memuat channel…</div></div>
         </div>
@@ -2960,7 +2960,7 @@ function shortDate(str) {
 // Menggantikan baris flex lama (badge tidak sejajar karena
 // nama channel beda panjang). Memakai .tbl yang sama seperti tabel
 // History. Pills + nextScheduleFor/shortDate dipertahankan.
-function channelTableHtml(list, withMode, showNext) {
+function channelTableHtml(list, withMode, showNext, fill) {
   const head = `<thead><tr><th>CHANNEL</th><th>STATUS</th>${withMode ? '<th>MODE</th>' : ''}${showNext ? '<th>JADWAL BERIKUTNYA</th>' : ''}</tr></thead>`;
   const rows = list.map(c => {
     const nx = showNext ? nextScheduleFor(c.yt_id) : null;
@@ -2977,7 +2977,8 @@ function channelTableHtml(list, withMode, showNext) {
       + nextCell
       + `</tr>`;
   }).join('');
-  return `<div style="overflow-x:auto;max-height:280px;overflow-y:auto"><table class="tbl ch-tbl" style="min-width:420px">${head}<tbody>${rows}</tbody></table></div>`;
+  const wrapStyle = fill ? 'overflow:auto;flex:1;min-height:0;max-height:280px' : 'overflow-x:auto;max-height:280px;overflow-y:auto';
+  return `<div style="${wrapStyle}"><table class="tbl ch-tbl" style="min-width:420px">${head}<tbody>${rows}</tbody></table></div>`;
 }
 function renderTaskChannels() {
   const el = document.getElementById('tm-channels'); if (!el) return;
@@ -2990,7 +2991,7 @@ function renderDashboardChannels() {
   const el = document.getElementById('dash-channels'); if (!el) return;
   const cnt = document.getElementById('dash-ch-count'); if (cnt) cnt.textContent = channels.length + ' channel';
   el.innerHTML = channels.length
-    ? channelTableHtml(channels, true, false)
+    ? channelTableHtml(channels, true, false, true)
     : `<div style="padding:10px 0;color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada channel tertaut — tautkan dari Settings.</div>`;
   renderChannelTable();
 }

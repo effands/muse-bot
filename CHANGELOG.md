@@ -1,3 +1,6 @@
+## 1.3.51
+- Link google.com/device di modal Tambah Channel kini klik-untuk-menyalin (bukan buka tab baru) — tempel sendiri di browser profil channel.
+
 ## 1.3.50
 - Perbaikan darurat: file client OAuth kini unik per client — upload JSON Desktop sempat menimpa file client TV satu project sehingga device login ditolak Google (invalid_client). File TV sudah dipulihkan; device login jalan lagi.
 

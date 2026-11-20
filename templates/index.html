@@ -3000,7 +3000,10 @@ function channelTableHtml(list, withMode, showNext, fill) {
       + `</tr>`;
   }).join('');
   const wrapStyle = fill ? 'overflow:auto;flex:1;min-height:0;max-height:280px' : 'overflow-x:auto;max-height:280px;overflow-y:auto';
-  return `<div style="${wrapStyle}"><table class="tbl ch-tbl" style="min-width:420px">${head}<tbody>${rows}</tbody></table></div>`;
+  // 🔥 v1.3.27: min-width:420px dihapus — tabel kini selebar kartu (100%),
+  // kolom nama menyusut pakai ellipsis di layar sempit; STATUS dan MODE
+  // jadi rapat berdampingan, tidak ada lagi scroll menyamping di HP.
+  return `<div style="${wrapStyle}"><table class="tbl ch-tbl">${head}<tbody>${rows}</tbody></table></div>`;
 }
 function renderTaskChannels() {
   const el = document.getElementById('tm-channels'); if (!el) return;

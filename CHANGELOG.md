@@ -3,6 +3,9 @@
 Catatan perubahan per versi. Dibaca operator saat start dan ditampilkan di
 pesan restart Telegram, supaya Bos langsung tahu apa yang berubah.
 
+## 1.3.27
+- Tabel Channel Terhubung tidak lagi scroll menyamping di HP — kolom Mode kini rapat dengan Status.
+
 ## 1.3.26
 - Pill status channel tidak lagi menulis "Connected" — warna saja yang bicara (hijau terhubung, merah putus), teks lengkapnya ada di tooltip saat kursor diarahkan.
 - Tombol Light Mode di layar HP tinggal ikonnya saja.

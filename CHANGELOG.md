@@ -3,6 +3,17 @@
 Catatan perubahan per versi. Dibaca operator saat start dan ditampilkan di
 pesan restart Telegram, supaya Bos langsung tahu apa yang berubah.
 
+## 1.3.33
+- Audit penuh semua fungsi: 86 temuan, 25 diperbaiki di versi ini — sisanya dicatat untuk batch berikutnya.
+- Perintah "publish langsung" sekarang hanya jalan kalau Bos benar-benar menyuruh tayang (kalimat "jadwal besok jangan lupa dicek" tidak lagi salah dibaca), dan selalu minta konfirmasi dulu.
+- Bot tidak lagi salah paham "buatkan short lagu sore" jadi buat lagu Zumo, dan "jadwalkan video long" tidak lagi jadi playlist.
+- Koreksi di konfirmasi sekarang jalan walaupun diawali kata "ya" ("ya, jam 5 sore" benar-benar mengubah jamnya).
+- Perintah "publish besok jam 7 malam" sekarang dijadwalkan besok 19:00, bukan langsung tayang.
+- Worker render sekarang punya pengawas: kalau mati karena error, restart sendiri dalam 5 detik.
+- Job playlist yang terputus saat restart panel sekarang ditandai gagal supaya bisa dibuat ulang (sebelumnya macet dan retry selalu ditolak).
+- Batas riwayat job naik dari 50 ke 500 supaya dedupe 24 jam tetap jalan.
+- Perbaikan kecil: nama channel tidak lagi memotong kata lain di judul ("Ana" tidak lagi merusak "Manado"), judul tetap beda antar channel walau sudutnya sudah ada di judul, dan beberapa error yang dulu hilang diam-diam sekarang tercatat.
+
 ## 1.3.32
 - Judul playlist tidak lagi kembar antar channel: sudut + pola judul sekarang dari urutan channel (bukan dari hash yang kebetulan sama) — Barang Unick dan Mahewa sebelumnya sama-sama dapat sudut "Spesial", sekarang dijamin beda sampai 48 channel.
 

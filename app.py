@@ -1445,8 +1445,13 @@ def persist_cooldown(yt_id):
     for c in database_channel:
         if c['yt_id'] == yt_id:
             c['cooldown_until'] = channel_cooldowns.get(yt_id, 0)
-            try: save_channels(database_channel)
-            except Exception: pass
+            try:
+                save_channels(database_channel)
+            except Exception as e:
+                # 🔥 v1.3.33 (audit M2): jangan diam-diam — cooldown
+                # yang gagal tersimpan hilang saat restart dan channel
+                # bisa upload lagi padahal kuota sudah habis.
+                print(f"[cooldown] GAGAL simpan cooldown {yt_id}: {e}", flush=True)
             return
 
 def get_quota_reset_ts():
@@ -3782,7 +3787,31 @@ def render_shorts_muse_core(task_id, task, yt_id):
             try: os.remove(concat_path)
             except Exception: pass
 
+_WORKER_RESTARTS = 0
+
+
 def background_worker():
+    """Supervisor (🔥 v1.3.33, audit C1): worker render SATU-SATUNYA —
+    bila exception lolos dari fase scan (di luar try), thread mati dan
+    pabrik berhenti selamanya tanpa jejak. Supervisor me-restart loop
+    setelah jeda 5 detik supaya satu task rusak tidak membunuh semua."""
+    global _WORKER_RESTARTS
+    while True:
+        try:
+            _background_worker_loop()
+        except Exception as e:
+            _WORKER_RESTARTS += 1
+            print(f"[worker] supervisor: loop mati ke-{_WORKER_RESTARTS} ({e}) — restart 5 detik", flush=True)
+            if _WORKER_RESTARTS in (1, 10, 100):
+                try:
+                    notify_event("⚠️", "Worker render mati",
+                                 f"di-restart otomatis (ke-{_WORKER_RESTARTS}): {e}")
+                except Exception:
+                    pass
+            time.sleep(5)
+
+
+def _background_worker_loop():
     global channel_cooldowns
     while True:
         task = None
@@ -8471,6 +8500,7 @@ def backup_restore_api():
     except Exception as e:
         return jsonify({"status": "error", "message": f"Restore gagal: {e}"}), 500
     # Restart di latar (proses web mati saat restart — pola sama seperti update).
+    _restart_ok = True
     try:
         logf = open(os.path.join(BASE_DIR, 'update.log'), 'ab')
         subprocess.Popen(['nohup', 'bash', '-c', 'sleep 2; bash ziqva.sh restart'],
@@ -8478,8 +8508,15 @@ def backup_restore_api():
                          stdout=logf, stderr=subprocess.STDOUT,
                          start_new_session=True, close_fds=True)
         logf.close()
-    except Exception:
-        pass
+    except Exception as _e:
+        # 🔥 v1.3.33 (audit M3): bila spawn restart gagal, jangan
+        # lapor sukses — file sudah ter-restore tapi proses lama
+        # tetap jalan dengan state pra-restore.
+        _restart_ok = False
+        print(f"[restore] GAGAL jadwalkan restart: {_e}", flush=True)
+    if not _restart_ok:
+        return jsonify({"status": "error",
+                        "message": f"Restore file berhasil ({len(restored)} file), tapi restart panel GAGAL — jalankan restart manual (bash ziqva.sh restart)."}), 500
     try:
         send_tg_message(f"♻️ *Restore backup selesai, Bos* 😎\n\n`{name}` — {len(restored)} file dipulihkan. Panel restart dan kembali online sebentar lagi. Login lagi dengan PIN yang ada di backup.")
     except Exception:
@@ -10040,7 +10077,9 @@ def _seo_strip_name(text, name):
     for v in variants:
         if not v:
             continue
-        pat = r'\s*'.join(re.escape(w) for w in v.split()) if ' ' in v else re.escape(v)
+        # 🔥 v1.3.33 (audit m1): batas kata — tanpa \b, nama 'Ana'
+        # memotong 'Manado' jadi 'M do', 'Sax' memotong 'Saxophone'.
+        pat = r'\b' + (r'\s*'.join(re.escape(w) for w in v.split()) if ' ' in v else re.escape(v)) + r'\b'
         out = re.sub(pat, ' ', out, flags=re.I)
     # Rapikan spasi per baris — baris baru DIPERTAHANKAN (pembersih
     # deskripsi bekerja per baris; meratakannya akan membuat satu baris
@@ -10330,7 +10369,16 @@ def _seo_apply_angle(base, angle, channel_key):
     if not base:
         return ''
     if not angle or angle.lower() in base.lower():
-        return _seo_strip_dangling(base[:100])
+        # 🔥 v1.3.33 (audit m4): sudut tidak bisa ditempel (sudah ada
+        # di judul atau kosong) — coba sudut cadangan (slot+1) supaya
+        # judul tetap beda antar channel; bila itu pun tidak bisa,
+        # baru kembalikan base.
+        _list = _SEO_ANGLE_ID if angle in _SEO_ANGLE_ID else _SEO_ANGLE_EN
+        _alt = _list[(_seo_channel_slot(channel_key) + 1) % len(_list)]
+        if _alt and _alt.lower() not in base.lower():
+            angle = _alt
+        else:
+            return _seo_strip_dangling(base[:100])
     pat = _seo_channel_pattern(channel_key)
     if pat == 1:
         cand = f"{angle}: {base}"
@@ -10781,7 +10829,11 @@ def _playlist_job_add(job):
     with db_lock:
         data = _playlist_jobs_load()
         data['jobs'].insert(0, job)
-        data['jobs'] = data['jobs'][:50]
+        # 🔥 v1.3.33 (audit M3): 50 terlalu kecil — batch 7 channel
+        # x riset+create+retry menghabiskan slot dalam sehari sehingga
+        # job 'done' pagi terbuang sebelum 24 jam dan dedupe 24 jam
+        # tidak bisa bekerja. 500 ≈ 2 minggu. (Sama untuk Zumo.)
+        data['jobs'] = data['jobs'][:500]
         _playlist_jobs_save(data)
     return job
 
@@ -11483,7 +11535,11 @@ def _zumo_job_add(job):
     with db_lock:
         data = _zumo_jobs_load()
         data['jobs'].insert(0, job)
-        data['jobs'] = data['jobs'][:50]
+        # 🔥 v1.3.33 (audit M3): 50 terlalu kecil — batch 7 channel
+        # x riset+create+retry menghabiskan slot dalam sehari sehingga
+        # job 'done' pagi terbuang sebelum 24 jam dan dedupe 24 jam
+        # tidak bisa bekerja. 500 ≈ 2 minggu. (Sama untuk Zumo.)
+        data['jobs'] = data['jobs'][:500]
         _zumo_jobs_save(data)
     return job
 
@@ -12726,7 +12782,9 @@ def _playlist_do_create(job_id, video_id, publish_date='', privacy='public',
         pub = (_wib_now() + timedelta(days=1)).strftime('%Y-%m-%d') + ' 19:00'
     privacy = (privacy or 'public').strip()
     if privacy not in ('public', 'private', 'unlisted'):
-        privacy = 'public'
+        # 🔥 v1.3.33 (audit M10): jangan diam-diam jadi public —
+        # video yang dimaksud privat bisa tayang publik.
+        return False, "privacy tidak valid (pakai public/private/unlisted).", 400
     _playlist_job_update(job_id, status='downloading', video_id=video_id,
                          ref_title=cand.get('title', ''),
                          ref_description=cand.get('description', ''),
@@ -14442,8 +14500,11 @@ valid_yt_ids = {c['yt_id'] for c in database_channel}
 tasks_to_keep = []
 
 for t in active_tasks:
-    is_final = ("Selesai" in t['status'] or "Sukses" in t['status']
-                or "Gagal" in t['status'] or "Dibatalkan" in t['status'])
+    # 🔥 v1.3.33 (audit M15): "Gagal Upload, Antre Ulang" BUKAN final —
+    # task itu harus masuk antrean lagi, bukan dianggap selesai.
+    is_final = ("Antre Ulang" not in t['status'] and
+                ("Selesai" in t['status'] or "Sukses" in t['status']
+                 or "Gagal" in t['status'] or "Dibatalkan" in t['status']))
     
     # Cek apakah channel induknya masih ada
     yt_id = t.get('yt_id') or (t.get('blueprint', {}).get('yt_id'))
@@ -14462,6 +14523,29 @@ for t in active_tasks:
 
 active_tasks = [t for t in tasks_to_keep if "Dibatalkan" not in t['status']]
 save_tasks_db()
+
+# 🔥 v1.3.33 (audit M11): job playlist yatim — 'downloading'/'preparing'/
+# 'queued' yang task-nya tidak ada lagi di active (mati saat restart
+# panel) tidak pernah pulih dan retry-nya ditolak 409 selamanya.
+# Tandai failed supaya bisa dibuat ulang.
+try:
+    with db_lock:
+        _pl_jobs = _playlist_jobs_load()
+        _active_pj = {(_t.get('blueprint') or {}).get('playlist_job_id')
+                      for _t in active_tasks if isinstance(_t, dict)}
+        _healed = 0
+        for _j in _pl_jobs.get('jobs', []):
+            if isinstance(_j, dict) and _j.get('status') in ('downloading', 'preparing', 'queued') \
+                    and _j.get('job_id') not in _active_pj:
+                _j['status'] = 'failed'
+                _j['error'] = 'Terputus saat restart panel — silakan buat ulang.'
+                _j['updated_at'] = _wib_now().strftime('%Y-%m-%d %H:%M')
+                _healed += 1
+        if _healed:
+            _playlist_jobs_save(_pl_jobs)
+            print(f"[startup] {_healed} job playlist yatim ditandai gagal", flush=True)
+except Exception as _e:
+    print(f"[startup] heal job playlist gagal: {_e}", flush=True)
 
 # 🔄 Self-heal status update yang macet di 'running' (updater mati sebelum
 # sempat menulis hasil — mis. ikut terbunuh saat service restart). Harus

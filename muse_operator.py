@@ -538,10 +538,12 @@ def _parse_natural_datetime(text, now=None):
         return None, None
     if not mer:
         # 🔥 v1.3.30: penanda waktu bisa berdiri SEBELUM jamnya
-        # ("nanti sore ... jam 4") — cari di seluruh teks. Catatan
-        # tafsiran di bawah ikut menyebutnya, jadi Bos bisa mengoreksi
+        # ("nanti sore ... jam 4") — tapi HANYA sesudah kata 'nanti'.
+        # v1.3.33: scan seluruh teks salah membaca tema sebagai jam
+        # ("lagu sore jam 9" jadi 21:00). Tanpa 'nanti', jam polos
+        # berarti pagi (09:00) sesuai docstring; Bos bisa mengoreksi
         # di ringkasan konfirmasi bila tafsirannya salah.
-        _mm = re.search(r'\b(pagi|siang|sore|petang|malam)\b', low)
+        _mm = re.search(r'\bnanti\s+(pagi|siang|sore|petang|malam)\b', low)
         if _mm:
             mer = _mm.group(1)
     # Konversi meridiem. 'jam 12 malam' → 00:00; 'jam 12 siang' → 12:00.
@@ -3062,6 +3064,12 @@ def handle_callback_query(token, chat_id, callback_query):
             send_message(token, chat_id,
                          "🤖 *Eh Bos, draft-nya sudah tidak ada* 😅\nKetik /playlist untuk mulai lagi ya Bos!")
             return
+        # 🔥 v1.3.33: tap kedua ditolak — step sudah berubah jadi
+        # 'research'/'duration' saat tap pertama diproses, jadi riset
+        # tidak jalan dua kali (kuota + job yatim).
+        if draft.get('step') != 'closest':
+            answer_callback(token, cq_id, "Sudah dijawab Bos 😅")
+            return
         d = draft.get('data') or {}
         if data.endswith(':no'):
             answer_callback(token, cq_id, "Siap Bos, ganti durasi ya")
@@ -5118,10 +5126,10 @@ def _zumo_confirm_answer(token, chat_id, draft, low):
     """Jawaban teks di langkah konfirmasi Zumo/bank/rakit ('ya' /
     'batal' / lain). Selalu ditangani — pemanggil return True."""
     kind = draft.get('kind')
-    if low in ('ya', 'buat', 'ok', 'oke', 'lanjut'):
+    if set(re.findall(r'[a-z]+', low)) & {'ya', 'buat', 'ok', 'oke', 'lanjut'}:
         _confirm_make_create(token, chat_id, draft)
         return True
-    if low in ('batal', 'tidak', 'cancel'):
+    if set(re.findall(r'[a-z]+', low)) & {'batal', 'tidak', 'cancel'}:
         _clear_make_draft(chat_id)
         msg = {'zumobank': "Sip Bos, dibatalkan. Tidak ada lagu bank yang dibuat.",
                'zumorakit': "Sip Bos, dibatalkan. Tidak ada video rakitan yang dibuat."}.get(
@@ -5686,10 +5694,26 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
                     # login dicek, tema diambil dari jawaban ini, lalu
                     # konfirmasi sekali sebelum dieksekusi.
                     _clear_make_draft(chat_id)
-                    _th = _nlu_extract_playlist_theme(_nlu_clean(ans), channels)
+                    # 🔥 v1.3.33: bawa data draft (tema/footage/durasi/
+                    # auto/jadwal) — sebelumnya slot dibangun dari nol
+                    # sehingga tema & durasi yang sudah diisi hilang.
+                    _th = _nlu_extract_playlist_theme(_nlu_clean(ans), channels) or d.get('theme')
                     _slots = {'channels': 'all',
-                              'playlist_theme': _th,
-                              'publish_now': True}
+                              'playlist_theme': _th}
+                    if d.get('pixabay_theme'):
+                        _slots['pixabay_theme'] = d['pixabay_theme']
+                    if d.get('duration_min_sec') is not None:
+                        _slots['duration_min_sec'] = d['duration_min_sec']
+                        _slots['duration_max_sec'] = d.get('duration_max_sec')
+                        _slots['duration_note'] = d.get('duration_note') or ''
+                    if d.get('auto_pick'):
+                        _slots['auto_pick'] = True
+                    if d.get('publish_date'):
+                        _slots['publish_date'] = d['publish_date']
+                        if d.get('publish_note'):
+                            _slots['publish_note'] = d['publish_note']
+                    else:
+                        _slots['publish_now'] = True
                     _pending = {'intent': 'buat_playlist', 'slots': _slots,
                                 'awaiting': None, 'confirmed': False,
                                 'created_at': time.time()}
@@ -5794,10 +5818,10 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
                     d.pop('publish_note', None)
             draft['step'] = 'confirm'
         elif step == 'confirm':
-            if low in ('ya', 'buat', '✅', 'ok', 'oke', 'lanjut'):
+            if set(re.findall(r'[a-z]+', low)) & {'ya', 'buat', 'ok', 'oke', 'lanjut'} or '✅' in low:
                 _confirm_make_create(token, chat_id, draft)
                 return True
-            if low in ('batal', 'tidak', '❌', 'cancel'):
+            if set(re.findall(r'[a-z]+', low)) & {'batal', 'tidak', 'cancel'} or '❌' in low:
                 _clear_make_draft(chat_id)
                 send_message(token, chat_id, "😌 *Sip Bos, dibatalkan.* Tidak ada video yang dibuat.")
                 return True
@@ -5848,8 +5872,9 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
                 _save_make_draft(chat_id, draft)
                 _pl_run_research(token, chat_id, draft)
                 return True
-            if low in ('ya', 'pakai', 'oke', 'ok', '✅', 'lanjut', 'mau') or (
-                    ans.strip().isdigit() and 1 <= int(ans.strip()) <= len(d.get('closest') or [])):
+            # 🔥 v1.3.33: digit 1/2/3 dihapus — dulu diperlakukan sama
+            # seperti 'ya' padahal nomor yang dipilih tidak dipakai.
+            if low in ('ya', 'pakai', 'oke', 'ok', '✅', 'lanjut', 'mau'):
                 d['duration_min_sec'] = None
                 d['duration_max_sec'] = None
                 d['duration_note'] = ''
@@ -5940,10 +5965,10 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
                 d.pop('publish_now', None)
             draft['step'] = _playlist_next_step(d)
         elif step == 'confirm':
-            if low in ('ya', 'buat', '✅', 'ok', 'oke', 'lanjut'):
+            if set(re.findall(r'[a-z]+', low)) & {'ya', 'buat', 'ok', 'oke', 'lanjut'} or '✅' in low:
                 _confirm_make_create(token, chat_id, draft)
                 return True
-            if low in ('batal', 'tidak', '❌', 'cancel'):
+            if set(re.findall(r'[a-z]+', low)) & {'batal', 'tidak', 'cancel'} or '❌' in low:
                 _clear_make_draft(chat_id)
                 send_message(token, chat_id, "😌 *Sip Bos, dibatalkan.* Tidak ada playlist yang dibuat.")
                 return True
@@ -6142,10 +6167,10 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
                 return True
         draft['step'] = _long_next_step(d)
     elif step == 'confirm':
-        if low in ('ya', 'buat', '✅', 'ok', 'oke', 'lanjut'):
+        if set(re.findall(r'[a-z]+', low)) & {'ya', 'buat', 'ok', 'oke', 'lanjut'} or '✅' in low:
             _confirm_make_create(token, chat_id, draft)
             return True
-        if low in ('batal', 'tidak', '❌', 'cancel'):
+        if set(re.findall(r'[a-z]+', low)) & {'batal', 'tidak', 'cancel'} or '❌' in low:
             _clear_make_draft(chat_id)
             send_message(token, chat_id, "😌 *Sip Bos, dibatalkan.* Tidak ada video yang dibuat.")
             return True
@@ -6772,6 +6797,9 @@ def _nlu_extract_playlist_theme(clean, channels):
     t = re.sub(r'\b(jam|pukul)\s+\d{1,2}(?::\d{2})?\s*(pagi|siang|sore|petang|malam)?\b', ' ', t)
     t = re.sub(r'\b\d+\s*video\b', ' ', t)
     t = re.sub(r'\b(masingmasing|masing-masing|masing|mulai|sampai|akun|selesai)\b', ' ', t)
+    # 🔥 v1.3.33: kata hari relatif bukan tema — 'lagu malaysia besok'
+    # temanya 'lagu malaysia', bukan 'lagu malaysia besok'.
+    t = re.sub(r'\b(hari ini|besok|lusa)\b', ' ', t)
     t = re.sub(r'\bvideo\b', ' ', t)
     t = re.sub(r'\b(buatkan|bikin|buat|tolong|buatlah)\b', ' ', t)
     t = re.sub(r'\bmusik\s+playlist\b', ' ', t)
@@ -6782,7 +6810,11 @@ def _nlu_extract_playlist_theme(clean, channels):
     # v1.3.13: kata jadwal/bukan-tema — "jadwal sebulan konten lagu
     # malaysia" temanya 'lagu malaysia', bukan 'sebulan konten lagu
     # malaysia' (pernah: 'sebulan' malah cocok ke video 'Gaji Sebulan').
-    t = re.sub(r'\b(sebulan|seminggu|sehari|selama|konten|bulan|minggu)\b', ' ', t)
+    t = re.sub(r'\b(sebulan|seminggu|sehari|selama|konten)\b', ' ', t)
+    # 🔥 v1.3.33: 'bulan'/'minggu' telanjang bisa jadi isi tema
+    # ('lagu bulan ramadhan') — buang hanya sebagai jadwal
+    # ('bulan depan', 'bulan ini', 'minggu depan', 'minggu ini').
+    t = re.sub(r'\b(bulan|minggu)\s+(depan|ini)\b', ' ', t)
     # 🔥 v1.3.21: hitungan hari bukan tema — '7 hari kedepan musik
     # malaysia' temanya 'musik malaysia', bukan '7 hari kedepan musik
     # malaysia'. ('hari raya' aman: yang dibuang hanya angka+hari.)
@@ -6961,9 +6993,10 @@ def _is_publish_now_order(clean):
         return True
     if 'publish' in clean and ('langsung' in clean or 'sekarang' in clean or 'saja' in clean):
         return True
-    if 'jadwal' in clean and any(p in clean for p in
-                                 ('tidak usah', 'tidak perlu', 'nggak usah',
-                                  'gak usah', 'jangan')):
+    # 🔥 v1.3.33: negasi HARUS menempel ke 'jadwalkan' ("tidak usah
+    # dijadwalkan") — 'jadwal' + 'jangan' yang longgar salah membaca
+    # "jadwal besok jangan lupa dicek" sebagai perintah publish.
+    if re.search(r'\b(tidak usah|tidak perlu|nggak usah|gak usah|jangan)\s+(di)?jadwalkan\b', clean):
         return True
     return False
 
@@ -7078,13 +7111,22 @@ def parse_natural_command(text, channels):
         intent = 'buat_zumo'
         conf = 80
     elif create_verb and 'lagu' in clean and 'playlist' not in clean \
-            and ('sax' in clean or 'saxophone' in clean):
+            and ('sax' in clean or 'saxophone' in clean) \
+            and 'short' not in clean and 'video pendek' not in clean \
+            and 'video long' not in clean and 'video panjang' not in clean \
+            and not re.search(r'\blong\b', clean):
         intent = 'buat_zumo'
         conf = 80
-    elif create_verb and 'lagu' in clean and 'playlist' not in clean:
+    elif create_verb and 'lagu' in clean and 'playlist' not in clean \
+            and 'short' not in clean and 'video pendek' not in clean \
+            and 'video long' not in clean and 'video panjang' not in clean \
+            and not re.search(r'\blong\b', clean):
         intent = 'buat_zumo'
         conf = 60
-    elif 'lagu baru' in clean and 'playlist' not in clean:
+    elif 'lagu baru' in clean and 'playlist' not in clean \
+            and 'short' not in clean and 'video pendek' not in clean \
+            and 'video long' not in clean and 'video panjang' not in clean \
+            and not re.search(r'\blong\b', clean):
         intent = 'buat_zumo'
         conf = 40
     # --- Buat Short / Long. ---
@@ -7143,6 +7185,11 @@ def parse_natural_command(text, channels):
     # laporan jadwal (dulu: intent 'jadwal', conf 70). Butuh kata
     # 'video' supaya 'jadwalkan laporan' tidak ketangkap; publish_now
     # tetap menang bila frasanya memang perintah tayang langsung.
+    elif (re.search(r'\b(jadwalkan|jadwalin)\b', clean) and 'video' in clean
+            and (re.search(r'\blong\b', clean) or 'video panjang' in clean)
+            and not _is_publish_now_order(clean)):
+        intent = 'buat_long'
+        conf = 75
     elif (re.search(r'\b(jadwalkan|jadwalin)\b', clean) and 'video' in clean
             and not _is_publish_now_order(clean)):
         intent = 'jadwalkan_playlist'
@@ -7212,7 +7259,10 @@ def parse_natural_command(text, channels):
         if cta:
             slots['cta'] = cta
             conf += 5
-        tm = _nlu_extract_time(clean)
+        # 🔥 v1.3.33: pakai teks mentah (lowercase) — _nlu_clean
+        # membuang ':' sehingga 'jam 9:30' jadi 'jam 930' dan menit
+        # tidak pernah terbaca.
+        tm = _nlu_extract_time(text.lower())
         if tm:
             slots['publish_time'] = tm
             conf += 5
@@ -7261,17 +7311,21 @@ def parse_natural_command(text, channels):
             clean = re.sub(r'\b(auto|otomatis)\b', ' ', clean)
         # Kata 'publish' → langsung tayang setelah render (tanpa jadwal);
         # hapus dari teks dulu supaya tidak bocor ke tema.
-        if re.search(r'\bpublish\b', clean):
-            slots['publish_now'] = True
-            conf += 5
-            clean = re.sub(r'\bpublish\b', ' ', clean)
+        # 🔥 v1.3.33: tanggal masa depan MENANG atas 'publish' —
+        # "publish besok jam 7 malam" dijadwalkan besok 19:00, bukan
+        # langsung tayang; 'publish' saja (tanpa tanggal) baru langsung.
+        _has_publish = bool(re.search(r'\bpublish\b', clean))
+        clean = re.sub(r'\bpublish\b', ' ', clean)
         # Waktu lengkap alami ("hari ini jam 9", "besok jam 7 malam") →
-        # slot publish_date + catatan tafsiran (bila tidak publish).
+        # slot publish_date + catatan tafsiran.
         ndt, nnote = _parse_natural_datetime(text)
-        if ndt and not slots.get('publish_now'):
+        if ndt:
             slots['publish_date'] = ndt
             if nnote:
                 slots['publish_note'] = nnote
+            conf += 5
+        elif _has_publish:
+            slots['publish_now'] = True
             conf += 5
         dur = _nlu_extract_playlist_duration(text)
         if dur and dur[0] is not None:
@@ -7863,11 +7917,14 @@ def _nlu_advance(token, chat_id, pending):
             try:
                 slots['schedule'] = _nlu_build_shorts_schedules(slots)
             except Exception:
-                pass
+                # 🔥 v1.3.33: jangan pakai jadwal LAMA (channel/jam
+                # sudah berubah) — buang supaya eksekusi memakai
+                # publish_date sebagai fallback.
+                slots.pop('schedule', None)
     # --- Konfirmasi bila aksi membuat konten / berbahaya / matikan pengaman. ---
     needs_confirm = (
         intent in ('buat_short', 'buat_long', 'buat_playlist', 'jadwalkan_playlist', 'buat_zumo',
-                   'buat_zumobank', 'buat_zumorakit', 'hapus', 'hentikan_antrean')
+                   'buat_zumobank', 'buat_zumorakit', 'hapus', 'hentikan_antrean', 'publish_now')
         or (intent == 'ubah_mode' and slots.get('mode') == 'auto')
     )
     if needs_confirm and not pending.get('confirmed'):
@@ -8501,7 +8558,10 @@ def _nlu_run_readonly(token, chat_id, intent, slots=None):
         # yang sama dengan perintah /channel.
         send_message(token, chat_id, build_channel_list_report())
     elif intent == 'bantuan':
-        send_message(token, chat_id, build_help_message())
+        # 🔥 v1.3.33: build_help_message() tidak pernah didefinisikan
+        # (NameError → pesan bantuan hangus diam-diam). Pakai teks
+        # yang sama dengan /start.
+        send_message(token, chat_id, _build_start_text())
     elif intent == 'tambah_channel':
         send_message(token, chat_id,
                      "Tambah channel hanya bisa dari panel/browser Bos — butuh login Google di browser 😌\n"
@@ -8571,6 +8631,9 @@ def _nlu_try_revise_pending(pending, raw_cmd, clean_cmd):
             slots['publish_note'] = nnote
         else:
             slots.pop('publish_note', None)
+        # 🔥 v1.3.33: jadwal Short lama (slots['schedule']) dihitung
+        # dari jam lama — buang supaya _nlu_advance menghitung ulang.
+        slots.pop('schedule', None)
         return True
     # 2. Channel ("Aruya aja", "cuma Cozy Sax", "semua") — dicek
     # SEBELUM tema supaya 'cuma Aruya' tidak dibaca jadi tema 'cuma'.
@@ -8604,17 +8667,17 @@ def _nlu_try_complete_pending(token, chat_id, raw_cmd, clean_cmd):
     slots = pending.setdefault('slots', {})
     if awaiting == 'confirm':
         words = set(clean_cmd.split())
+        # 🔥 v1.3.33: REVISI dicek SEBELUM kata ya — "ya, jam 5 sore"
+        # itu koreksi jam, bukan konfirmasi jam lama. Jawaban murni
+        # ya/tidak ditolak guard di dalam revise, jadi tetap konfirmasi.
+        if _nlu_try_revise_pending(pending, raw_cmd, clean_cmd):
+            _save_nlu_pending(chat_id, pending)
+            _nlu_advance(token, chat_id, pending)
+            return True
         if words & {'ya', 'iya', 'iyes', 'ok', 'oke', 'setuju', 'lanjut', 'benar'}:
             pending['confirmed'] = True
             _nlu_audit_log(raw_cmd, {"intent": pending.get('intent'), "confidence": None, "slots": slots},
                            'confirmed')
-            _save_nlu_pending(chat_id, pending)
-            _nlu_advance(token, chat_id, pending)
-            return True
-        # 🔥 v1.3.31: REVISI dicek SEBELUM kata batal — "gak, jam 5 aja"
-        # itu koreksi jam, bukan pembatalan. ("ya" sudah ditangani di
-        # atas; jawaban murni ya/tidak tidak sampai ke sini sebagai revisi.)
-        if _nlu_try_revise_pending(pending, raw_cmd, clean_cmd):
             _save_nlu_pending(chat_id, pending)
             _nlu_advance(token, chat_id, pending)
             return True

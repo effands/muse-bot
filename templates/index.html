@@ -1467,6 +1467,19 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
           </table>
         </div>
       </div>
+      <div class="card">
+        <div class="card-head"><span class="card-title">📋 LOG AKTIVITAS</span><span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <select id="log-source" onchange="loadLogs()" style="width:130px" title="Sumber log"><option value="panel">Panel</option><option value="operator">Operator</option></select>
+          <button class="btn btn-g btn-sm" onclick="loadLogs()" title="Muat ulang log">🔄 Refresh</button>
+          <button class="btn btn-g btn-sm" onclick="copyLogs()" title="Salin isi log ke clipboard">📋 Copy</button>
+          <button class="btn btn-g btn-sm" onclick="clearLogs()" title="Kosongkan file log">🧹 Clear</button>
+          <label style="display:flex;gap:4px;align-items:center;font-size:11px;color:var(--muted);cursor:pointer"><input type="checkbox" id="log-auto" checked onchange="toggleLogAuto()"> Auto</label>
+        </span></div>
+        <div class="card-body" style="padding:8px 12px 12px">
+          <pre id="log-view" style="margin:0;background:#0d1117;color:#c9d1d9;border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-family:var(--font-m);font-size:11px;line-height:1.5;max-height:320px;overflow:auto;white-space:pre-wrap;word-break:break-word">Memuat log…</pre>
+          <div id="log-meta" style="margin-top:6px;font-family:var(--font-m);font-size:10px;color:var(--muted)"></div>
+        </div>
+      </div>
     </div>
 
     <div id="panel-calendar" class="panel">
@@ -2667,7 +2680,74 @@ function go(id, el) {
   }
   if (id === 'shorts') { refreshShortsDropdowns(); fetchShortsMuse(); }
   if (id === 'playlist') { refreshPlaylistDropdowns(); fetchPlaylistJobs(); }
+  if (id === 'tasks') loadLogs();
 }
+
+// ────────────────────────────────────────────────────────
+//  LOG AKTIVITAS (v1.3.11)
+// ────────────────────────────────────────────────────────
+let logTimer = null;
+function loadLogs() {
+  const sel = document.getElementById('log-source');
+  const src = (sel && sel.value) || 'panel';
+  const el = document.getElementById('log-view');
+  if (!el) return;
+  fetch('/api/logs?source=' + encodeURIComponent(src) + '&lines=200')
+    .then(r => r.json())
+    .then(d => {
+      if (!d || d.status !== 'success') { el.textContent = 'Gagal memuat log.'; return; }
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+      const lines = d.lines || [];
+      el.textContent = lines.length ? lines.join('\n') : '(Log masih kosong — aktivitas bot akan muncul di sini.)';
+      const meta = document.getElementById('log-meta');
+      if (meta) {
+        const kb = d.size >= 1048576 ? (d.size / 1048576).toFixed(1) + ' MB' : Math.round(d.size / 1024) + ' KB';
+        meta.textContent = 'Sumber: ' + d.source + ' · ' + lines.length + ' baris · ' + kb;
+      }
+      if (atBottom) el.scrollTop = el.scrollHeight;
+    })
+    .catch(() => { el.textContent = 'Gagal memuat log (cek koneksi).'; });
+}
+function toggleLogAuto() {
+  const cb = document.getElementById('log-auto');
+  const on = cb ? cb.checked : true;
+  if (logTimer) { clearInterval(logTimer); logTimer = null; }
+  if (on) {
+    logTimer = setInterval(() => {
+      const p = document.getElementById('panel-tasks');
+      if (p && p.classList.contains('active')) loadLogs();
+    }, 5000);
+  }
+}
+function copyLogs() {
+  const el = document.getElementById('log-view');
+  if (!el) return;
+  const txt = el.textContent || '';
+  const btn = document.querySelector('[onclick="copyLogs()"]');
+  const done = () => { if (!btn) return; const old = btn.textContent; btn.textContent = '✅ Disalin'; setTimeout(() => { btn.textContent = old; }, 1500); };
+  const fallback = () => {
+    const ta = document.createElement('textarea');
+    ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta); done();
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt).then(done).catch(fallback);
+  } else fallback();
+}
+function clearLogs() {
+  const sel = document.getElementById('log-source');
+  const src = (sel && sel.value) || 'panel';
+  themedConfirm('Kosongkan log ' + src + '?\nIsi file log dihapus dan tidak bisa dikembalikan.', { title: 'Kosongkan Log', okLabel: 'Ya, Kosongkan' }).then(ok => {
+    if (!ok) return;
+    fetch('/api/logs/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source: src }) })
+      .then(r => r.json())
+      .then(d => { if (d && d.status === 'success') { toast('Log ' + src + ' dikosongkan.', 'success'); loadLogs(); } else toast('Gagal mengosongkan log.', 'error'); })
+      .catch(() => toast('Gagal mengosongkan log.', 'error'));
+  });
+}
+toggleLogAuto();
 
 // ────────────────────────────────────────────────────────
 //  TOAST

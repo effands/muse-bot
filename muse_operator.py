@@ -13,6 +13,90 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# ---- Log file aktivitas (v1.3.11): salin semua print ke logs/operator.log ----
+# Sama seperti panel (lihat _LogTee di app.py): operator selama ini hanya
+# menulis ke stdout (journal systemd). Tee ini menulis ke stream asli
+# SEKALIGUS ke file log, supaya panel bisa menampilkan log operator juga.
+_LOG_LOCK = threading.RLock()
+_LOG_PATH = os.path.join(BASE_DIR, 'logs', 'operator.log')
+_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
+class _LogTee:
+    """Pembungkus sys.stdout/stderr: teruskan ke stream asli + salin ke file."""
+    def __init__(self, stream, path):
+        self._stream = stream
+        self._path = path
+        self._fh = None
+        self._bytes = 0
+    def _open(self):
+        try:
+            os.makedirs(os.path.dirname(self._path), exist_ok=True)
+            self._fh = open(self._path, 'a', encoding='utf-8', errors='replace')
+            self._bytes = os.path.getsize(self._path)
+        except Exception:
+            self._fh = None
+    def write(self, s):
+        try:
+            self._stream.write(s)
+        except Exception:
+            pass
+        if not s:
+            return 0
+        try:
+            with _LOG_LOCK:
+                if self._fh is None:
+                    self._open()
+                if self._fh is not None:
+                    try:
+                        cur = os.path.getsize(self._path)
+                    except Exception:
+                        cur = self._bytes
+                    if cur < self._bytes or cur > _LOG_MAX_BYTES:
+                        try:
+                            self._fh.close()
+                        except Exception:
+                            pass
+                        if cur > _LOG_MAX_BYTES:
+                            try:
+                                os.replace(self._path, self._path + '.1')
+                            except Exception:
+                                pass
+                        self._fh = None
+                        self._open()
+                    if self._fh is not None:
+                        self._fh.write(s)
+                        self._fh.flush()
+                        self._bytes += len(s.encode('utf-8', 'replace'))
+        except Exception:
+            pass
+        return len(s)
+    def flush(self):
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+        try:
+            with _LOG_LOCK:
+                if self._fh is not None:
+                    self._fh.flush()
+        except Exception:
+            pass
+    def isatty(self):
+        try:
+            return self._stream.isatty()
+        except Exception:
+            return False
+    def fileno(self):
+        return self._stream.fileno()
+
+
+if not isinstance(sys.stdout, _LogTee):
+    sys.stdout = _LogTee(sys.stdout, _LOG_PATH)
+if not isinstance(sys.stderr, _LogTee):
+    sys.stderr = _LogTee(sys.stderr, _LOG_PATH)
+
+
 CONFIG_FILE = os.path.join(BASE_DIR, 'config.json')
 CHANNELS_FILE = os.path.join(BASE_DIR, 'channels_db.json')
 TASKS_FILE = os.path.join(BASE_DIR, 'tasks_db.json')

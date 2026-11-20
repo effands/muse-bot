@@ -76,6 +76,93 @@ def get_system_stats():
 # 💾 DATABASE & FOLDER SYSTEM
 # ==========================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# ---- Log file aktivitas (v1.3.11): salin semua print ke logs/panel.log ----
+# Panel selama ini hanya menulis ke stdout (journal systemd) — tidak bisa
+# dilihat dari web. Tee ini menulis ke stream asli SEKALIGUS ke file log
+# (rotasi sederhana di 5 MB), supaya panel bisa menampilkan progres kerja
+# bot + tombol Copy/Clear. Gagal tulis file tidak boleh mematikan aplikasi.
+_LOG_LOCK = threading.RLock()
+_LOG_PATH = os.path.join(BASE_DIR, 'logs', 'panel.log')
+_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
+class _LogTee:
+    """Pembungkus sys.stdout/stderr: teruskan ke stream asli + salin ke file."""
+    def __init__(self, stream, path):
+        self._stream = stream
+        self._path = path
+        self._fh = None
+        self._bytes = 0
+    def _open(self):
+        try:
+            os.makedirs(os.path.dirname(self._path), exist_ok=True)
+            self._fh = open(self._path, 'a', encoding='utf-8', errors='replace')
+            self._bytes = os.path.getsize(self._path)
+        except Exception:
+            self._fh = None
+    def write(self, s):
+        try:
+            self._stream.write(s)
+        except Exception:
+            pass
+        if not s:
+            return 0
+        try:
+            with _LOG_LOCK:
+                if self._fh is None:
+                    self._open()
+                if self._fh is not None:
+                    try:
+                        cur = os.path.getsize(self._path)
+                    except Exception:
+                        cur = self._bytes
+                    if cur < self._bytes or cur > _LOG_MAX_BYTES:
+                        # dipotong dari luar (tombol Clear) atau terlalu
+                        # besar -> tutup, rotasi bila perlu, buka ulang.
+                        try:
+                            self._fh.close()
+                        except Exception:
+                            pass
+                        if cur > _LOG_MAX_BYTES:
+                            try:
+                                os.replace(self._path, self._path + '.1')
+                            except Exception:
+                                pass
+                        self._fh = None
+                        self._open()
+                    if self._fh is not None:
+                        self._fh.write(s)
+                        self._fh.flush()
+                        self._bytes += len(s.encode('utf-8', 'replace'))
+        except Exception:
+            pass
+        return len(s)
+    def flush(self):
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+        try:
+            with _LOG_LOCK:
+                if self._fh is not None:
+                    self._fh.flush()
+        except Exception:
+            pass
+    def isatty(self):
+        try:
+            return self._stream.isatty()
+        except Exception:
+            return False
+    def fileno(self):
+        return self._stream.fileno()
+
+
+if not isinstance(sys.stdout, _LogTee):
+    sys.stdout = _LogTee(sys.stdout, _LOG_PATH)
+if not isinstance(sys.stderr, _LogTee):
+    sys.stderr = _LogTee(sys.stderr, _LOG_PATH)
+
+
 app = Flask(__name__, static_folder=os.path.join(BASE_DIR, 'static'))
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 CONFIG_FILE = os.path.join(BASE_DIR, 'config.json')
@@ -4638,6 +4725,88 @@ def clear_notifications():
     with db_lock:
         system_notifications.clear()
     return jsonify({"status": "success"})
+
+# ---- Log aktivitas (v1.3.11) ----
+_LOG_SOURCES = {'panel': 'panel.log', 'operator': 'operator.log'}
+
+
+def _log_file_for(source):
+    name = _LOG_SOURCES.get((source or 'panel').strip().lower(), 'panel.log')
+    return os.path.join(BASE_DIR, 'logs', name)
+
+
+def _read_log_tail(path, nlines, max_bytes=262144):
+    """Baca N baris terakhir file log (efisien: baca dari ujung file).
+    File tidak ada/kosong -> []. Null byte (bekas truncate) dibuang."""
+    try:
+        nlines = max(1, min(int(nlines or 200), 1000))
+    except Exception:
+        nlines = 200
+    try:
+        size = os.path.getsize(path)
+    except Exception:
+        return []
+    if size <= 0:
+        return []
+    try:
+        with open(path, 'rb') as f:
+            chunk = b''
+            pos = size
+            while pos > 0 and chunk.count(b'\n') <= nlines:
+                step = min(max_bytes, pos)
+                pos -= step
+                f.seek(pos)
+                chunk = f.read(step) + chunk
+                if pos == 0:
+                    break
+        text = chunk.decode('utf-8', 'replace').replace('\x00', '')
+        return text.splitlines()[-nlines:]
+    except Exception:
+        return []
+
+
+@app.route('/api/logs')
+def logs_api():
+    """Baris-baris terakhir log aktivitas (butuh login panel; GET saja).
+    ?source=panel|operator&lines=200."""
+    source = (request.args.get('source') or 'panel').strip().lower()
+    if source not in _LOG_SOURCES:
+        source = 'panel'
+    path = _log_file_for(source)
+    try:
+        lines = int(request.args.get('lines') or 200)
+    except Exception:
+        lines = 200
+    lines = max(1, min(lines, 1000))
+    try:
+        size = os.path.getsize(path)
+    except Exception:
+        size = 0
+    return jsonify({"status": "success", "source": source,
+                    "lines": _read_log_tail(path, lines), "size": size})
+
+
+@app.route('/api/logs/clear', methods=['POST'])
+def logs_clear_api():
+    """Kosongkan file log (butuh login + CSRF via check_security).
+    Hanya memotong file log aplikasi sendiri — journal systemd tidak disentuh.
+    Tee di proses pemilik file mendeteksi pemotongan dan buka ulang file."""
+    data = request.get_json(silent=True) or {}
+    source = (data.get('source') or request.form.get('source') or 'panel').strip().lower()
+    if source not in _LOG_SOURCES:
+        source = 'panel'
+    path = _log_file_for(source)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if source == 'panel':
+            with _LOG_LOCK:
+                open(path, 'w', encoding='utf-8').close()
+        else:
+            open(path, 'w', encoding='utf-8').close()
+        return jsonify({"status": "success", "source": source})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)[:200]}), 500
+
 
 @app.route('/api/get_dashboard_stats')
 def get_dashboard_stats():

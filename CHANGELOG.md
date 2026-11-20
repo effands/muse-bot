@@ -3,6 +3,10 @@
 Catatan perubahan per versi. Dibaca operator saat start dan ditampilkan di
 pesan restart Telegram, supaya Bos langsung tahu apa yang berubah.
 
+## 1.3.39
+- Nama channel di tabel tidak lagi terpotong (batas lebar + ellipsis dihapus).
+- Scroll tabel ke samping tidak lagi kembali ke awal: ternyata tabel di-render ulang tiap 2 detik (poll) dan posisi scroll ikut terhapus — sekarang posisi scroll disimpan sebelum render ulang lalu dipulihkan.
+
 ## 1.3.38
 - Pill monetisasi yang subs-nya sudah terpenuhi (≥1.000) sekarang kaca emas transparan + glow dan ikon ✅ — yang belum tetap abu-abu ⏳. Yang sudah "Siap Monet" / "Monetisasi Aktif" tetap hijau.
 

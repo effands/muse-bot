@@ -3054,7 +3054,7 @@ function channelTableHtml(list, withMode, showNext, fill) {
       ? `<td style="color:var(--muted);font-family:var(--font-m);font-size:11px;white-space:nowrap">Belum ada video tayang</td>`
       : `<td style="font-size:11px"><span style="display:flex;gap:6px;align-items:baseline;min-width:0"><span style="white-space:nowrap;color:var(--muted)">${lu.icon} ${lu.type} · ${escapeHtml(shortDate(lu.time))}</span><span title="${escapeHtml(lu.title || 'Video')}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">${escapeHtml(shortTitle(lu.title))}</span></span></td>`);
     return `<tr>`
-      + `<td title="${escapeHtml(c.name)}" style="font-weight:700;font-size:12px;color:var(--text);white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis">${escapeHtml(c.name)}</td>`
+      + `<td title="${escapeHtml(c.name)}" style="font-weight:700;font-size:12px;color:var(--text);white-space:nowrap">${escapeHtml(c.name)}</td>`
       + `<td style="white-space:nowrap">${statusPillHTML(c.status, true)}`
       + (c.paused ? ` <span class="pill p-yellow" style="font-size:9px;padding:2px 6px">⏸️ Dijeda</span>` : '')
       + (c.monetized ? ` <span class="pill p-green" style="font-size:9px;padding:2px 6px">💰 Monetisasi Aktif</span>` : '')
@@ -3073,16 +3073,28 @@ function channelTableHtml(list, withMode, showNext, fill) {
 function renderTaskChannels() {
   const el = document.getElementById('tm-channels'); if (!el) return;
   const cnt = document.getElementById('tm-ch-count'); if (cnt) cnt.textContent = channels.length + ' channel';
+  // 🔥 v1.3.39: simpan posisi scroll tabel sebelum render ulang — tabel
+  // di-render ulang tiap poll (2 detik), dan wrapper baru selalu mulai
+  // dari scroll 0 kalau tidak dipulihkan.
+  const prev = el.querySelector('div');
+  const sl = prev ? prev.scrollLeft : 0, st = prev ? prev.scrollTop : 0;
   el.innerHTML = channels.length
     ? channelTableHtml(channels, false, true)
     : `<div style="padding:10px 0;color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada channel tertaut — tautkan dari Settings.</div>`;
+  const cur = el.querySelector('div');
+  if (cur) { cur.scrollLeft = sl; cur.scrollTop = st; }
 }
 function renderDashboardChannels() {
   const el = document.getElementById('dash-channels'); if (!el) return;
   const cnt = document.getElementById('dash-ch-count'); if (cnt) cnt.textContent = channels.length + ' channel';
+  // 🔥 v1.3.39: simpan posisi scroll (alasan sama seperti renderTaskChannels).
+  const prev = el.querySelector('div');
+  const sl = prev ? prev.scrollLeft : 0, st = prev ? prev.scrollTop : 0;
   el.innerHTML = channels.length
     ? channelTableHtml(channels, true, false, true)
     : `<div style="padding:10px 0;color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada channel tertaut — tautkan dari Settings.</div>`;
+  const cur = el.querySelector('div');
+  if (cur) { cur.scrollLeft = sl; cur.scrollTop = st; }
   renderChannelTable();
 }
 

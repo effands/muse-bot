@@ -10548,12 +10548,36 @@ def _playlist_fps(stream):
         return 30.0
 
 
+def _playlist_copy_valid(path, audio_dur, tol=5.0):
+    """Validasi hasil concat copy: file ada, ada stream video, durasi
+    mendekati durasi audio (+-tol detik). Copy yang 'sukses' (exit 0)
+    tapi durasinya ngaco — mis. timestamp berantakan karena klip beda
+    fps/timebase — dianggap gagal, supaya _playlist_render jatuh ke
+    normalisasi, bukan meng-upload video rusak."""
+    try:
+        if not path or not os.path.exists(path) or os.path.getsize(path) == 0:
+            return False
+        pv = _probe_video(path)
+        if not pv:
+            return False
+        vs = [s for s in (pv.get('streams') or []) if s.get('codec_type') == 'video']
+        if not vs:
+            return False
+        dur = float((pv.get('format') or {}).get('duration') or 0)
+        return dur > 0 and abs(dur - audio_dur) <= tol
+    except Exception:
+        return False
+
+
 def _playlist_render(task_id, task, yt_id):
     """Render kompilasi Musik Playlist: loop klip 16:9 + audio referensi.
-    Utamakan STREAM COPY (-c copy, ringan & cepat); bila klip tidak
-    seragam atau bukan 1080p, normalisasi seminimal mungkin (re-encode
-    video ke 1080p30, audio tetap copy) — dicatat di
-    task['playlist_render_method']. Durasi final = durasi audio.
+    v1.3.9: SELALU coba STREAM COPY dulu (-c copy, ringan & cepat),
+    apa pun klipnya — beda fps/timebase umumnya tetap bisa di-copy
+    (concat demuxer merangkai PTS); bila copy gagal ATAU hasilnya
+    tidak valid (durasi ngaco), baru normalisasi seminimal mungkin
+    (re-encode video ke 1080p30, audio tetap copy) lalu concat ulang.
+    Metode dicatat di task['playlist_render_method']. Durasi final =
+    durasi audio.
     🔥 v1.2.21: (a) bila video final dari render sebelumnya masih ada
     dan valid → dipakai langsung TANPA render ulang (retry setelah
     upload gagal tidak boleh gagal hanya karena klip sudah dibersihkan);
@@ -10621,14 +10645,39 @@ def _playlist_render(task_id, task, yt_id):
     use_paths = [i['path'] for i in infos]
     norm_files = []
     try:
-        if not (uniform and is_1080p):
-            # Normalisasi minimal: skala ke 1080p30 h264, tanpa audio.
-            method = 'normalize'
+        # v1.3.9: PAKSA copy — coba gabung apa adanya dulu, tanpa
+        # normalisasi di depan. (uniform/is_1080p hanya dipakai untuk
+        # label metode di job, bukan untuk memutuskan jalur.)
+        # Daftar concat: klip diulang sampai menutup durasi audio.
+        with open(concat_txt, 'w', encoding='utf-8') as f:
+            for _r in range(repeats):
+                for p in use_paths:
+                    f.write(_concat_list_line(p))
+        cmd = [ff, '-y', '-f', 'concat', '-safe', '0', '-i', concat_txt,
+               '-i', audio, '-map', '0:v', '-map', '1:a',
+               '-c', 'copy', '-t', f"{audio_dur:.3f}",
+               '-movflags', '+faststart', final_video]
+        # 🔥 v1.2.18: concat via _run_ffmpeg_zoom — progres DIUKUR dari time=
+        # FFmpeg vs durasi audio. Percobaan copy memakai 0-100%; bila gagal
+        # dan jatuh ke normalisasi, progres normalisasi 0-70% lalu concat
+        # 70-100% (angka bisa mundur — itu artinya percobaan copy gagal).
+        # "Dibatalkan"/timeout diteruskan apa adanya (bukan gagal copy).
+        copy_ok = False
+        try:
+            _run_ffmpeg_zoom(task_id, cmd, "FFmpeg Playlist Concat Error",
+                             total_sec=audio_dur, pct_base=0.0, pct_span=100.0)
+            copy_ok = _playlist_copy_valid(final_video, audio_dur)
+        except Exception as _ce:
+            if 'Dibatalkan' in str(_ce) or 'timeout' in str(_ce).lower():
+                raise
+            copy_ok = False
+        if not copy_ok:
+            # Copy gagal atau hasilnya tidak valid (durasi ngaco) →
+            # normalisasi semua klip ke 1080p30, lalu concat ulang.
+            method = 'normalize (fallback)'
             norm_paths = []
             for idx, info in enumerate(infos):
                 np_out = os.path.join(os.path.dirname(concat_txt), f"pl_norm_{task_id}_{idx}.mp4")
-                # 🔥 v1.2.18: normalisasi via _run_ffmpeg_zoom — progres DIUKUR
-                # dari time= FFmpeg vs durasi klip; klip ke-i memetakan 0-70%.
                 _run_ffmpeg_zoom(task_id,
                                  [ff, '-y', '-i', info['path'], '-vf',
                                   'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30',
@@ -10640,59 +10689,14 @@ def _playlist_render(task_id, task, yt_id):
                                  pct_span=70.0 / max(1, len(infos)))
                 norm_paths.append(np_out)
                 norm_files.append(np_out)
-            use_paths = norm_paths
-        # Daftar concat: klip diulang sampai menutup durasi audio.
-        with open(concat_txt, 'w', encoding='utf-8') as f:
-            for _r in range(repeats):
-                for p in use_paths:
-                    f.write(_concat_list_line(p))
-        cmd = [ff, '-y', '-f', 'concat', '-safe', '0', '-i', concat_txt,
-               '-i', audio, '-map', '0:v', '-map', '1:a',
-               '-c', 'copy', '-t', f"{audio_dur:.3f}",
-               '-movflags', '+faststart', final_video]
-        # 🔥 v1.2.18: concat via _run_ffmpeg_zoom — progres DIUKUR dari time=
-        # FFmpeg vs durasi audio (0-100% bila tanpa normalisasi, 70-100%
-        # bila klip sudah dinormalisasi). _run_ffmpeg_zoom melempar Exception
-        # biasa — ubah ke CalledProcessError (try dalam) supaya jalur fallback
-        # normalisasi lama tetap jalan; "Dibatalkan"/timeout diteruskan apa
-        # adanya (bukan gagal copy).
-        _concat_base = 70.0 if norm_files else 0.0
-        _concat_span = 30.0 if norm_files else 100.0
-        try:
-            try:
-                _run_ffmpeg_zoom(task_id, cmd, "FFmpeg Playlist Concat Error",
-                                 total_sec=audio_dur, pct_base=_concat_base, pct_span=_concat_span)
-            except Exception as _ce:
-                if 'Dibatalkan' in str(_ce) or 'timeout' in str(_ce).lower():
-                    raise
-                raise subprocess.CalledProcessError(1, cmd, output=None, stderr=str(_ce))
-        except subprocess.CalledProcessError:
-            if method == 'copy':
-                # Klip ternyata tidak bisa di-copy apa adanya (mis. beda
-                # timebase) → jatuh ke normalisasi, lalu coba sekali lagi.
-                method = 'normalize (fallback)'
-                norm_paths = []
-                for idx, info in enumerate(infos):
-                    np_out = os.path.join(os.path.dirname(concat_txt), f"pl_norm_{task_id}_{idx}.mp4")
-                    _run_ffmpeg_zoom(task_id,
-                                     [ff, '-y', '-i', info['path'], '-vf',
-                                      'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30',
-                                      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
-                                      '-an', np_out],
-                                     "FFmpeg Playlist Normalize Error",
-                                     total_sec=info['dur'],
-                                     pct_base=70.0 * idx / max(1, len(infos)),
-                                     pct_span=70.0 / max(1, len(infos)))
-                    norm_paths.append(np_out)
-                    norm_files.append(np_out)
-                with open(concat_txt, 'w', encoding='utf-8') as f:
-                    for _r in range(repeats):
-                        for p in norm_paths:
-                            f.write(_concat_list_line(p))
-                _run_ffmpeg_zoom(task_id, cmd, "FFmpeg Playlist Concat Error",
-                                 total_sec=audio_dur, pct_base=70.0, pct_span=30.0)
-            else:
-                raise
+            with open(concat_txt, 'w', encoding='utf-8') as f:
+                for _r in range(repeats):
+                    for p in norm_paths:
+                        f.write(_concat_list_line(p))
+            _run_ffmpeg_zoom(task_id, cmd, "FFmpeg Playlist Concat Error",
+                             total_sec=audio_dur, pct_base=70.0, pct_span=30.0)
+        elif not (uniform and is_1080p):
+            method = 'copy (forced)' 
         if not os.path.exists(final_video) or os.path.getsize(final_video) == 0:
             raise Exception('Render playlist gagal (file final kosong).')
         task['playlist_render_method'] = method

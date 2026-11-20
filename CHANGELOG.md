@@ -1,3 +1,6 @@
+## 1.3.72
+- Popup "👥 Kelola Group" — tombol "Buat Group" di header DETAIL CHANNEL (tempat yang ditunjuk user). Isinya: form buat group baru (nama + channel), daftar group + anggotanya, dan channel tanpa group — tiap channel punya dropdown untuk pindah group / keluar group. Dropdown di popup me-render ulang isinya setelah simpan.
+
 ## 1.3.71
 - LOG AKTIVITAS jadi SATU log (logs/activity.log): task dibuat (Shorts/Playlist/Zumo/VOD), render mulai, task selesai (Tayang ✅ / Gagal ❌ / Ditolak 🚫) — semua dengan jam WIB. Dropdown sumber Panel/Operator dihapus; log polling GET tidak ada lagi di tampilan. Riwayat 100 task terakhir di-backfill sekali saat deploy.
 

@@ -1256,6 +1256,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         <div class="card-head">
           <span class="card-title">📊 DETAIL CHANNEL</span>
           <span style="display:flex;gap:8px;align-items:center">
+            <button type="button" class="btn btn-sm" onclick="openGroupManager()" title="Buat group baru & pindahkan channel antar group">👥 Buat Group</button>
             <span class="pill p-cyan" id="ch-detail-count">0 channel</span>
             <button type="button" class="btn btn-sm" id="ch-detail-refresh" onclick="fetchAnalytics(true)" title="Ambil data terbaru dari YouTube (lewati cache 1 jam)">↻ Refresh</button>
             <button type="button" class="btn btn-p btn-sm" onclick="openAddChannelModal()" title="Tautkan channel YouTube baru (device login, sama seperti di Settings)">➕ Tambah Channel</button>
@@ -2522,6 +2523,18 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
   </div>
 </div>
 
+<!-- 👥 MODAL KELOLA GROUP (v1.3.72) — buat group baru + pindahkan channel
+     antar group, dari tombol "Buat Group" di header DETAIL CHANNEL. -->
+<div id="grp-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closeGroupManager()">
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);max-width:560px;width:100%;max-height:85vh;overflow:auto;padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.35)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div class="card-title" style="font-size:15px">👥 KELOLA GROUP</div>
+      <button type="button" class="btn btn-g btn-sm" onclick="closeGroupManager()" title="Tutup">✕</button>
+    </div>
+    <div id="grp-body" style="font-size:13px;line-height:1.6"></div>
+  </div>
+</div>
+
 <script>
 // 🔒 #12: semua fetch POST ke /api/* otomatis membawa header X-CSRF-Token.
 // (Satu tempat — jadi tidak ada POST panel yang terlewat, termasuk FormData.)
@@ -3185,10 +3198,11 @@ function groupListAll() {
   (channels || []).forEach(c => { const g = (c.group || '').trim(); if (g && out.indexOf(g) === -1) out.push(g); });
   return out;
 }
-function groupSelectHtml(c) {
+function groupSelectHtml(c, handler) {
   const cur = (c.group || '').trim();
+  const fn = handler || 'onGroupSelect';  // 🔥 v1.3.72: popup Kelola Group pakai 'onGroupSelectModal'
   const opts = groupListAll().map(g => `<option value="${escapeHtml(g)}"${g === cur ? ' selected' : ''}>${escapeHtml(g)}</option>`).join('');
-  return `<select onchange="onGroupSelect(this, '${c.yt_id}')" title="Group channel ini — 1 channel = 1 group" style="font-size:11px;padding:2px 4px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);max-width:130px">`
+  return `<select onchange="${fn}(this, '${c.yt_id}')" title="Group channel ini — 1 channel = 1 group" style="font-size:11px;padding:2px 4px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);max-width:130px">`
     + `<option value=""${cur ? '' : ' selected'}>— Tanpa Group —</option>` + opts
     + `<option value="__new__">＋ Buat group baru…</option></select>`;
 }
@@ -3223,10 +3237,112 @@ async function saveChannelGroup(ytId, group, el) {
   if (res.ok && d.status === 'success') {
     toast(group ? `Group tersimpan → ${group}.` : 'Channel keluar dari group.', 'ok');
     loadChannels();
+    return true;  // 🔥 v1.3.72: popup Kelola Group butuh tahu sukses/gagal
   } else {
     toast(d.message || 'Gagal menyimpan group.', 'err');
     loadChannels();
+    return false;
   }
+}
+
+// 🔥 v1.3.72: popup KELOLA GROUP — buat group baru + pindahkan channel
+// antar group. Dibuka dari tombol "👥 Buat Group" di header DETAIL CHANNEL.
+function openGroupManager() {
+  const m = document.getElementById('grp-modal'); if (!m) return;
+  m.style.display = 'flex';
+  renderGroupManager();
+}
+function closeGroupManager() {
+  const m = document.getElementById('grp-modal'); if (m) m.style.display = 'none';
+}
+function renderGroupManager() {
+  const body = document.getElementById('grp-body'); if (!body) return;
+  const groups = groupListAll();
+  const ungrouped = (channels || []).filter(c => !(c.group || '').trim());
+  let h = '<div style="margin-bottom:14px"><div style="font-weight:700;margin-bottom:6px">Buat group baru</div>'
+    + '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+    + '<input id="grp-new-name" type="text" placeholder="Nama group, mis. Playlist A" maxlength="40" style="flex:1;min-width:160px;padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:12px">'
+    + '<select id="grp-new-ch" style="padding:6px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:12px;max-width:180px">'
+    + (channels || []).map(c => `<option value="${escapeHtml(c.yt_id)}">${escapeHtml(c.name)}</option>`).join('')
+    + '</select>'
+    + '<button type="button" class="btn btn-p btn-sm" onclick="createGroupFromModal()">＋ Buat</button></div>'
+    + '<div style="font-size:11px;color:var(--muted);margin-top:4px">Group lahir begitu 1 channel dimasukkan — 1 channel hanya boleh 1 group.</div></div>';
+  if (!groups.length) {
+    h += '<div style="color:var(--muted)">Belum ada group. Buat lewat form di atas, atau dari dropdown GROUP di tabel channel.</div>';
+  } else {
+    groups.forEach(g => {
+      const members = (channels || []).filter(c => (c.group || '').trim() === g);
+      h += `<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px">`
+        + `<div style="font-weight:700;margin-bottom:8px">👥 ${escapeHtml(g)} <span style="color:var(--muted);font-weight:400;font-size:11px">(${members.length} channel)</span></div>`;
+      members.forEach(c => {
+        h += `<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(c.name)}">${escapeHtml(c.name)}</span>` + groupSelectHtml(c, 'onGroupSelectModal') + '</div>';
+      });
+      h += '</div>';
+    });
+  }
+  if (ungrouped.length) {
+    h += '<div style="font-weight:700;margin:12px 0 8px">Tanpa group</div>';
+    ungrouped.forEach(c => {
+      h += `<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(c.name)}">${escapeHtml(c.name)}</span>` + groupSelectHtml(c, 'onGroupSelectModal') + '</div>';
+    });
+  }
+  h += '<div style="display:flex;justify-content:flex-end;margin-top:14px"><button type="button" class="btn btn-sm" onclick="closeGroupManager()">Tutup</button></div>';
+  body.innerHTML = h;
+  const inp = document.getElementById('grp-new-name');
+  if (inp) {
+    inp.focus();
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') createGroupFromModal(); });
+  }
+}
+async function createGroupFromModal() {
+  const inp = document.getElementById('grp-new-name');
+  const sel = document.getElementById('grp-new-ch');
+  const name = (inp && inp.value.trim()) || '';
+  if (!name) { toast('Nama group tidak boleh kosong.', 'err'); return; }
+  if (!sel || !sel.value) { toast('Pilih 1 channel untuk dimasukkan ke group baru.', 'err'); return; }
+  const ok = await saveChannelGroup(sel.value, name, null);
+  if (ok) {
+    const c = (channels || []).find(x => x.yt_id === sel.value);
+    if (c) c.group = name;  // update lokal supaya popup langsung benar
+  }
+  renderGroupManager();
+}
+async function onGroupSelectModal(sel, ytId) {
+  // Sama seperti onGroupSelect, tapi popup di-render ulang setelah simpan
+  // (dropdown di tabel me-render ulang sendiri via loadChannels).
+  // "Buat group baru…" di sini jadi input inline (pola sama seperti di
+  // tabel) — bukan prompt() bawaan browser.
+  if (sel.value === '__new__') {
+    const row = sel.closest('div'); if (!row) return;
+    sel.outerHTML = `<span style="display:flex;gap:4px;align-items:center"><input class="grp-input" type="text" placeholder="Nama group baru" maxlength="40" style="width:130px;padding:3px 6px;border:1px solid var(--accent);border-radius:6px;background:var(--bg);color:var(--text);font-size:11px"><button class="btn btn-p btn-sm" onclick="saveChannelGroupModalInput(this, '${ytId}')">✓</button><button class="btn btn-sm" onclick="renderGroupManager()">✕</button></span>`;
+    const inp = row.querySelector('.grp-input');
+    if (inp) {
+      inp.focus();
+      inp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') saveChannelGroupModalInput(inp, ytId);
+        if (e.key === 'Escape') renderGroupManager();
+      });
+    }
+    return;
+  }
+  const ok = await saveChannelGroup(ytId, sel.value, sel);
+  if (ok) {
+    const c = (channels || []).find(x => x.yt_id === ytId);
+    if (c) c.group = sel.value;
+  }
+  renderGroupManager();
+}
+async function saveChannelGroupModalInput(el, ytId) {
+  const row = el.closest('div'); if (!row) return;
+  const inp = row.querySelector('.grp-input'); if (!inp) return;
+  const name = inp.value.trim();
+  if (!name) { toast('Nama group tidak boleh kosong.', 'err'); return; }
+  const ok = await saveChannelGroup(ytId, name, null);
+  if (ok) {
+    const c = (channels || []).find(x => x.yt_id === ytId);
+    if (c) c.group = name;
+  }
+  renderGroupManager();
 }
 function editEmail(ytId, el) {
   const td = el.closest('td'); if (!td) return;

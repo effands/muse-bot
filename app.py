@@ -637,6 +637,16 @@ def _oauth_project_of_client_id(client_id):
         return None
 
 
+def _oauth_client_filename(client_id, project_id):
+    """Nama file secret satu client — UNIK per client_id (bukan per
+    project): dua client satu project (TV + Desktop) tidak boleh saling
+    menimpa (insiden v1.3.50: upload Desktop menimpa file TV sehingga
+    device login mengirim client Desktop ke Google -> invalid_client)."""
+    stem = str(client_id or '').split('.apps.googleusercontent.com')[0]
+    stem = re.sub(r'[^A-Za-z0-9_.-]', '_', stem) or 'client'
+    return f"{stem}.json"
+
+
 def _oauth_clients_load():
     """Baca registry multi-client. Migrasi SEKALI dari file tunggal lama
     (client_secret.json → entri pertama, primary) bila registry belum ada.
@@ -656,7 +666,7 @@ def _oauth_clients_load():
                 conf, _err = _oauth_validate_client_json(data)
                 if conf:
                     os.makedirs(OAUTH_CLIENTS_DIR, exist_ok=True)
-                    dest = os.path.join(OAUTH_CLIENTS_DIR, f"{conf['project_id']}.json")
+                    dest = os.path.join(OAUTH_CLIENTS_DIR, _oauth_client_filename(conf['client_id'], conf['project_id']))
                     with open(dest, 'w') as f:
                         json.dump(data, f, indent=2)
                     try:
@@ -790,8 +800,7 @@ def _oauth_register_client(file_bytes, name=None):
         return None, err
     try:
         os.makedirs(OAUTH_CLIENTS_DIR, exist_ok=True)
-        safe_proj = re.sub(r'[^A-Za-z0-9_.-]', '_', str(conf['project_id']))
-        dest = os.path.join(OAUTH_CLIENTS_DIR, f"{safe_proj}.json")
+        dest = os.path.join(OAUTH_CLIENTS_DIR, _oauth_client_filename(conf['client_id'], conf['project_id']))
         with open(dest, 'w') as f:
             json.dump(data, f, indent=2)
         try:

@@ -1,3 +1,6 @@
+## 1.3.50
+- Perbaikan darurat: file client OAuth kini unik per client — upload JSON Desktop sempat menimpa file client TV satu project sehingga device login ditolak Google (invalid_client). File TV sudah dipulihkan; device login jalan lagi.
+
 ## 1.3.49
 - Tambah channel cukup 1x login browser — token langsung punya semua izin (upload + Analytics + email); tidak perlu device login lagi. Blok baru di Settings → GOOGLE OAUTH 2.0 API → Tambah Channel — 1x Login (device login tetap tersedia sebagai cadangan).
 

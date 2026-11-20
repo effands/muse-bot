@@ -658,6 +658,13 @@ input[type=color] { padding:0; height:36px; width:100%; border:1px solid var(--b
 .cal-day .task-icon { font-size:15px; width:24px; }
 .cal-day .task-name { font-size:12px; }
 
+/* 🔥 v1.3.59: Musik Playlist rapat-padat (scoped #panel-playlist). */
+#panel-playlist .fg { margin-bottom:8px; }
+#panel-playlist .card-body { padding:12px 16px; }
+#panel-playlist .card-head { padding:9px 16px; }
+#panel-playlist .g2 { gap:10px; }
+#panel-playlist .btn-row { margin-top:8px; }
+
 /* 🔥 CSS BARU COLLAPSE & PAGINATION */
 .ch-group-head { cursor: pointer; user-select: none; transition: 0.2s; }
 .ch-group-head:hover { filter: brightness(1.1); }
@@ -2108,24 +2115,24 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
       </div>
     </div>
     <div id="panel-playlist" class="panel">
-      <div class="sh" style="margin-bottom:20px">
+      <div class="sh" style="margin-bottom:12px">
         <div><div class="sh-title"><svg class="nav-ic" style="width:18px;height:18px;vertical-align:-3px"><use href="#ic-music"/></svg> Musik Playlist</div><div class="sh-sub">Riset playlist YouTube yang lagi meledak (30 hari terakhir, &gt;20rb views) → kompilasi musik 16:9 → upload ke channel tujuan</div></div>
       </div>
-      <div class="card" style="margin-bottom:16px">
+      <div class="card" style="margin-bottom:12px">
         <div class="card-head"><span class="card-title">🔍 RISET PLAYLIST</span></div>
         <div class="card-body">
-          <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:14px">Riset memakai ~101 unit kuota YouTube Data API per pencarian (hasilnya di-cache 1 jam — riset ulang tema yang sama tanpa kuota). Audio referensi dipakai apa adanya; judul &amp; deskripsi ditulis ulang, thumbnail dimodifikasi sedikit. Footage dari Pixabay (butuh API key di Settings — gratis).</div>
+          <details class="data-note" style="margin:0 0 10px"><summary>ⓘ Tentang riset ini</summary><div>Riset memakai ~101 unit kuota YouTube Data API per pencarian (hasilnya di-cache 1 jam — riset ulang tema yang sama tanpa kuota). Audio referensi dipakai apa adanya; judul &amp; deskripsi ditulis ulang, thumbnail dimodifikasi sedikit. Footage dari Pixabay (butuh API key di Settings — gratis).</div></details>
           <div class="g2">
             <div class="fg"><label class="fl">Channel Tujuan</label><select id="pl-channel"><option value="">-- Pilih Channel --</option></select></div>
             <div class="fg"><label class="fl">Tema / Kata Kunci</label><input type="text" id="pl-theme" placeholder="mis. lofi, piano santai, lagu anak"></div>
           </div>
-          <div class="g2" style="margin-top:10px">
+          <div class="g2" style="margin-top:2px">
             <div class="fg"><label class="fl">Durasi Min (menit, opsional)</label><input type="number" id="pl-dur-min" min="0" placeholder="mis. 40"></div>
             <div class="fg"><label class="fl">Durasi Max (menit, opsional)</label><input type="number" id="pl-dur-max" min="0" placeholder="mis. 70"></div>
           </div>
           <div class="btn-row"><button class="btn btn-p" id="btn-pl-research" onclick="playlistResearch()">🔍 Riset Playlist</button></div>
-          <div id="pl-candidates" style="margin-top:14px"></div>
-          <div id="pl-create-wrap" style="display:none;margin-top:14px">
+          <div id="pl-candidates" style="margin-top:10px"></div>
+          <div id="pl-create-wrap" style="display:none;margin-top:10px">
             <div class="g2">
               <div class="fg"><label class="fl">Jadwal Tayang (WIB)</label><input type="datetime-local" id="pl-publish-date"></div>
               <div class="fg"><label class="fl">Privasi</label><select id="pl-privacy"><option value="public">Public</option><option value="private">Private</option><option value="unlisted">Unlisted</option></select></div>

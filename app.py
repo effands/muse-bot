@@ -9470,12 +9470,20 @@ def _playlist_pixabay_queries(theme):
 
 
 def _pixabay_search_clips(theme, count=PLAYLIST_MAX_CLIPS, job_id=''):
-    """Cari footage 16:9 ukuran 'small' di Pixabay (API resmi).
+    """Cari footage 16:9 di Pixabay (API resmi), utamakan varian 'large'
+    1920x1080 supaya render playlist bisa pakai STREAM COPY (cepat).
+    v1.3.8: dulu selalu 'small' (~640px) -> render selalu 'normalize'
+    (re-encode tiap klip ke 1080p, lambat). Bila klip 1080p kurang dari
+    count, dilengkapi varian terbesar yang tersedia (medium/small/tiny)
+    - render kembali ke normalize seperti dulu, bukan gagal. Render
+    Zumo (spectrum + partikel) TIDAK memakai fungsi ini dan selalu
+    re-encode - copy memang tidak mungkin di sana.
     Kembalikan (clips, masked_keys). Clips: [{url, width, height, tags}].
     Diacak (seed job_id) supaya tiap job beda susunan."""
     queries = _playlist_pixabay_queries(theme)
     seen = set()
-    clips = []
+    clips = []        # varian non-1080p (cadangan)
+    clips_1080 = []   # varian large 1920x1080 (bisa copy)
     used_masks = []
     for q in queries:
         data, masked = _pixabay_api_get({
@@ -9484,27 +9492,40 @@ def _pixabay_search_clips(theme, count=PLAYLIST_MAX_CLIPS, job_id=''):
         if masked not in used_masks:
             used_masks.append(masked)
         for hit in data.get('hits', []):
-            small = ((hit.get('videos') or {}).get('small') or {})
-            url = small.get('url') or ''
-            try:
-                w, h = int(small.get('width') or 0), int(small.get('height') or 0)
-            except Exception:
-                continue
-            if not url.startswith('https://cdn.pixabay.com/'):
-                continue
-            if not w or not h or abs(w / h - 16 / 9) > 0.02:
-                continue  # hanya 16:9
-            if url in seen:
-                continue
-            seen.add(url)
-            clips.append({'url': url, 'width': w, 'height': h,
-                          'tags': hit.get('tags', ''), 'duration': hit.get('duration')})
-            if len(clips) >= count:
+            videos = hit.get('videos') or {}
+            best = None
+            for size in ('large', 'medium', 'small', 'tiny'):
+                v = videos.get(size) or {}
+                url = v.get('url') or ''
+                try:
+                    w, h = int(v.get('width') or 0), int(v.get('height') or 0)
+                except Exception:
+                    continue
+                if not url.startswith('https://cdn.pixabay.com/'):
+                    continue
+                if not w or not h or abs(w / h - 16 / 9) > 0.02:
+                    continue  # hanya 16:9
+                if url in seen:
+                    continue
+                best = {'url': url, 'width': w, 'height': h,
+                        'tags': hit.get('tags', ''), 'duration': hit.get('duration')}
                 break
-        if len(clips) >= count:
+            if not best:
+                continue
+            seen.add(best['url'])
+            if best['width'] == 1920 and best['height'] == 1080:
+                clips_1080.append(best)
+            else:
+                clips.append(best)
+            if len(clips_1080) >= count:
+                break
+        if len(clips_1080) >= count:
             break
-    random.Random(job_id or '').shuffle(clips)
-    clips = clips[:count]
+    # Bila klip 1080p cukup, pakai HANYA itu (seragam -> copy bisa jalan);
+    # bila kurang, lengkapi dengan varian lain (render normalize seperti dulu).
+    chosen = clips_1080 if len(clips_1080) >= count else clips_1080 + clips
+    random.Random(job_id or '').shuffle(chosen)
+    clips = chosen[:count]
     if len(clips) < PLAYLIST_MIN_CLIPS:
         raise RuntimeError(f"Footage Pixabay kurang (dapat {len(clips)}, butuh min {PLAYLIST_MIN_CLIPS}) — coba tema/kata kunci lain.")
     return clips, used_masks

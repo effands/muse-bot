@@ -740,6 +740,49 @@ def _panel_version():
     return "—"
 
 
+def _version_number():
+    """Nomor versi polos dari file VERSION (mis. '1.3.14') — None bila tak ada."""
+    try:
+        with open(os.path.join(BASE_DIR, 'VERSION'), encoding='utf-8') as f:
+            parts = (f.read() or '').strip().split()
+            return parts[0] if parts else None
+    except Exception:
+        return None
+
+
+def _changelog_lines(version, max_lines=5, path=None):
+    """Baca CHANGELOG.md, kembalikan list bullet untuk `version` (maks 5).
+
+    v1.3.14: pesan restart di Telegram menampilkan isi update supaya Bos
+    langsung tahu apa yang berubah. File hilang / versi tak ada -> [] dan
+    pesan restart tetap seperti biasa (fail-silent)."""
+    if path is None:
+        path = os.path.join(BASE_DIR, 'CHANGELOG.md')
+    try:
+        with open(path, encoding='utf-8') as f:
+            lines = f.read().splitlines()
+    except Exception:
+        return []
+    ver = (version or '').strip().lstrip('v')
+    if not ver:
+        return []
+    in_section = False
+    out = []
+    for ln in lines:
+        s = ln.strip()
+        if s.startswith('## '):
+            if in_section:
+                break
+            if s[3:].strip().lstrip('v') == ver:
+                in_section = True
+            continue
+        if in_section and s.startswith('- '):
+            out.append(s[2:].strip())
+            if len(out) >= max_lines:
+                break
+    return out
+
+
 def _autopilot_of(channel_data):
     """Mode autopilot channel: 'auto' atau 'approval' (default — sama
     seperti _autopilot_of di app.py; operator tidak mengimpor app)."""
@@ -9540,6 +9583,13 @@ def main():
         "🟢 *Bos, saya siap!* 😎\n\n"
         "Sistem udah diperbarui, semua tombol di bawah udah bisa dipencet dan langsung saya respon! 💪"
     )
+    # v1.3.14: sebutkan isi update di pesan restart (CHANGELOG.md) — Bos
+    # minta ada info update-nya, bukan cuma "sistem diperbarui".
+    _ver = _version_number()
+    _news = _changelog_lines(_ver) if _ver else []
+    if _news:
+        welcome_msg += ("\n\n🆕 *Update v" + _ver + ":*\n"
+                        + "\n".join("• " + b for b in _news))
     send_message(token, owner_chat_id, welcome_msg, reply_markup=get_main_keyboard())
 
     # Auto-suggest perintah: daftarkan daftar perintah ke Telegram supaya

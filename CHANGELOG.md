@@ -1,3 +1,7 @@
+## 1.3.61
+- Kalender Jadwal kini TABEL beneran (TANGGAL | JAM | JUDUL | CHANNEL | STATUS): 1 baris per video, semua sebaris, judul dipotong "…" + tooltip; tanggal pakai rowspan bila 1 hari ada >1 video; yang terlambat jadi baris pemisah merah di atas. Muat jauh lebih banyak dalam 1 layar.
+- Pemetaan Channel → Client dirapikan: label client tidak dobel lagi ("project-musik-1" bukan "project-musik-1 (project project-musik-1)"; client Desktop tampil "desktop (project-musik-1)") — dua client di project yang sama kini bisa dibedakan; badge Terhubung yang jadi client utama ditandai ★; kolom tabel dikunci lebarnya + ada keterangan di bawah tabel.
+
 ## 1.3.60
 - Kalender Jadwal didesain ulang jadi daftar datar ala tabel: tanpa kartu bersarang — tiap hari hanya kepala tanggal bergaris bawah + baris video polos dipisah garis tipis (ikon kalender dihapus). Jauh lebih bersih & mudah dibaca; Task Monitor tidak ikut berubah.
 - Musik Playlist: keempat field (Channel, Tema, Durasi Min, Durasi Max) kini sejajar dalam 1 baris (4 kolom; 2 kolom di layar sempit).

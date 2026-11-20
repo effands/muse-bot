@@ -649,13 +649,11 @@ input[type=color] { padding:0; height:36px; width:100%; border:1px solid var(--b
 .task-name { font-size:13px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:2px; }
 .task-meta { font-family:var(--font-m); font-size:10px; color:var(--muted); }
 
-/* 🔥 v1.3.60: Kalender Jadwal — daftar datar ala tabel, tanpa kartu bersarang
-   (scoped .cal-day-group; .task-row di Task Monitor tidak ikut berubah). */
-.cal-day-group { margin-bottom:16px; }
-.cal-day-head { display:flex; justify-content:space-between; align-items:center; gap:8px; font-size:12px; font-weight:700; padding:2px 2px 7px; border-bottom:1px solid var(--border); }
-.cal-day-group .task-row { background:transparent; border:none; border-bottom:1px solid var(--border); border-radius:0; padding:7px 2px; margin-bottom:0; gap:8px; }
-.cal-day-group .task-row:last-child { border-bottom:none; }
-.cal-day-group .task-name { font-size:12px; }
+/* 🔥 v1.3.61: Kalender Jadwal jadi TABEL (TANGGAL | JAM | JUDUL | CHANNEL | STATUS)
+   — muat banyak, semua sebaris, judul dipotong "…" + tooltip; tanggal pakai
+   rowspan bila 1 hari ada >1 video. */
+.cal-table td { vertical-align:middle; }
+.cal-table td[rowspan] { vertical-align:top; padding-top:8px; }
 
 /* 🔥 v1.3.59: Musik Playlist rapat-padat (scoped #panel-playlist). */
 #panel-playlist .fg { margin-bottom:8px; }
@@ -3380,29 +3378,37 @@ function renderCalendar() {
   if (sumEl) sumEl.textContent = `${totalUpcoming} video terjadwal 30 hari ke depan · ${totalPending} menunggu approval · ${totalPaused} ditahan (channel dijeda) · ${pausedCount} channel dijeda` + (overdue.length ? ` · ⚠️ ${overdue.length} terlambat` : '');
 
   let html = '';
+  const calRows = [];
   if (overdue.length) {
-    html += `<div class="cal-day-group"><div class="cal-day-head"><span style="color:var(--accent2)">⚠️ TERLAMBAT — JADWAL SUDAH LEWAT (${overdue.length})</span></div>` +
-      overdue.map(({ dt, t }) => calDayRow(dt, t, chName, isPaused)).join('') + `</div>`;
+    calRows.push(`<tr><td colspan="5" style="color:var(--accent2);font-weight:700;font-size:12px;padding:10px 8px 4px">⚠️ TERLAMBAT — JADWAL SUDAH LEWAT (${overdue.length})</td></tr>`);
+    overdue.forEach(({ dt, t }) => calRows.push(calTableRow(dt, t, chName, isPaused, false,
+      `<td style="padding:6px 8px;white-space:nowrap;color:var(--accent2)">${escapeHtml(dt.toLocaleDateString('id-ID', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }))}</td>`)));
   }
   const keys = Object.keys(groups).sort();
   if (!keys.length && !overdue.length) {
     html += `<div style="text-align:center;padding:30px;color:var(--muted);font-family:var(--font-m);font-size:12px;border:1px dashed var(--border);border-radius:var(--r)">Tidak ada jadwal 30 hari ke depan.${chs.length ? '' : ' Tautkan channel & buat batch dulu.'}</div>`;
+  } else {
+    keys.forEach(key => {
+      const items = groups[key].sort((a, b) => a.dt - b.dt);
+      const d0 = items[0].dt;
+      const dayLbl = d0.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+      items.forEach(({ dt, t, fromHistory }, i) => {
+        const dateCell = i === 0
+          ? `<td style="padding:6px 8px;white-space:nowrap;font-weight:700"${items.length > 1 ? ` rowspan="${items.length}"` : ''}>${escapeHtml(dayLbl)}</td>`
+          : '';
+        calRows.push(calTableRow(dt, t, chName, isPaused, fromHistory, dateCell));
+      });
+    });
+    html += `<div style="overflow-x:auto"><table class="cal-table" style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed"><colgroup><col style="width:185px"><col style="width:56px"><col><col style="width:130px"><col style="width:150px"></colgroup><thead><tr style="text-align:left;color:var(--muted);font-family:var(--font-m);font-size:10px;border-bottom:1px solid var(--border)"><th style="padding:6px 8px">TANGGAL</th><th style="padding:6px 8px">JAM</th><th style="padding:6px 8px">JUDUL</th><th style="padding:6px 8px">CHANNEL</th><th style="padding:6px 8px">STATUS</th></tr></thead><tbody>${calRows.join('')}</tbody></table></div>`;
   }
-  keys.forEach(key => {
-    const items = groups[key].sort((a, b) => a.dt - b.dt);
-    const d0 = items[0].dt;
-    const dayLbl = d0.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-    html += `<div class="cal-day-group"><div class="cal-day-head"><span>📅 ${dayLbl}</span><span class="pill p-cyan">${items.length} video</span></div>` +
-      items.map(({ dt, t, fromHistory }) => calDayRow(dt, t, chName, isPaused, fromHistory)).join('') + `</div>`;
-  });
   daysEl.innerHTML = html;
 }
 
-function calDayRow(dt, t, chName, isPaused, fromHistory) {
+function calTableRow(dt, t, chName, isPaused, fromHistory, dateCell) {
   const yt = (t.blueprint && t.blueprint.yt_id) || t.yt_id || '';
   const s = fromHistory ? { txt: '📤 Sudah di-upload', cls: 'p-cyan' } : calTaskStatus(t, isPaused(yt));
   const hhmm = String(dt.getHours()).padStart(2, '0') + ':' + String(dt.getMinutes()).padStart(2, '0');
-  return `<div class="task-row"><div class="task-info"><div class="task-name">${escapeHtml(t.title || 'Task')}</div><div class="task-meta">${hhmm} · ${escapeHtml(chName(yt))}</div></div><span class="pill ${s.cls}" style="flex-shrink:0">${s.txt}</span></div>`;
+  return `<tr style="border-bottom:1px solid var(--border)">${dateCell}<td style="padding:6px 8px;white-space:nowrap">${hhmm}</td><td style="padding:6px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(t.title || 'Task')}">${escapeHtml(t.title || 'Task')}</td><td style="padding:6px 8px;white-space:nowrap">${escapeHtml(chName(yt))}</td><td style="padding:6px 8px;white-space:nowrap"><span class="pill ${s.cls}">${s.txt}</span></td></tr>`;
 }
 
 async function toggleChannelPause(yt_id, paused) {
@@ -6324,7 +6330,12 @@ function _oauthProjectOfClientId(cid) {
   return (cid || '').split('-')[0] || '—';
 }
 function _oauthClientLabel(c) {
-  return (c.name || c.project_id || '—') + ' (project ' + (c.project_id || '—') + ')';
+  // 🔥 v1.3.61: jangan dobel — bila nama == project, tampilkan sekali saja.
+  // "project-musik-1" (bukan "project-musik-1 (project project-musik-1)"),
+  // "desktop (project-musik-1)" bila nama & project berbeda.
+  const n = c.name || c.project_id || '—';
+  const p = c.project_id || '';
+  return (p && p !== n) ? n + ' (' + p + ')' : n;
 }
 function selectedTvClient() {
   const sel = document.getElementById('tv-client-select');
@@ -6511,8 +6522,8 @@ function renderOAuthMapping() {
     const linked = _oauthClients.filter(c => have.includes(c.client_id));
     const missing = _oauthClients.filter(c => !have.includes(c.client_id));
     const badges = _oauthClients.map(c => have.includes(c.client_id)
-      ? `<span class="pill p-green">Terhubung · ${escapeHtml(c.project_id || c.name || '—')}</span>`
-      : `<span class="pill p-muted">Belum · ${escapeHtml(c.project_id || c.name || '—')}</span>`).join(' ');
+      ? `<span class="pill p-green">Terhubung · ${escapeHtml(_oauthClientLabel(c))}${c.client_id === primary ? ' ★' : ''}</span>`
+      : `<span class="pill p-muted">Belum · ${escapeHtml(_oauthClientLabel(c))}</span>`).join(' ');
     const utamaCell = linked.length > 1
       ? `<select onchange="setChannelClient('${escapeHtml(ch.yt_id)}', this.value)" style="padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px">${linked.map(c =>
           `<option value="${escapeHtml(c.client_id)}"${c.client_id === primary ? ' selected' : ''}>${escapeHtml(_oauthClientLabel(c))}</option>`).join('')}</select>`
@@ -6529,10 +6540,12 @@ function renderOAuthMapping() {
       <td style="text-align:right">${actionBtn}</td>
     </tr>`;
   }).join('');
-  el.innerHTML = `<table class="monet-table" style="color:var(--text)">
+  el.innerHTML = `<table class="monet-table" style="color:var(--text);table-layout:fixed">
+    <colgroup><col style="width:150px"><col><col style="width:230px"><col style="width:110px"></colgroup>
     <thead><tr><th>Channel</th><th>Token</th><th>Utama</th><th style="text-align:right">Aksi</th></tr></thead>
     <tbody>${rows}</tbody>
-  </table>`;
+  </table>
+  <div style="color:var(--muted);font-size:11px;margin-top:6px">★ = client utama channel itu · Terhubung = channel sudah punya token dari client itu · Tautkan Ulang = device login untuk client yang belum ditautkan.</div>`;
 }
 
 function checkApiStatus() {

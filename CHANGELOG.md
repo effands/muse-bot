@@ -1,3 +1,6 @@
+## 1.3.63
+- Semua menu: judul besar di dalam halaman dihapus (Dashboard, Task Monitor, Kalender Jadwal, Gallery, Title Generator, Batch Creator, Shorts Muse, Settings) — judulnya sudah tertulis jelas di bar atas, jadi tidak dobel lagi. Deskripsi kecil di bawahnya tetap ada.
+
 ## 1.3.62
 - Musik Playlist: judul besar "♫ Musik Playlist" dihapus (tinggal deskripsi singkatnya); tombol "🔍 Riset Playlist" kini sejajar dalam 1 baris dengan keempat field — tepat di samping Durasi Max (grid 5 kolom; 2 kolom di layar sempit, 1 kolom di HP).
 - Riwayat Job Playlist: judul job kini berwarna sesuai temanya (1 tema = 1 warna tetap, dari palet 8 warna) + titik warna di depan judul; arahkan kursor ke judul untuk melihat nama temanya.

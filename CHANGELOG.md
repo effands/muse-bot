@@ -3,6 +3,9 @@
 Catatan perubahan per versi. Dibaca operator saat start dan ditampilkan di
 pesan restart Telegram, supaya Bos langsung tahu apa yang berubah.
 
+## 1.3.38
+- Pill monetisasi yang subs-nya sudah terpenuhi (≥1.000) sekarang kaca emas transparan + glow dan ikon ✅ — yang belum tetap abu-abu ⏳. Yang sudah "Siap Monet" / "Monetisasi Aktif" tetap hijau.
+
 ## 1.3.37
 - Judul di tabel channel dipendekkan dari tengah (awal + ujung tetap kelihatan, ujung itu sudut yang membedakan tiap channel); judul lengkap muncul saat kursor diarahkan.
 - Pill channel di kartu "Hari Ini" sekarang beda warna tiap channel (channel baru otomatis dapat warna baru yang beda); channel yang 0 video dibuat redup.

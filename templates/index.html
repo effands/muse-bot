@@ -523,6 +523,9 @@ body::before {
 .p-red { background:rgba(255,77,109,.1); color:var(--accent2); border:1px solid rgba(255,77,109,.2); }
 .p-yellow { background:rgba(255,201,77,.1); color:var(--yellow); border:1px solid rgba(255,201,77,.2); }
 .p-muted { background:rgba(58,84,112,.1); color:var(--text2); border:1px solid rgba(58,84,112,.2); }
+/* 🔥 v1.3.38: subs sudah terpenuhi (≥1.000) tapi jam tayang belum — kaca
+   emas transparan + glow, beda dari pill abu-abu (belum) dan hijau (siap). */
+.mon-subs-done { background:linear-gradient(135deg, rgba(250,204,21,.22), rgba(250,204,21,.06)); border:1px solid rgba(250,204,21,.6); color:var(--text); box-shadow:0 0 12px rgba(250,204,21,.35), inset 0 1px 0 rgba(255,255,255,.22); backdrop-filter:blur(2px); }
 
 .tbl { width:100%; border-collapse:collapse; font-size:12px; }
 .tbl th { font-family:var(--font-m); font-size:9px; color:var(--muted); letter-spacing:.12em; text-align:left; padding:0 0 10px; border-bottom:1px solid var(--border); }
@@ -6268,8 +6271,10 @@ function renderChannelTable() {
       : d.trend === 'down' ? '<span style="color:var(--red,#f43f5e)">▼ Turun</span>'
       : d.trend === 'flat' ? '<span style="color:var(--muted)">→ Datar</span>' : '—';
     const mon = d.monetization || {};
+    const subsDone = (mon.subs || 0) >= (mon.subs_required || 1000);
     const monBadge = mon.status === 'monetized' ? '<span class="pill p-green">💰 Monetisasi Aktif</span>'
       : mon.status === 'ready' ? '<span class="pill p-green">✅ Siap Monet (est.)</span>'
+      : subsDone ? '<span class="pill mon-subs-done">✅ ' + _fmtNum(mon.subs) + '/' + _fmtNum(mon.subs_required) + ' subs</span>'
       : '<span class="pill p-muted">⏳ ' + _fmtNum(mon.subs) + '/' + _fmtNum(mon.subs_required) + ' subs</span>';
     const v28title = d.snap_28d ? 'Periode ' + d.snap_28d + ' → ' + (d.snap_ref || '') : 'Butuh snapshot 28 hari';
     const v48title = d.snap_48h ? 'Periode ' + d.snap_48h + ' → ' + (d.snap_ref || '') : 'Butuh snapshot 2 hari';

@@ -2616,9 +2616,9 @@ def get_main_keyboard():
             [{"text": "📺 Cek Channel"}, {"text": "📂 Antrean Render"}],
             [{"text": "📅 Jadwal 7 Hari"}, {"text": "📈 Statistik Video"}],
             [{"text": "💰 Monetisasi"}, {"text": "❌ Task Gagal"}],
-            [{"text": "💡 10 Judul Sleep"}, {"text": "🎬 Ide Shorts"}],
-            [{"text": "📝 Template Deskripsi"}, {"text": "📐 Blueprint Resep"}],
-            [{"text": "📱 Buat Short"}, {"text": "🎥 Buat Video Long"}]
+            [{"text": "🎵 Buat Playlist"}, {"text": "🎬 Ide Shorts"}],
+            [{"text": "📱 Buat Short"}, {"text": "🎥 Buat Video Long"}],
+            [{"text": "💾 Backup"}, {"text": "📋 Laporan"}]
         ],
         "resize_keyboard": True,
         "one_time_keyboard": True
@@ -3710,6 +3710,7 @@ _MAIN_BUTTON_TEXTS = {
     "jadwal 7 hari", "statistik video", "monetisasi", "task gagal",
     "10 judul sleep", "ide shorts", "template deskripsi", "blueprint resep",
     "buat short", "buat video long", "buat playlist",
+    "backup", "laporan",
 }
 
 def _make_short_summary(d):
@@ -9054,7 +9055,7 @@ def handle_user_command(token, chat_id, text, message_id=None):
 
         # --- 💾 BACKUP OTOMATIS: /backup (buat + status) ---
         # Backup TIDAK PERNAH dikirim ke Telegram (berisi token) — hanya status.
-        if first_word in ("/backup",):
+        if first_word in ("/backup",) or clean_cmd == "backup":
             ok, msg, _d = _operator_post('/api/operator/backup_create', {}, timeout=10)
             if not ok:
                 ok2, _m2, st = _operator_post('/api/operator/backup_status', {}, timeout=10)

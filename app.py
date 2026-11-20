@@ -944,8 +944,7 @@ def _oauth_set_channel_primary_cred(channel, client_id):
 
 
 def _oauth_notify_quota_switch(channel_name, what, from_pid, to_pid, used=None, limit=None):
-    """Laporan Telegram saat auto-switch kuota berhasil (tanpa emoji —
-    send_tg_message juga men-strip emoji, v1.2.21). Untuk upload,
+    """Laporan Telegram saat auto-switch kuota berhasil. Untuk upload,
     sertakan hitungan hari ini (used/limit); untuk riset, cukup kabar
     pindahnya."""
     try:
@@ -1078,86 +1077,18 @@ def _task_set_progress(task_id, pct=None, stage=None, force=False):
 # ==========================================
 # 🛡️ SISTEM KETAHANAN (ANTI-STUCK & ANTI-LOST)
 # ==========================================
-# 🔥 v1.2.21: sanitizer emoji/ikon untuk SEMUA pesan Telegram.
-# User minta pesan bot jadi TEKS BIASA (tanpa ❌🥀😅👍 dsb.).
-# Pola karakter sama seperti _CLEAN_REMOVE_RE (sanitasi upload v1.2.13),
-# KECUALI dua hal yang dipertahankan sebagai tipografi biasa:
-#   - panah (U+2190–U+21FF) — dipakai di pesan ("→ jam 19:00")
-#   - box drawing (U+2500–U+257F) — pemisah "━━━" format rapi v1.2.20
-# Huruf (termasuk beraksen), angka, spasi, baris baru, dan SEMUA tanda
-# baca (termasuk Markdown *, `, _, | dan tipografi • — … "" '') tetap utuh.
-_TG_STRIP_EMOJI_RE = re.compile(
-    '['
-    '\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f'  # kontrol + C1 (tab/LF sengaja TIDAK di sini)
-    '\u00a9\u00ae\u00aa\u00ba\u00ad'   # © ® ª º soft-hyphen
-    '\u061c\u180e'                    # arabic letter mark, mongolian VS
-    '\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff'  # zero-width / ZWJ / bidi / BOM
-    '\ufe00-\ufe0f\ufe20-\ufe2f'      # variation selector
-    '\u20d0-\u20ff\u1ab0-\u1aff\u1dc0-\u1dff'  # combining enclosing (keycap)
-    '\u203c\u2049\u2122\u2139\u3030\u303d\u3297\u3299'  # ‼ ⁉ ™ ℹ 〰 〽 ㊗ ㊙
-    '\u2300-\u23ff'                   # simbol teknis (⌚ ⌛ ⏰)
-    '\u2460-\u24ff'                   # ① ② Ⓐ ⓨ ...
-    '\u2580-\u259f'                   # block (█ ▄ — bukan pemisah box drawing)
-    '\u25a0-\u25ff\u2600-\u26ff'      # geometri ★■▶, misc ☀♠♥♪
-    '\u2700-\u27bf\u2b00-\u2bff'      # dingbat ✓✗, misc ⬛⭐
-    '\u3200-\u32ff\u3300-\u33ff'      # enclosed CJK ㊗ ㍿ ...
-    '\u00b2\u00b3\u00b9\u2070-\u207f\u2080-\u208f'  # superskrip/subskrip
-    '\u2160-\u217f'                   # angka Romawi Ⅰ Ⅱ ...
-    '\ue000-\uf8ff'                   # private use
-    '\U0001f000-\U0001faff'           # semua emoji (plane 1)
-    '\U000f0000-\U000fffff\U00100000-\U0010ffff'  # private use plane 15/16
-    ']')
-
-
-def _strip_emoji_tg(text):
-    """Buang emoji & ikon dari teks Telegram → teks biasa.
-    Nada persona tetap di KATA-KATA (bukan glif). Spasi ganda sisa
-    penghapusan dirapikan per baris; indentasi awal baris (format rapi
-    v1.2.20) dipertahankan; baris kosong beruntun jadi maksimal dua."""
-    s = '' if text is None else str(text)
-    if not s:
-        return s
-    lines = []
-    for ln in s.split('\n'):
-        # Indentasi diambil dari baris ASLI (sebelum emoji dibuang) —
-        # spasi sisa emoji di awal baris ("✅ Ya" → " Ya") TIDAK dihitung
-        # sebagai indentasi.
-        indent = ln[:len(ln) - len(ln.lstrip(' '))]
-        rest = ' '.join(_TG_STRIP_EMOJI_RE.sub('', ln).strip().split())
-        lines.append(indent + rest if rest else '')
-    s = '\n'.join(lines)
-    s = re.sub(r'\n{3,}', '\n\n', s)
-    return s.strip('\n')
-
-
-def _sanitize_tg_markup(markup):
-    """Bersihkan label tombol (keyboard balasan & inline) dari emoji.
-    Callback data TIDAK disentuh (pencocokan tombol memakai itu).
-    Kembalikan salinan baru — dict asli pemanggil tidak diubah."""
-    if isinstance(markup, dict):
-        out = {}
-        for k, v in markup.items():
-            if k == 'text' and isinstance(v, str):
-                out[k] = _strip_emoji_tg(v)
-            else:
-                out[k] = _sanitize_tg_markup(v)
-        return out
-    if isinstance(markup, list):
-        return [_sanitize_tg_markup(v) for v in markup]
-    return markup
-
-
 def send_tg_message(msg, reply_markup=None):
     """Kirim pesan ke Telegram kalau token & chat_id tersimpan. Aman gagal silent.
     reply_markup opsional — dipakai untuk tombol inline (mis. Retry) dari operator.
-    🔥 v1.2.21: teks + label tombol dibersihkan dari emoji/ikon dulu."""
+    Emoji BOLEH di chat Telegram (aturan user 20 Nov 2026) — yang dilarang
+    hanya emoji di judul/deskripsi video YouTube (sanitasi upload v1.2.13)."""
     try:
         bot_config = load_bot_config()
         token, chat_id = bot_config.get('tg_token'), bot_config.get('tg_chat_id')
         if not token or not chat_id: return
-        payload = {"chat_id": chat_id, "text": _strip_emoji_tg(msg), "parse_mode": "Markdown"}
+        payload = {"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}
         if reply_markup is not None:
-            payload["reply_markup"] = _sanitize_tg_markup(reply_markup)
+            payload["reply_markup"] = reply_markup
         requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
             json=payload,
@@ -1181,9 +1112,9 @@ def send_tg_photo(photo_path, caption='', reply_markup=None):
         with open(photo_path, 'rb') as f:
             files = {'photo': (os.path.basename(photo_path), f, 'image/jpeg')}
             data = {'chat_id': chat_id,
-                    'caption': _strip_emoji_tg(caption or '')[:1024]}
+                    'caption': (caption or '')[:1024]}
             if reply_markup is not None:
-                data['reply_markup'] = json.dumps(_sanitize_tg_markup(reply_markup))
+                data['reply_markup'] = json.dumps(reply_markup)
             requests.post(f"https://api.telegram.org/bot{token}/sendPhoto",
                           files=files, data=data, timeout=30)
         return True
@@ -4415,14 +4346,7 @@ def background_worker():
                                 _zc = task.get('zumo_credits') or 0
                                 _pl_note = (f"\n🎵 Playlist Zumo ({len(_zt)} lagu"
                                             + (f", kredit Kie {_zc}" if _zc else "") + ")")
-                            # 🧹 v1.2.13: bila judul/deskripsi dibersihkan dan
-                            # belum disebut di preview approval (mode Full-Auto
-                            # tidak ada preview), sebutkan sekali di sini.
-                            _clean_note = ""
-                            if task.get('title_cleaned') and not task.get('cleaned_noted'):
-                                _clean_note = (f"\n🧹 Judul/deskripsi dibersihkan dari emoji/simbol "
-                                               f"agar aman di-upload: '{task['title']}'")
-                            notify_event("✅", task['title'], f"{_shorts_pfx}udah tayang di YouTube {ch_name} 😎\nJadwal tayang: {task['publish_date']}" + (f"\n🎙️ Suara: {_audio_note}" if _audio_note else "") + _pl_note + _clean_note)
+                            notify_event("✅", task['title'], f"{_shorts_pfx}udah tayang di YouTube {ch_name} 😎\nJadwal tayang: {task['publish_date']}" + (f"\n🎙️ Suara: {_audio_note}" if _audio_note else "") + _pl_note)
                             upload_berhasil = True
                             # 🔥 v1.2.25: catat kredensial/project yang
                             # benar-benar dipakai (untuk hitungan kuota
@@ -8801,21 +8725,6 @@ def _send_approval_previews(batch_id, channel_name, previews):
             f"📝 Deskripsi: {desc_txt}\n"
             f"Tag: {tags_txt}"
         )
-        # 🧹 v1.2.13: bila judul/deskripsi dibersihkan dari emoji/simbol,
-        # sebutkan sekali di preview (jujur ke Bos) — dan tandai task
-        # supaya pesan "Tayang!" nanti tidak mengulanginya lagi.
-        if pv.get('title_cleaned'):
-            text += (f"\n\n🧹 Judul/deskripsi dibersihkan dari emoji/simbol agar aman "
-                     f"di-upload: '{_tg_escape(pv.get('title', ''))}'")
-            try:
-                with db_lock:
-                    for _t in active_tasks:
-                        if _t.get('id') == pv.get('id'):
-                            _t['cleaned_noted'] = True
-                            break
-                save_tasks_db()
-            except Exception:
-                pass
         if idx == 0:
             text += "\n\n_Kalau oke tinggal pencet Setujui, saya yang eksekusi 💪_"
         markup = {"inline_keyboard": [
@@ -13746,7 +13655,7 @@ def telegram_reminder_worker():
                     
                     # Jika sisa waktu <= 24 Jam (dan belum kelewat jauh)
                     if timedelta(hours=0) < time_diff <= timedelta(hours=24):
-                        msg = _strip_emoji_tg(f"Notifikasi Ziqva Muse Bot\n\nChannel: *{_tg_escape(c['name'])}*\nStok jadwal video hampir habis!\nJadwal terakhir: {_tg_escape(last_date_str)}\n\nWaktunya buat video baru, Bos K!")
+                        msg = f"Notifikasi Ziqva Muse Bot\n\nChannel: *{_tg_escape(c['name'])}*\nStok jadwal video hampir habis!\nJadwal terakhir: {_tg_escape(last_date_str)}\n\nWaktunya buat video baru, Bos K!"
                         try:
                             # Kirim pesan ke Telegram
                             requests.post(
@@ -14070,7 +13979,7 @@ def save_telegram():
         try:
             requests.post(
                 f"https://api.telegram.org/bot{bot_config['tg_token']}/sendMessage", 
-                json={"chat_id": bot_config['tg_chat_id'], "text": _strip_emoji_tg("Ziqva Muse Bot: Notifikasi Telegram berhasil dihubungkan!")}
+                json={"chat_id": bot_config['tg_chat_id'], "text": "Ziqva Muse Bot: Notifikasi Telegram berhasil dihubungkan!"}
             )
         except: 
             pass

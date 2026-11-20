@@ -945,103 +945,6 @@ def _is_almost_ready(ready):
     return min(subs_prog, perf_prog) >= 0.5
 
 
-def _fmt_eta_days(missing, per_day):
-    """Perkiraan hari menuju target: '~N hari lagi'. None bila tidak bisa
-    dihitung (kecepatan nol/negatif atau target sudah tercapai). Angka
-    SELALU perkiraan — jangan pernah disajikan sebagai janji."""
-    if missing is None or missing <= 0:
-        return None
-    if per_day is None or per_day <= 0:
-        return None
-    days = math.ceil(missing / per_day)
-    if days <= 0:
-        return None
-    if days > 3650:
-        return f"~{_fmt_num(days)}+ hari lagi"
-    return f"~{days} hari lagi"
-
-
-def _monetization_analysis_line(ready, subs_per_day, hours_per_day, eta_hint, short=False):
-    """SATU baris analisis kekurangan + saran tindakan per channel (bahasa
-    sederhana, nada operator). subs_per_day / hours_per_day = kecepatan
-    dari 2 laporan terakhir (None bila belum bisa dihitung); eta_hint =
-    alasan kenapa kecepatan tidak bisa dihitung (atau None). short=True =
-    versi ringkas tanpa perkiraan waktu (dipakai bila channel banyak supaya
-    laporan tetap ≤4096 karakter).
-    TIDAK PERNAH menjanjikan hasil — semua waktu adalah 'Perkiraan ... (bila
-    kecepatan sekarang bertahan)'."""
-    if ready.get("status") == "monetized":
-        return "🔍 Sudah monetisasi — pertahankan konsistensi upload ya Bos."
-    if ready.get("status") == "ready":
-        return "🔍 Siap diajukan — cek YouTube Studio ya Bos (keputusan akhir ada di YouTube)."
-    subs = ready.get("subs") or 0
-    subs_req = ready.get("subs_required") or 1000
-    subs_ok = subs >= subs_req
-    watch = ready.get("watch_est")
-    watch_req = ready.get("watch_required") or 4000
-    hours_ok = watch is not None and watch >= watch_req
-    shorts_ok = bool(ready.get("shorts_complete")) and (ready.get("shorts_views") or 0) >= ready.get("shorts_required", 10_000_000)
-    subs_missing = max(0, subs_req - subs)
-    hours_missing = max(0, watch_req - watch) if watch is not None else None
-
-    def _eta_note(missing, per_day):
-        """' Perkiraan ~N hari lagi (bila kecepatan sekarang bertahan).' atau
-        penjelasan jujur kenapa tidak bisa dihitung."""
-        eta = _fmt_eta_days(missing, per_day)
-        if eta:
-            return f" Perkiraan {eta} (bila kecepatan sekarang bertahan)."
-        if per_day is not None and per_day <= 0:
-            return " Belum naik sejak laporan terakhir."
-        if eta_hint:
-            return f" {eta_hint}"
-        return " Belum bisa dihitung — butuh 2 laporan."
-
-    if short:
-        if hours_ok and not subs_ok:
-            return f"🔍 Subs kurang {_fmt_num(subs_missing)} — Shorts lebih sering, Bos."
-        if subs_ok and not (hours_ok or shorts_ok):
-            if watch is None:
-                return "🔍 Jam tayang belum bisa dihitung — buka Dashboard sekali ya Bos."
-            return (f"🔍 Jam kurang ~{_fmt_num(round(hours_missing))} jam (est.) — "
-                    f"perbanyak video long, Bos.")
-        if watch is None:
-            return (f"🔍 Subs kurang {_fmt_num(subs_missing)} • jam belum bisa dihitung — "
-                    f"fokus Shorts rutin dulu.")
-        subs_prog = subs / subs_req if subs_req else 0
-        perf_prog = max(watch / watch_req if watch_req else 0,
-                        (ready.get("shorts_views") or 0) / ready["shorts_required"] if ready.get("shorts_complete") else 0)
-        paling_kurang = "subs" if subs_prog <= perf_prog else "jam tayang"
-        return (f"🔍 Subs kurang {_fmt_num(subs_missing)} • jam kurang ~{_fmt_num(round(hours_missing))} jam (est.) — "
-                f"Shorts rutin + video long. Paling kurang: {paling_kurang}.")
-
-    if hours_ok and not subs_ok:
-        # Jam tayang cukup, subscriber kurang → Shorts harus lebih sering.
-        return (f"🔍 Jam tayang sudah cukup, subs kurang {_fmt_num(subs_missing)} lagi — "
-                f"Shorts harus lebih sering, Bos, Shorts paling cepat nambah subscriber."
-                + _eta_note(subs_missing, subs_per_day))
-    if subs_ok and not (hours_ok or shorts_ok):
-        if watch is None:
-            return ("🔍 Subs sudah cukup, jam tayang belum bisa dihitung — "
-                    "buka Dashboard sekali ya Bos biar snapshot keisi.")
-        return (f"🔍 Subs sudah cukup, jam tayang kurang ~{_fmt_num(round(hours_missing))} jam (est.) — "
-                f"perbanyak video long, Bos, biar jam tayangnya naik."
-                + _eta_note(hours_missing, hours_per_day))
-    # Keduanya kurang.
-    if watch is None:
-        return (f"🔍 Subs kurang {_fmt_num(subs_missing)} • jam tayang belum bisa dihitung — "
-                f"fokus Shorts rutin dulu buat nambah subs, sambil buka Dashboard sekali biar jam tayang kehitung."
-                + _eta_note(subs_missing, subs_per_day))
-    subs_prog = subs / subs_req if subs_req else 0
-    perf_prog = max(watch / watch_req if watch_req else 0,
-                    (ready.get("shorts_views") or 0) / ready["shorts_required"] if ready.get("shorts_complete") else 0)
-    paling_kurang = "subs" if subs_prog <= perf_prog else "jam tayang"
-    eta_txt = (_eta_note(subs_missing, subs_per_day) if paling_kurang == "subs"
-               else _eta_note(hours_missing, hours_per_day))
-    return (f"🔍 Subs kurang {_fmt_num(subs_missing)} • jam tayang kurang ~{_fmt_num(round(hours_missing))} jam (est.) — "
-            f"kombinasi: Shorts rutin buat nambah subs + video long buat jam tayang. "
-            f"Yang paling kurang: {paling_kurang}." + eta_txt)
-
-
 def _fetch_channel_stats_api(ch):
     """channels().list part=snippet,statistics untuk SATU channel (1 unit
     kuota). Dipakai hanya bila cache panel & cache operator sudah basi.
@@ -1234,13 +1137,13 @@ def _build_channel_stats_section(channels):
             block.append(f"  💰 ✅ Siap Monet (est.) — lewat {via} 🎉")
             block.append(f"     Subs {_fmt_num(subs)}/{_fmt_num(rule['subs'])} • ~{_fmt_num(round(watch90)) if watch90 is not None else '—'} jam/{_fmt_num(rule['watch_hours'])} jam (est.)")
         else:
-            watch_txt = f"~{_fmt_num(round(watch90))} jam" if watch90 is not None else "jam tayang: — (belum bisa dihitung)"
-            block.append(f"  💰 ⏳ Belum Siap — subs {_fmt_num(subs)}/{_fmt_num(rule['subs'])} • {watch_txt}/{_fmt_num(rule['watch_hours'])} jam (est.)")
-        # --- analisis kekurangan + saran tindakan ---
-        # Bila channel banyak (>4), pakai versi ringkas tanpa perkiraan waktu
-        # supaya laporan tetap ≤4096 karakter (jangan potong di tengah angka).
-        compact = len(stats) > 4
-        block.append("  " + _monetization_analysis_line(ready, subs_per_day, hours_per_day, eta_hint, short=compact))
+            subs_missing = max(0, rule['subs'] - subs)
+            if watch90 is not None:
+                hours_missing = max(0, rule['watch_hours'] - watch90)
+                watch_txt = f"~{_fmt_num(round(watch90))} jam (kurang ~{_fmt_num(round(hours_missing))} jam)"
+            else:
+                watch_txt = "jam tayang: —"
+            block.append(f"  💰 Subs kurang {_fmt_num(subs_missing)} • {watch_txt}")
         records.append({"status": ready["status"], "soon": _is_almost_ready(ready)})
         blocks.append(block)
     lines = ["📺 *Views & Subscriber per Channel:*"]
@@ -1253,7 +1156,6 @@ def _build_channel_stats_section(channels):
         if n_ready:
             parts.insert(1, f"{n_ready} channel siap diajukan")
         lines.append("💰 *Monetisasi:* " + " • ".join(parts))
-        lines.append("_Segera siap = syarat yang paling kurang sudah ≥50%._")
     if blocks:
         lines.append("")
         for i, block in enumerate(blocks):
@@ -1263,12 +1165,6 @@ def _build_channel_stats_section(channels):
             lines.extend(block)
     if len(stats) > 8:
         lines.append(f"_...dan {len(stats) - 8} channel lainnya (cek di panel)._")
-    if any_missing_baseline:
-        lines.append("_Delta mulai terlihat dari laporan berikutnya._")
-    lines.append(f"_Syarat monet saat ini: {rule['label']}._")
-    if rule.get("rule_next"):
-        lines.append(f"_{rule['rule_next']}._")
-    lines.append("_Jam tayang adalah estimasi (views × durasi rata-rata); angka resmi hanya di YouTube Studio._")
     return lines, new_snapshot
 
 
@@ -2528,8 +2424,6 @@ def build_detail_report():
             when = _fmt_snapshot_time(base.get('at', ''))
             when_txt = f" ({when})" if when else ""
             lines.append(f"   📈 Sejak laporan terakhir{when_txt}: 👁️ {'+' if dv >= 0 else ''}{_fmt_num(dv)} • 👥 {'+' if ds >= 0 else ''}{_fmt_num(ds)}")
-        else:
-            lines.append("   📈 Delta mulai terlihat dari laporan berikutnya.")
         lines.append(f"   {_channel_monet_compact(st, cache, history, today)}")
         top = sorted((per_ch.get(st["yt_id"]) or {}).get("videos", []),
                      key=lambda v: v.get("views", 0), reverse=True)[:3]
@@ -2603,89 +2497,9 @@ def get_main_keyboard():
         "one_time_keyboard": True
     }
 
-# 🔥 v1.2.21: sanitizer emoji/ikon untuk SEMUA pesan Telegram.
-# User minta pesan bot jadi TEKS BIASA (tanpa ❌🥀😅👍 dsb.).
-# Pola karakter sama seperti sanitasi upload v1.2.13 di app.py,
-# KECUALI dua hal yang dipertahankan sebagai tipografi biasa:
-#   - panah (U+2190–U+21FF) — dipakai di pesan ("→ jam 19:00")
-#   - box drawing (U+2500–U+257F) — pemisah "━━━" format rapi v1.2.20
-# Huruf (termasuk beraksen), angka, spasi, baris baru, dan SEMUA tanda
-# baca (termasuk Markdown *, `, _, | dan tipografi • — … "" '') tetap utuh.
-_TG_STRIP_EMOJI_RE = re.compile(
-    '['
-    '\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f'  # kontrol + C1 (tab/LF sengaja TIDAK di sini)
-    '\u00a9\u00ae\u00aa\u00ba\u00ad'   # © ® ª º soft-hyphen
-    '\u061c\u180e'                    # arabic letter mark, mongolian VS
-    '\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff'  # zero-width / ZWJ / bidi / BOM
-    '\ufe00-\ufe0f\ufe20-\ufe2f'      # variation selector
-    '\u20d0-\u20ff\u1ab0-\u1aff\u1dc0-\u1dff'  # combining enclosing (keycap)
-    '\u203c\u2049\u2122\u2139\u3030\u303d\u3297\u3299'  # ‼ ⁉ ™ ℹ 〰 〽 ㊗ ㊙
-    '\u2300-\u23ff'                   # simbol teknis (⌚ ⌛ ⏰)
-    '\u2460-\u24ff'                   # ① ② Ⓐ ⓨ ...
-    '\u2580-\u259f'                   # block (█ ▄ — bukan pemisah box drawing)
-    '\u25a0-\u25ff\u2600-\u26ff'      # geometri ★■▶, misc ☀♠♥♪
-    '\u2700-\u27bf\u2b00-\u2bff'      # dingbat ✓✗, misc ⬛⭐
-    '\u3200-\u32ff\u3300-\u33ff'      # enclosed CJK ㊗ ㍿ ...
-    '\u00b2\u00b3\u00b9\u2070-\u207f\u2080-\u208f'  # superskrip/subskrip
-    '\u2160-\u217f'                   # angka Romawi Ⅰ Ⅱ ...
-    '\ue000-\uf8ff'                   # private use
-    '\U0001f000-\U0001faff'           # semua emoji (plane 1)
-    '\U000f0000-\U000fffff\U00100000-\U0010ffff'  # private use plane 15/16
-    ']')
-
-
-def _strip_emoji_tg(text):
-    """Buang emoji & ikon dari teks Telegram → teks biasa.
-    Nada persona tetap di KATA-KATA (bukan glif). Spasi ganda sisa
-    penghapusan dirapikan per baris; indentasi awal baris (format rapi
-    v1.2.20) dipertahankan; baris kosong beruntun jadi maksimal dua."""
-    s = '' if text is None else str(text)
-    if not s:
-        return s
-    lines = []
-    for ln in s.split('\n'):
-        # Indentasi diambil dari baris ASLI (sebelum emoji dibuang) —
-        # spasi sisa emoji di awal baris ("✅ Ya" → " Ya") TIDAK dihitung
-        # sebagai indentasi.
-        indent = ln[:len(ln) - len(ln.lstrip(' '))]
-        rest = ' '.join(_TG_STRIP_EMOJI_RE.sub('', ln).strip().split())
-        lines.append(indent + rest if rest else '')
-    s = '\n'.join(lines)
-    s = re.sub(r'\n{3,}', '\n\n', s)
-    return s.strip('\n')
-
-
-def _sanitize_tg_markup(markup):
-    """Bersihkan label tombol dari emoji — KECUALI keyboard balasan
-    (reply keyboard): ikon di tombol menu (📊 Status Server dsb.) adalah
-    chrome UI dan HARUS tampil (🔥 v1.3.3; hapus emoji itu aturan untuk
-    JUDUL VIDEO YOUTUBE v1.2.13 — teks pesan Telegram tetap polos sebagai
-    keputusan terpisah yang dipertahankan). Inline keyboard tetap
-    dibersihkan seperti sebelumnya. Callback data TIDAK disentuh
-    (pencocokan tombol memakai itu). Kembalikan salinan baru — dict asli
-    pemanggil tidak diubah."""
-    if isinstance(markup, dict):
-        if 'keyboard' in markup:
-            # Keyboard balasan (menu utama): ikon dipertahankan.
-            import copy as _copy
-            return _copy.deepcopy(markup)
-        out = {}
-        for k, v in markup.items():
-            if k == 'text' and isinstance(v, str):
-                out[k] = _strip_emoji_tg(v)
-            else:
-                out[k] = _sanitize_tg_markup(v)
-        return out
-    if isinstance(markup, list):
-        return [_sanitize_tg_markup(v) for v in markup]
-    return markup
-
-
 def send_message(token, chat_id, text, parse_mode="Markdown", reply_markup=None):
-    # 🔥 v1.2.21: bersihkan emoji/ikon dulu — semua pesan bot jadi teks biasa.
-    text = _strip_emoji_tg(text)
-    if reply_markup is not None:
-        reply_markup = _sanitize_tg_markup(reply_markup)
+    # Emoji BOLEH di chat Telegram (aturan user 20 Nov 2026) — yang dilarang
+    # hanya emoji di judul/deskripsi video YouTube (sanitasi upload v1.2.13).
     # Pengaman batas 4096 karakter Telegram — pesan kepanjangan dipotong rapi.
     text = _clip(str(text or ''))
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -2715,12 +2529,11 @@ def send_message(token, chat_id, text, parse_mode="Markdown", reply_markup=None)
 _cb_in_flight = set()  # data callback yang sedang diproses (anti dobel-klik)
 
 def answer_callback(token, callback_query_id, text):
-    """Jawab callback query supaya tombol berhenti berputar di Telegram.
-    🔥 v1.2.21: teks toast juga dibersihkan dari emoji/ikon."""
+    """Jawab callback query supaya tombol berhenti berputar di Telegram."""
     try:
         requests.post(
             f"https://api.telegram.org/bot{token}/answerCallbackQuery",
-            json={"callback_query_id": callback_query_id, "text": _strip_emoji_tg(text)[:200]},
+            json={"callback_query_id": callback_query_id, "text": text[:200]},
             timeout=10
         )
     except Exception as e:
@@ -3809,10 +3622,6 @@ def _send_make_created_message(token, chat_id, kind, d, resp):
             lines.append(f"🎬 Background: video ({(resp or {}).get('bg_video_count', 0)} klip, disambung)")
         elif (resp or {}).get('bg_auto'):
             lines.append("🖼️ Background: gradien otomatis (galeri masih kosong — upload gambar sendiri di panel bila mau yang lebih bagus)")
-        # 🧹 v1.2.13: bila judul/deskripsi dibersihkan dari emoji/simbol,
-        # sebutkan sekali (jujur ke Bos) — judul final dari server.
-        if (resp or {}).get('title_cleaned'):
-            lines.append(f"🧹 Judul/deskripsi dibersihkan dari emoji/simbol agar aman di-upload: '{_tg_escape((resp or {}).get('title') or d.get('title', ''))}'")
     else:
         tasks = (resp or {}).get('tasks') or []
         lines = [
@@ -3821,9 +3630,6 @@ def _send_make_created_message(token, chat_id, kind, d, resp):
         ]
         for t in tasks[:7]:
             lines.append(f"• {_tg_escape(t.get('title', ''))} — `{_tg_escape(t.get('publish_date', ''))}`")
-        # 🧹 v1.2.13: sebutkan sekali bila ada judul/deskripsi yang dibersihkan.
-        if (resp or {}).get('title_cleaned'):
-            lines.append("🧹 Judul/deskripsi dibersihkan dari emoji/simbol agar aman di-upload.")
     if approval == 'pending':
         lines += ["",
                   "⏳ *Video menunggu persetujuan Bos dulu ya* — preview-nya bakal masuk ke chat ini, "
@@ -7701,9 +7507,6 @@ def _execute_nlu_create_shorts(token, chat_id, pending):
                         "upload gambar sendiri di panel bila mau yang lebih bagus.")
             else:
                 note = ""
-            # 🧹 v1.2.13: sebutkan sekali bila judul/deskripsi dibersihkan.
-            if (last_resp or {}).get('title_cleaned'):
-                note += " 🧹 Judul/deskripsi dibersihkan dari emoji/simbol agar aman di-upload."
             sched_note = (f" Jadwal: {_nlu_format_schedule(made_dates)}."
                           if made_dates else "")
             lines.append(f"✅ *{name}* — {made} Short dibuat, {stat}.{sched_note}{note}")

@@ -9657,20 +9657,22 @@ def _playlist_pixabay_queries(theme):
 
 
 def _pixabay_search_clips(theme, count=PLAYLIST_MAX_CLIPS, job_id=''):
-    """Cari footage 16:9 di Pixabay (API resmi), utamakan varian 'large'
-    1920x1080 supaya render playlist bisa pakai STREAM COPY (cepat).
-    v1.3.8: dulu selalu 'small' (~640px) -> render selalu 'normalize'
-    (re-encode tiap klip ke 1080p, lambat). Bila klip 1080p kurang dari
-    count, dilengkapi varian terbesar yang tersedia (medium/small/tiny)
-    - render kembali ke normalize seperti dulu, bukan gagal. Render
-    Zumo (spectrum + partikel) TIDAK memakai fungsi ini dan selalu
-    re-encode - copy memang tidak mungkin di sana.
+    """Cari footage 16:9 di Pixabay (API resmi), utamakan varian 'medium'
+    1280x720 (v1.3.17) supaya export playlist lebih kecil (terbukti
+    ~49% dari 1080p, hemat 51%) dan render tetap bisa pakai STREAM
+    COPY (cepat). v1.3.8: dulu selalu 'small' (~640px) -> render
+    selalu 'normalize' (re-encode tiap klip ke 1080p, lambat). Bila
+    klip 720p kurang dari count, dilengkapi varian lain yang tersedia
+    (large/medium/small/tiny) - render kembali ke normalize (ke 720p)
+    seperti dulu, bukan gagal. Render Zumo (spectrum + partikel)
+    TIDAK memakai fungsi ini dan selalu re-encode - copy memang
+    tidak mungkin di sana.
     Kembalikan (clips, masked_keys). Clips: [{url, width, height, tags}].
     Diacak (seed job_id) supaya tiap job beda susunan."""
     queries = _playlist_pixabay_queries(theme)
     seen = set()
     clips = []        # varian non-1080p (cadangan)
-    clips_1080 = []   # varian large 1920x1080 (bisa copy)
+    clips_720 = []    # varian medium 1280x720 (bisa copy)
     used_masks = []
     for q in queries:
         data, masked = _pixabay_api_get({
@@ -9681,7 +9683,7 @@ def _pixabay_search_clips(theme, count=PLAYLIST_MAX_CLIPS, job_id=''):
         for hit in data.get('hits', []):
             videos = hit.get('videos') or {}
             best = None
-            for size in ('large', 'medium', 'small', 'tiny'):
+            for size in ('medium', 'large', 'small', 'tiny'):
                 v = videos.get(size) or {}
                 url = v.get('url') or ''
                 try:
@@ -9700,17 +9702,17 @@ def _pixabay_search_clips(theme, count=PLAYLIST_MAX_CLIPS, job_id=''):
             if not best:
                 continue
             seen.add(best['url'])
-            if best['width'] == 1920 and best['height'] == 1080:
-                clips_1080.append(best)
+            if best['width'] == 1280 and best['height'] == 720:
+                clips_720.append(best)
             else:
                 clips.append(best)
-            if len(clips_1080) >= count:
+            if len(clips_720) >= count:
                 break
-        if len(clips_1080) >= count:
+        if len(clips_720) >= count:
             break
-    # Bila klip 1080p cukup, pakai HANYA itu (seragam -> copy bisa jalan);
-    # bila kurang, lengkapi dengan varian lain (render normalize seperti dulu).
-    chosen = clips_1080 if len(clips_1080) >= count else clips_1080 + clips
+    # Bila klip 720p cukup, pakai HANYA itu (seragam -> copy bisa jalan);
+    # bila kurang, lengkapi dengan varian lain (render normalize ke 720p).
+    chosen = clips_720 if len(clips_720) >= count else clips_720 + clips
     random.Random(job_id or '').shuffle(chosen)
     clips = chosen[:count]
     if len(clips) < PLAYLIST_MIN_CLIPS:
@@ -10795,7 +10797,7 @@ def _playlist_render(task_id, task, yt_id):
     apa pun klipnya — beda fps/timebase umumnya tetap bisa di-copy
     (concat demuxer merangkai PTS); bila copy gagal ATAU hasilnya
     tidak valid (durasi ngaco), baru normalisasi seminimal mungkin
-    (re-encode video ke 1080p30, audio tetap copy) lalu concat ulang.
+    (re-encode video ke 720p30, audio tetap copy) lalu concat ulang.
     Metode dicatat di task['playlist_render_method']. Durasi final =
     durasi audio.
     🔥 v1.2.21: (a) bila video final dari render sebelumnya masih ada
@@ -10855,7 +10857,7 @@ def _playlist_render(task_id, task, yt_id):
     if not infos:
         raise Exception('Tidak ada klip footage yang bisa dibaca.')
     uniform = len({(i['codec'], i['w'], i['h'], i['fps']) for i in infos}) == 1
-    is_1080p = infos[0]['w'] == 1920 and infos[0]['h'] == 1080
+    is_720p = infos[0]['w'] == 1280 and infos[0]['h'] == 720
     ff = get_ffmpeg_path()
     concat_txt = os.path.join(job_dir or BASE_UPLOAD, f"pl_concat_{task_id}.txt")
     os.makedirs(os.path.dirname(concat_txt) or BASE_UPLOAD, exist_ok=True)
@@ -10866,7 +10868,7 @@ def _playlist_render(task_id, task, yt_id):
     norm_files = []
     try:
         # v1.3.9: PAKSA copy — coba gabung apa adanya dulu, tanpa
-        # normalisasi di depan. (uniform/is_1080p hanya dipakai untuk
+        # normalisasi di depan. (uniform/is_720p hanya dipakai untuk
         # label metode di job, bukan untuk memutuskan jalur.)
         # Daftar concat: klip diulang sampai menutup durasi audio.
         with open(concat_txt, 'w', encoding='utf-8') as f:
@@ -10893,14 +10895,14 @@ def _playlist_render(task_id, task, yt_id):
             copy_ok = False
         if not copy_ok:
             # Copy gagal atau hasilnya tidak valid (durasi ngaco) →
-            # normalisasi semua klip ke 1080p30, lalu concat ulang.
+            # normalisasi semua klip ke 720p30, lalu concat ulang.
             method = 'normalize (fallback)'
             norm_paths = []
             for idx, info in enumerate(infos):
                 np_out = os.path.join(os.path.dirname(concat_txt), f"pl_norm_{task_id}_{idx}.mp4")
                 _run_ffmpeg_zoom(task_id,
                                  [ff, '-y', '-i', info['path'], '-vf',
-                                  'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30',
+                                  'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30',
                                   '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
                                   '-an', np_out],
                                  "FFmpeg Playlist Normalize Error",
@@ -10915,7 +10917,7 @@ def _playlist_render(task_id, task, yt_id):
                         f.write(_concat_list_line(p))
             _run_ffmpeg_zoom(task_id, cmd, "FFmpeg Playlist Concat Error",
                              total_sec=audio_dur, pct_base=70.0, pct_span=30.0)
-        elif not (uniform and is_1080p):
+        elif not (uniform and is_720p):
             method = 'copy (forced)' 
         if not os.path.exists(final_video) or os.path.getsize(final_video) == 0:
             raise Exception('Render playlist gagal (file final kosong).')

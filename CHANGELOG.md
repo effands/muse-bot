@@ -1,3 +1,9 @@
+## 1.3.60
+- Kalender Jadwal didesain ulang jadi daftar datar ala tabel: tanpa kartu bersarang — tiap hari hanya kepala tanggal bergaris bawah + baris video polos dipisah garis tipis (ikon kalender dihapus). Jauh lebih bersih & mudah dibaca; Task Monitor tidak ikut berubah.
+- Musik Playlist: keempat field (Channel, Tema, Durasi Min, Durasi Max) kini sejajar dalam 1 baris (4 kolom; 2 kolom di layar sempit).
+- Tabel video STATISTIK PER VIDEO: kolom CHANNEL kini tidak membungkus (nama channel selalu sebaris) — tabel tetap muat 100% tanpa scroll horizontal.
+- Tabel video: judul kini selalu sebaris (dipotong "…" bila kepanjangan, judul lengkap di tooltip) dan tanpa garis bawah — semua kolom rapi sejajar.
+
 ## 1.3.59
 - Kalender Jadwal dirapatkan: kartu per hari kini jauh lebih hemat tempat (header lebih tipis, baris video lebih rapat — padding & ikon diperkecil, judul 12px), satu hari dengan 1 video tidak lagi memakan satu layar penuh. Hanya kalender yang berubah; baris task di Task Monitor tetap seperti semula.
 - Shorts Muse: form Buat Short Baru dan Daftar Shorts Muse kini tersusun atas-bawah (1 kolom) — dulu bersebelahan, kolom daftar sempit sampai tombol "Tayang!" terpotong di tepi.

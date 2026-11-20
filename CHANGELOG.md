@@ -3,6 +3,10 @@
 Catatan perubahan per versi. Dibaca operator saat start dan ditampilkan di
 pesan restart Telegram, supaya Bos langsung tahu apa yang berubah.
 
+## 1.3.30
+- Bot Telegram sekarang paham perintah "jadwalkan 1 video ... jam 4 ... semua akun": 1 video playlist per channel, tayang beruntun tiap 15 menit mulai jam yang diminta (tema dan jam ditanyakan dulu bila belum disebut, lalu konfirmasi sebelum dibuat).
+- Perintah baru di Telegram tidak lagi ditelan pesan "draft sudah hangus" — bot mencoba memahami perintahnya dulu, baru memberi tahu bila draft memang sudah kedaluwarsa.
+
 ## 1.3.29
 - Perintah Telegram baru /hariini: ringkasan upload hari ini per channel, sama seperti kartu "Hari Ini" di Task Monitor.
 

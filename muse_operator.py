@@ -536,6 +536,14 @@ def _parse_natural_datetime(text, now=None):
         return None, None
     if hour > 23 or minute > 59:
         return None, None
+    if not mer:
+        # 🔥 v1.3.30: penanda waktu bisa berdiri SEBELUM jamnya
+        # ("nanti sore ... jam 4") — cari di seluruh teks. Catatan
+        # tafsiran di bawah ikut menyebutnya, jadi Bos bisa mengoreksi
+        # di ringkasan konfirmasi bila tafsirannya salah.
+        _mm = re.search(r'\b(pagi|siang|sore|petang|malam)\b', low)
+        if _mm:
+            mer = _mm.group(1)
     # Konversi meridiem. 'jam 12 malam' → 00:00; 'jam 12 siang' → 12:00.
     if mer == 'pagi':
         if hour == 12:
@@ -4395,6 +4403,17 @@ def _playlist_publish_now_date():
     return _wib_now().strftime('%Y-%m-%d %H:%M')
 
 
+def _stagger_publish_date(base, index, step_min=15):
+    """🔥 v1.3.30: 'YYYY-MM-DD HH:MM' + index*step menit — jadwal
+    beruntun per channel (channel ke-0 tayang jam dasar, ke-1 +15 mnt,
+    dst.). Gagal parse → kembalikan base apa adanya."""
+    try:
+        dt = datetime.datetime.strptime(base, '%Y-%m-%d %H:%M') + datetime.timedelta(minutes=step_min * int(index))
+        return dt.strftime('%Y-%m-%d %H:%M')
+    except Exception:
+        return base
+
+
 def _playlist_schedule_text(d):
     """Teks jadwal untuk ringkasan/pesan sukses: kalimat 'Langsung tayang'
     bila publish_now, else tanggal terjadwal + catatan tafsiran waktu
@@ -6740,6 +6759,15 @@ def _nlu_extract_playlist_theme(clean, channels):
     t = re.sub(r'\b(keempat|ketiga|kedua|kelima|keenam|ketujuh|kedelapan|kesembilan|kesepuluh)\b', ' ', t)
     t = re.sub(r'\byang ada saat ini\b', ' ', t)
     t = re.sub(r'\bku\b', ' ', t)
+    # 🔥 v1.3.30: segmen jadwal-waktu bukan tema — 'jadwalkan
+    # masing-masing 1 video untuk nanti sore di mulai jam 4 sampai
+    # semua akun selesai' temanya KOSONG, bukan 'masingmasing 1 nanti
+    # sore mulai jam 4 ...'. Polanya spesifik ('nanti sore', 'jam 4',
+    # '1 video') supaya 'lagu sore' tanpa 'nanti'/'jam' tetap aman.
+    t = re.sub(r'\bnanti\s+(pagi|siang|sore|petang|malam)\b', ' ', t)
+    t = re.sub(r'\b(jam|pukul)\s+\d{1,2}(?::\d{2})?\s*(pagi|siang|sore|petang|malam)?\b', ' ', t)
+    t = re.sub(r'\b\d+\s*video\b', ' ', t)
+    t = re.sub(r'\b(masingmasing|masing-masing|masing|mulai|sampai|akun|selesai)\b', ' ', t)
     t = re.sub(r'\bvideo\b', ' ', t)
     t = re.sub(r'\b(buatkan|bikin|buat|tolong|buatlah)\b', ' ', t)
     t = re.sub(r'\bmusik\s+playlist\b', ' ', t)
@@ -6943,7 +6971,10 @@ def parse_natural_command(text, channels):
     lanjutkan_channel, perpanjang_jadwal, ubah_mode, hapus,
     hentikan_antrean, tidak_dikenali, jadwal_bulan, laporan_detail,
     atur_jadwal (🔥 v1.2.20 — perintah baru Bagian B + sinonim/typo),
-    publish_now (🔥 v1.3.6 — tayangkan langsung video yang sudah dijadwalkan)."""
+    publish_now (🔥 v1.3.6 — tayangkan langsung video yang sudah dijadwalkan),
+    jadwalkan_playlist (🔥 v1.3.30 — jadwalkan 1 video playlist per
+    channel mulai jam tertentu, mis. 'jadwalkan 1 video untuk nanti
+    sore mulai jam 4 semua akun')."""
     clean = _nlu_clean(text)
     slots = {}
     conf = 0
@@ -7101,6 +7132,17 @@ def parse_natural_command(text, channels):
     # Dicek SEBELUM intent baca-saja lama supaya 'laporan lengkap' tidak
     # ditangkap /laporan biasa, 'jadwal bulan' tidak ditangkap /jadwal,
     # dan 'channel saya' tidak ditangkap cabang channel lama.
+    # --- 🔥 v1.3.30: jadwalkan playlist — 'jadwalkan 1 video ... jam 4
+    # ... semua akun'. Dicek SEBELUM _new_cmd (Bagian B fuzzy
+    # 'channel_list' mencuri kalimat yang mengandung kata 'channel')
+    # dan SEBELUM publish_now/'jadwal' supaya tidak dibaca sebagai
+    # laporan jadwal (dulu: intent 'jadwal', conf 70). Butuh kata
+    # 'video' supaya 'jadwalkan laporan' tidak ketangkap; publish_now
+    # tetap menang bila frasanya memang perintah tayang langsung.
+    elif (re.search(r'\b(jadwalkan|jadwalin)\b', clean) and 'video' in clean
+            and not _is_publish_now_order(clean)):
+        intent = 'jadwalkan_playlist'
+        conf = 75
     elif _new_cmd:
         intent, conf = _new_cmd[0], _new_cmd[1]
         if _new_cmd[2]:
@@ -7243,6 +7285,31 @@ def parse_natural_command(text, channels):
             conf += 15
         if create_verb:
             conf += 5
+    elif intent == 'jadwalkan_playlist':
+        # 🔥 v1.3.30: sama seperti buat_playlist (tema + footage +
+        # durasi + jam mulai) + jeda beruntun 15 menit per channel.
+        # Yang belum disebut TIDAK ditebak — ditanyakan lewat _nlu_advance.
+        px = _nlu_extract_pixabay_theme(clean)
+        if px:
+            slots['pixabay_theme'] = px
+            conf += 5
+        ndt, nnote = _parse_natural_datetime(text)
+        if ndt:
+            slots['publish_date'] = ndt
+            if nnote:
+                slots['publish_note'] = nnote
+            conf += 10
+        dur = _nlu_extract_playlist_duration(text)
+        if dur and dur[0] is not None:
+            slots['duration_min_sec'], slots['duration_max_sec'], slots['duration_note'] = dur
+            conf += 5
+        th = _nlu_extract_playlist_theme(clean, channels)
+        if th:
+            slots['playlist_theme'] = th
+            conf += 10
+        slots['schedule_stagger_min'] = 15
+        if slots.get('channels'):
+            conf += 15
     elif intent == 'buat_zumo':
         # Tema lagu + jumlah judul + jadwal (bila disebut). Channel ikut
         # slot 'channels' (diisi di atas bila disebut namanya — bila tidak,
@@ -7437,6 +7504,24 @@ def _nlu_describe(pending):
             if slots.get('publish_note'):
                 base += f" ({slots['publish_note']})"
         return base
+    if intent == 'jadwalkan_playlist':
+        th = slots.get('playlist_theme') or 'musik (tanya dulu)'
+        px = slots.get('pixabay_theme') or 'auto (dari tema musik)'
+        base = f"jadwalkan 1 video playlist tema {th} per channel untuk {ch} (footage: {px})"
+        if slots.get('duration_note'):
+            base += f", durasi {slots['duration_note']}"
+        if slots.get('publish_date'):
+            base += f", mulai {slots['publish_date']}"
+            if slots.get('publish_note'):
+                base += f" ({slots['publish_note']})"
+            _chs = slots.get('channels') or []
+            if len(_chs) > 1:
+                lines = []
+                for _i, _yt in enumerate(_chs):
+                    _nm = _nlu_channel_names([_yt])
+                    lines.append(f"• {_nm[0] if _nm else _yt}: {_stagger_publish_date(slots['publish_date'], _i, slots.get('schedule_stagger_min') or 15)}")
+                base += " — jadwal:\n" + "\n".join(lines)
+        return base
     if intent == 'buat_zumobank':
         th = slots.get('zumo_theme') or 'lagu (tanya dulu)'
         ch_zumo = ', '.join(names) if names else 'Cozy Sax Relaxing (default, bisa diubah)'
@@ -7594,7 +7679,7 @@ def _nlu_advance(token, chat_id, pending):
     intent = pending.get('intent')
     chans = load_channels()
     # --- Channel: isi dari 'all' / cek apakah sudah ada. ---
-    if intent in ('buat_short', 'buat_long', 'buat_playlist', 'perpanjang_jadwal', 'ubah_mode',
+    if intent in ('buat_short', 'buat_long', 'buat_playlist', 'jadwalkan_playlist', 'perpanjang_jadwal', 'ubah_mode',
                   'jeda_channel', 'lanjutkan_channel', 'hapus', 'hentikan_antrean',
                   'atur_jadwal'):
         if slots.get('channels') == 'all':
@@ -7621,7 +7706,7 @@ def _nlu_advance(token, chat_id, pending):
                 _save_nlu_pending(chat_id, pending)
                 _nlu_ask_channel(token, chat_id, pending, multi=False)
                 return
-        elif intent == 'buat_playlist':
+        elif intent in ('buat_playlist', 'jadwalkan_playlist'):
             # 🔥 v1.3.2: playlist BOLEH multi-channel (riset + auto-pick
             # per channel di eksekusi). Angka yang sama dengan jumlah
             # channel yang ada ("ke 4 channel" / "4 channel") = semua.
@@ -7713,11 +7798,18 @@ def _nlu_advance(token, chat_id, pending):
     # --- Tema musik (buat playlist): bila belum disebut, tanyakan dulu
     # (tidak ditebak) — jawaban bebas ditangkap cabang 'theme' di
     # _nlu_try_complete_pending. ---
-    if intent == 'buat_playlist' and not slots.get('playlist_theme') and not slots.get('playlist_source_url'):
+    if intent in ('buat_playlist', 'jadwalkan_playlist') and not slots.get('playlist_theme') and not slots.get('playlist_source_url'):
         pending['awaiting'] = 'theme'
         _save_nlu_pending(chat_id, pending)
         send_message(token, chat_id,
                      "Tema musik playlist-nya apa Bos? 🤔\n(mis. `lagu malaysia lawas`, `lofi`, `piano santai`)")
+        return
+    # --- Jam mulai (jadwalkan playlist): bila belum disebut, tanyakan dulu. ---
+    if intent == 'jadwalkan_playlist' and not slots.get('publish_date'):
+        pending['awaiting'] = 'publish_time'
+        _save_nlu_pending(chat_id, pending)
+        send_message(token, chat_id,
+                     "Mulai jam berapa Bos? 🕓\n(mis. `jam 4 sore` atau `jam 16:00`)")
         return
     # --- Tema lagu (buat zumo / bank): bila belum disebut, tanyakan
     # dulu (tidak ditebak) — jawaban bebas ditangkap cabang 'theme' di
@@ -7768,7 +7860,7 @@ def _nlu_advance(token, chat_id, pending):
                 pass
     # --- Konfirmasi bila aksi membuat konten / berbahaya / matikan pengaman. ---
     needs_confirm = (
-        intent in ('buat_short', 'buat_long', 'buat_playlist', 'buat_zumo',
+        intent in ('buat_short', 'buat_long', 'buat_playlist', 'jadwalkan_playlist', 'buat_zumo',
                    'buat_zumobank', 'buat_zumorakit', 'hapus', 'hentikan_antrean')
         or (intent == 'ubah_mode' and slots.get('mode') == 'auto')
     )
@@ -8111,7 +8203,7 @@ def _execute_nlu_create_playlist_multi(token, chat_id, pending, chs):
     lines = []
     made = []
     _last_tier_label = None
-    for ch in chs:
+    for _ci, ch in enumerate(chs):
         name = _channel_display_name(ch)
         yt = ch.get('yt_id')
         if _src_url:
@@ -8147,6 +8239,8 @@ def _execute_nlu_create_playlist_multi(token, chat_id, pending, chs):
                 continue
         if slots.get('publish_date'):
             pub = slots['publish_date']
+            if pending.get('intent') == 'jadwalkan_playlist':
+                pub = _stagger_publish_date(pub, _ci, slots.get('schedule_stagger_min') or 15)
         elif slots.get('publish_now'):
             pub = _playlist_publish_now_date()
         else:
@@ -8300,6 +8394,10 @@ def _nlu_execute(token, chat_id, pending):
         _execute_nlu_create_long(token, chat_id, pending)
     elif kind == 'buat_playlist':
         _execute_nlu_create_playlist(token, chat_id, pending)
+    elif kind == 'jadwalkan_playlist':
+        _chs = [c for c in load_channels()
+                if c.get('yt_id') in ((pending.get('slots') or {}).get('channels') or [])]
+        _execute_nlu_create_playlist_multi(token, chat_id, pending, _chs)
     elif kind == 'buat_zumo':
         _execute_nlu_create_zumo(token, chat_id, pending)
     elif kind == 'buat_zumobank':
@@ -8524,6 +8622,16 @@ def _nlu_try_complete_pending(token, chat_id, raw_cmd, clean_cmd):
         mode = _nlu_extract_mode(clean_cmd)
         if mode:
             slots['mode'] = mode
+            _save_nlu_pending(chat_id, pending)
+            _nlu_advance(token, chat_id, pending)
+            return True
+        return False
+    if awaiting == 'publish_time':
+        # 🔥 v1.3.30: jawaban jam mulai ("jam 4 sore" / "jam 16:00").
+        # Tidak bisa diparse → biarkan di-parse ulang sebagai perintah segar.
+        ndt, _nnote = _parse_natural_datetime(raw_cmd)
+        if ndt:
+            slots['publish_date'] = ndt
             _save_nlu_pending(chat_id, pending)
             _nlu_advance(token, chat_id, pending)
             return True
@@ -9016,7 +9124,14 @@ def handle_user_command(token, chat_id, text, message_id=None):
             # keyboard tetap jalan — draft basi sudah dihapus
             # _load_make_draft, jadi diam-diam saja. Sebelum ini, tap
             # 'Jadwal 7 Hari' malah dijawab pesan draft hangus.
+            # 🔥 v1.3.30: TAPI pesan bebas bisa jadi PERINTAH BARU
+            # ("jadwalkan ... jam 4"), bukan jawaban draft — coba NLU
+            # dulu; bila NLU mengenalinya, jalankan; bila tidak, baru
+            # beri tahu draft hangus (10:04 WIB 2026-11-20: perintah
+            # jadwal sore Bos ditelan pesan hangus ini).
             if not first_word.startswith("/") and clean_cmd not in _MAIN_BUTTON_TEXTS:
+                if _handle_nlu_message(token, chat_id, raw_cmd, clean_cmd):
+                    return
                 send_message(token, chat_id,
                              "⌛ *Eh Bos, draft buat videonya sudah hangus (>30 menit tidak ada kabar)* 😅\n"
                              "Ketik /buatshort atau /buatlong untuk mulai lagi ya Bos!")
@@ -9054,7 +9169,10 @@ def handle_user_command(token, chat_id, text, message_id=None):
         if isinstance(_aj, dict) and _aj.get("expired"):
             # 🔥 v1.3.21: sama seperti draft buat video — perintah "/"
             # dan tombol keyboard tetap jalan, draft basi dihapus diam-diam.
+            # 🔥 v1.3.30: sama seperti di atas — perintah baru didahulukan.
             if not first_word.startswith("/") and clean_cmd not in _MAIN_BUTTON_TEXTS:
+                if _handle_nlu_message(token, chat_id, raw_cmd, clean_cmd):
+                    return
                 send_message(token, chat_id,
                              "⌛ *Eh Bos, pengaturan jadwalnya sudah hangus (>30 menit tidak ada kabar)* 😅\n"
                              "Ketik /aturjadwal untuk mulai lagi ya Bos!")

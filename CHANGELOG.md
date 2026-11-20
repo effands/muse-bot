@@ -3,6 +3,10 @@
 Catatan perubahan per versi. Dibaca operator saat start dan ditampilkan di
 pesan restart Telegram, supaya Bos langsung tahu apa yang berubah.
 
+## 1.3.37
+- Judul di tabel channel dipendekkan dari tengah (awal + ujung tetap kelihatan, ujung itu sudut yang membedakan tiap channel); judul lengkap muncul saat kursor diarahkan.
+- Pill channel di kartu "Hari Ini" sekarang beda warna tiap channel (channel baru otomatis dapat warna baru yang beda); channel yang 0 video dibuat redup.
+
 ## 1.3.36
 - Task Monitor punya kartu ke-4 "Dijadwalkan": jumlah video yang sudah dijadwalkan tapi belum tayang + jam tayang terdekat (video yang gagal tidak dihitung).
 

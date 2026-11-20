@@ -3009,6 +3009,14 @@ function statusPillHTML(st, small) {
   const sty = small ? ' style="font-size:9px;padding:2px 6px"' : '';
   return '<span class="pill ' + (isConn ? 'p-green' : 'p-red') + '"' + sty + ' title="Status: ' + escapeHtml(s) + '">' + escapeHtml(txt) + '</span>';
 }
+// 🔥 v1.3.37: judul tabel dipendekkan dari TENGAH (awal + ujung tetap
+// kelihatan — ujung itu sudut SEO yang membedakan tiap channel); judul
+// lengkapnya ada di tooltip (title) saat kursor diarahkan.
+function shortTitle(t) {
+  const s = String(t || 'Video');
+  if (s.length <= 60) return s;
+  return s.slice(0, 42) + '…' + s.slice(-16);
+}
 // 🔥 v1.3.34: UPDATE TERAKHIR per channel — entri history 'Tayang' terbaru
 // (waktu tayang paling akhir). Jenis: Short (kind shorts_muse), Playlist
 // (blueprint playlist_job_id), Long (lainnya). Gagal tidak dihitung.
@@ -3037,11 +3045,11 @@ function channelTableHtml(list, withMode, showNext, fill) {
     const nx = showNext ? nextScheduleFor(c.yt_id) : null;
     const nextCell = !showNext ? '' : (!nx
       ? `<td style="color:var(--muted);font-family:var(--font-m);font-size:11px;white-space:nowrap">Belum ada video dijadwalkan</td>`
-      : `<td style="font-size:11px"><span style="display:flex;gap:6px;align-items:baseline;min-width:0"><span style="white-space:nowrap;color:var(--muted)">📅 ${escapeHtml(shortDate(nx.time))}</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">${escapeHtml(nx.title || 'Video')}</span>${((typeof serverData !== 'undefined' && serverData.history) || []).includes(nx) ? '<span style="white-space:nowrap;color:var(--muted);font-size:10px">· sudah di-upload</span>' : ''}</span></td>`);
+      : `<td style="font-size:11px"><span style="display:flex;gap:6px;align-items:baseline;min-width:0"><span style="white-space:nowrap;color:var(--muted)">📅 ${escapeHtml(shortDate(nx.time))}</span><span title="${escapeHtml(nx.title || 'Video')}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">${escapeHtml(shortTitle(nx.title))}</span>${((typeof serverData !== 'undefined' && serverData.history) || []).includes(nx) ? '<span style="white-space:nowrap;color:var(--muted);font-size:10px">· sudah di-upload</span>' : ''}</span></td>`);
     const lu = showNext ? lastUpdateFor(c.yt_id) : null;
     const lastCell = !showNext ? '' : (!lu
       ? `<td style="color:var(--muted);font-family:var(--font-m);font-size:11px;white-space:nowrap">Belum ada video tayang</td>`
-      : `<td style="font-size:11px"><span style="display:flex;gap:6px;align-items:baseline;min-width:0"><span style="white-space:nowrap;color:var(--muted)">${lu.icon} ${lu.type} · ${escapeHtml(shortDate(lu.time))}</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">${escapeHtml(lu.title || 'Video')}</span></span></td>`);
+      : `<td style="font-size:11px"><span style="display:flex;gap:6px;align-items:baseline;min-width:0"><span style="white-space:nowrap;color:var(--muted)">${lu.icon} ${lu.type} · ${escapeHtml(shortDate(lu.time))}</span><span title="${escapeHtml(lu.title || 'Video')}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">${escapeHtml(shortTitle(lu.title))}</span></span></td>`);
     return `<tr>`
       + `<td title="${escapeHtml(c.name)}" style="font-weight:700;font-size:12px;color:var(--text);white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis">${escapeHtml(c.name)}</td>`
       + `<td style="white-space:nowrap">${statusPillHTML(c.status, true)}`
@@ -5539,10 +5547,17 @@ function renderTodaySummary() {
   });
   const totalEl = document.getElementById('today-total');
   if (totalEl) totalEl.textContent = ok + ' video' + (fail ? ' • ' + fail + ' gagal' : '');
-  el.innerHTML = (channels || []).map(c => {
+  // 🔥 v1.3.37: tiap channel punya warna sendiri (sudut emas 137.5° per
+  // urutan channel — selalu menyebar, channel baru dapat warna baru yang
+  // beda dari semua yang sudah ada). Channel 0 video dibuat redup.
+  const chHue = (i) => Math.round((i * 137.5) % 360);
+  el.innerHTML = (channels || []).map((c, i) => {
     const n = per[c.yt_id] || 0;
-    const cls = n > 0 ? 'pill p-green' : 'pill p-muted';
-    return '<span class="' + cls + '" style="font-size:10px;padding:3px 8px;margin:0 6px 6px 0" title="' + escapeHtml(c.name) + ' — ' + n + ' video hari ini">' + escapeHtml(c.name) + ' <b>' + n + '</b></span>';
+    const hue = chHue(i);
+    const style = 'font-size:10px;padding:3px 8px;margin:0 6px 6px 0'
+      + ';background:hsl(' + hue + ',70%,45%);border:1px solid hsl(' + hue + ',70%,38%);color:#fff'
+      + (n === 0 ? ';opacity:.45' : '');
+    return '<span class="pill" style="' + style + '" title="' + escapeHtml(c.name) + ' — ' + n + ' video hari ini">' + escapeHtml(c.name) + ' <b>' + n + '</b></span>';
   }).join('') || '<span style="color:var(--muted)">Belum ada channel tertaut.</span>';
 }
 function renderTasks() {

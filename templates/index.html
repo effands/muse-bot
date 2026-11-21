@@ -6650,6 +6650,7 @@ function analyticsMakeUrl() {
   if (box) box.style.display = 'block';
   if (out) out.value = 'Membuat link…';
   fetch('/api/analytics_auth_url', { method: 'POST', body: JSON.stringify({ yt_id: yt, client_id: cid }) })
+    .then(r => r.json())
     .then(d => {
       if (d.status !== 'success') { toast(d.message || 'Gagal membuat link.', 'error'); if (out) out.value = ''; return; }
       if (out) out.value = d.auth_url || '';
@@ -6666,6 +6667,7 @@ function analyticsSaveCode() {
   const code = ((document.getElementById('an-code') || {}).value || '').trim();
   if (!yt || !code) { toast('Pilih channel dan tempel kodenya dulu.', 'error'); return; }
   fetch('/api/analytics_auth_code', { method: 'POST', body: JSON.stringify({ yt_id: yt, client_id: cid, code }) })
+    .then(r => r.json())
     .then(d => {
       if (d.status !== 'success') { toast(d.message || 'Kode ditolak.', 'error'); return; }
       toast(d.message || 'Analytics aktif.', 'success');
@@ -6689,6 +6691,7 @@ function channelAddMakeUrl() {
   if (box) box.style.display = 'block';
   if (out) out.value = 'Membuat link…';
   fetch('/api/channel_add_url', { method: 'POST', body: JSON.stringify({ client_id: cid }) })
+    .then(r => r.json())
     .then(d => {
       if (d.status !== 'success') { toast(d.message || 'Gagal membuat link.', 'error'); if (out) out.value = ''; return; }
       if (out) out.value = d.auth_url || '';
@@ -6704,6 +6707,7 @@ function channelAddSaveCode() {
   const code = ((document.getElementById('ca-code') || {}).value || '').trim();
   if (!code) { toast('Tempel kodenya dulu.', 'error'); return; }
   fetch('/api/channel_add_code', { method: 'POST', body: JSON.stringify({ client_id: cid, code }) })
+    .then(r => r.json())
     .then(d => {
       if (d.status === 'confirm') { showChannelAddConfirm(d); return; }
       if (d.status !== 'success') { toast(d.message || 'Kode ditolak.', 'error'); return; }
@@ -6724,6 +6728,7 @@ function showChannelAddConfirm(d) {
 }
 function channelAddConfirm() {
   fetch('/api/channel_add_confirm', { method: 'POST', body: JSON.stringify({}) })
+    .then(r => r.json())
     .then(d => {
       if (d.status !== 'success') { toast(d.message || 'Gagal menambah channel.', 'error'); return; }
       toast(d.message || 'Channel ditambahkan.', 'success');
@@ -7148,6 +7153,7 @@ function closeAddChannelModal() {
 }
 function confirmDeviceAddChannel() {
   fetch('/api/channel_add_confirm', { method: 'POST', body: JSON.stringify({}) })
+    .then(r => r.json())
     .then(data => {
       const st = document.getElementById('add-ch-status');
       if (data.status === 'success') {

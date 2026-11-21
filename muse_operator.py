@@ -9803,6 +9803,57 @@ def _nlu_try_complete_pending(token, chat_id, raw_cmd, clean_cmd):
     return False
 
 
+def _riset_parse_theme(raw_cmd):
+    """Ekstrak tema riset dari '/riset <tema>' atau 'risetkan saya tentang <tema>'.
+    Kembalikan tema (apa adanya, dari teks mentah — 'R&B' tetap 'R&B'),
+    '' bila perintah riset tanpa tema (minta tema dulu), None bila bukan
+    perintah riset. Trigger HARUS di awal kalimat supaya kata 'riset' di
+    tengah kalimat (mis. jawaban langkah wizard) tidak ketangkap."""
+    t = (raw_cmd or '').strip()
+    if not t:
+        return None
+    parts = t.split(None, 1)
+    if parts and parts[0].lower() == '/riset':
+        return parts[1].strip() if len(parts) > 1 else ''
+    low = t.lower()
+    if low in ('riset', 'risetkan'):
+        return ''
+    m = re.match(r'(?i)^riset(kan)?\s+(saya\s+)?(tentang|soal|tema)?\s*(.+?)\s*$', t)
+    if m:
+        theme = m.group(4).strip()
+        # Tema tidak boleh hanya kata pemicu ("Risetkan saya" -> tema kosong,
+        # bukan "saya"; regex di atas bisa backtrack melewati grup opsional).
+        if re.match(r'(?i)^(saya|tentang|soal|tema)(\s+(saya|tentang|soal|tema))*$', theme):
+            return ''
+        return theme
+    if re.match(r'(?i)^riset(kan)?(\s+saya)?(\s+(tentang|soal|tema))?\s*$', t):
+        return ''
+    return None
+
+
+def _handle_riset(token, chat_id, message_id, raw_cmd, theme):
+    """Perintah riset tema: teruskan ke Muse lewat jembatan (source='riset')
+    supaya risetnya mengikuti playbook data (top 20 + 8 thumbnail + arah
+    background) — operator tidak bisa melihat thumbnail, jadi risetnya
+    dikerjakan Muse, hasilnya kembali ke chat ini."""
+    if not theme:
+        send_message(token, chat_id,
+                     "🔍 *Riset tema apa Bos?* 😌\nContoh: `/riset musik R&B 90an` atau `Risetkan saya tentang Musik Afrobeats 90s`")
+        return True
+    ok = _bridge_forward(token, chat_id, message_id, raw_cmd,
+                         source='riset', context_extra={'theme': theme})
+    if ok:
+        send_message(token, chat_id,
+                     f"🔍 *Siap Bos, riset _{_tg_escape(theme)}_ dimulai* 😌\n"
+                     "Saya kumpulkan dulu datanya — 20 video teratas + thumbnail-nya — "
+                     "hasilnya (arah background + thumbnail + contoh judul) saya kirim ke sini "
+                     "kira-kira 10 menit lagi ya Bos.")
+    else:
+        send_message(token, chat_id,
+                     "🔍 *Risetnya sudah saya teruskan ke Muse Bos* 😌 — tunggu sebentar ya, hasilnya saya kirim ke sini.")
+    return True
+
+
 def _handle_nlu_message(token, chat_id, raw_cmd, clean_cmd):
     """Terjemahkan pesan bebas. True = ditangani (dieksekusi / dikonfirmasi /
     diklarifikasi); False = tidak dikenali (biarkan cabang lama)."""
@@ -9877,6 +9928,7 @@ _BOT_COMMANDS = [
     ('cta', 'Ide teks CTA buat Shorts', 'konten', ''),
     ('ideashorts', 'Hook + naskah singkat Shorts', 'konten', '[niche]'),
     ('blueprint', 'Resep settingan video', 'konten', ''),
+    ('riset', 'Riset tema baru dari video teratas YouTube (data + thumbnail + arah background)', 'konten', '<tema>'),
     ('buatshort', 'Buat Shorts Muse terpandu — cuma 3 pertanyaan', 'buat', ''),
     ('buatlong', 'Buat batch video long 60–80 menit terpandu', 'buat', ''),
     ('playlist', 'Buat Playlist baru (bot bertanya satu per satu) atau /playlist status', 'buat', '[status]'),
@@ -10358,6 +10410,17 @@ def handle_user_command(token, chat_id, text, message_id=None):
                     return
                 # Bukan jawaban atas langkah ini → biarkan cabang lain
                 # (NLU / perintah baca) yang menangani pesannya.
+
+        # 🔥 v1.3.92 — RISET TEMA (/riset / "risetkan saya tentang X"):
+        # diteruskan ke Muse lewat jembatan (source='riset') supaya risetnya
+        # mengikuti playbook data (top 20 + 8 thumbnail + arah background).
+        # Dicek di sini (setelah draft, sebelum menu/NLU) supaya tidak
+        # ketangkap cabang buat video — kata "musik" saja tanpa "riset"
+        # BUKAN perintah riset (itu perintah buat lagu/playlist).
+        _riset_theme = _riset_parse_theme(raw_cmd)
+        if _riset_theme is not None:
+            _handle_riset(token, chat_id, message_id, raw_cmd, _riset_theme)
+            return
 
         # 1. MENU / START — teks dibangun dari _BOT_COMMANDS (satu sumber
         # dengan setMyCommands, supaya daftarnya tidak pernah beda).

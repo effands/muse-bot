@@ -2,6 +2,7 @@ import os
 import re
 import sys
 import math
+import random
 import time
 import json
 import socket
@@ -3805,6 +3806,23 @@ def handle_callback_query(token, chat_id, callback_query):
                         else "Siap, pakai jadwal berikutnya! 🕐")
         _make_ask_step(token, chat_id, draft)
         return
+    # 🔥 v1.3.89: ex:<teks> = contoh acak di wizard dipencet (tema
+    # playlist / footage pixabay / tema short). Diproses PERSIS seperti
+    # jawaban ketikan via _handle_make_answer — jadi tidak ada logika
+    # ganda. Draft yang tidak di langkah itu dijawab "tidak berlaku".
+    if data.startswith('ex:'):
+        example = data[3:].strip()
+        draft = _load_make_draft(chat_id)
+        kind = (draft or {}).get('kind')
+        step = (draft or {}).get('step')
+        ok = ((kind == 'playlist' and step in ('theme', 'pixabay'))
+              or (kind == 'short' and step == 'theme'))
+        if not draft or not example or not ok:
+            answer_callback(token, cq_id, "Contohnya sudah tidak berlaku 😅")
+            return
+        answer_callback(token, cq_id, f"Sip, saya pakai “{example}”! 💡")
+        _handle_make_answer(token, chat_id, draft, example)
+        return
     # --- ⚙️ ATUR JADWAL (v1.2.20): tombol alur /aturjadwal ---
     # aj:ch:<idx> pilih channel → aj:field:<key> pilih yang diubah →
     # aj:theme:<niche> pilih tema → aj:yes / aj:no konfirmasi simpan.
@@ -4563,6 +4581,49 @@ def _publish_step_keyboard():
         [{"text": "⏭️ Lewati / Default (jadwal berikutnya)", "callback_data": "plsch:skip"}]]}
 
 
+# 🔥 v1.3.89: CONTOH ACAK di wizard (permintaan Bos 21 Nov 2026 — contoh
+# "autumn, pantai, kota malam" itu template tetap, membosankan). Tiap
+# kali langkah ditanyakan, 3 contoh diambil ACAK (random.sample dari
+# pool besar, tanpa seed tetap — modul random di-seed OS saat import,
+# jadi tiap run hasilnya beda; peluang trio yang sama muncul dua kali
+# berturut-turut sangat kecil). Contoh bisa dipencet: callback
+# ex:<teks>, diproses persis seperti jawaban ketikan via
+# _handle_make_answer (tidak ada logika ganda).
+_PLAYLIST_THEME_EXAMPLES = (
+    'lagu malaysia lawas', 'lagu malaysia terbaru', 'lofi', 'piano santai',
+    'reggae', 'dangdut koplo', 'nostalgia 80-90an', 'jazz santai',
+    'lagu anak-anak', 'keroncong', 'pop religi', 'saxophone romantis',
+    'lagu tidur', 'musik hujan', 'bossa nova', 'slow rock malaysia',
+    'musik kafe', 'lagu jawa',
+)
+_PIXABAY_THEME_EXAMPLES = (
+    'autumn', 'pantai', 'kota malam', 'hujan', 'hutan', 'pegunungan',
+    'senja', 'salju', 'kafe', 'jalanan kota', 'pedesaan', 'danau',
+    'langit malam', 'bunga', 'pasar malam', 'kereta', 'laut',
+    'kabut pagi', 'taman', 'lampu kota',
+)
+_SHORT_THEME_EXAMPLES = (
+    'anak-anak', 'tidur', 'lagu ceria', 'hewan lucu', 'belajar huruf',
+    'doa harian', 'senam pagi', 'dongeng', 'alfabet', 'angka', 'warna',
+    'kendaraan', 'buah-buahan', 'lagu tidur anak', 'gerak dan lagu',
+    'sains seru', 'mewarnai', 'petualangan',
+)
+
+
+def _wizard_examples(pool, n=3):
+    """Ambil n contoh acak dari pool — beneran random tiap dipanggil."""
+    pool = list(pool)
+    if len(pool) <= n:
+        return pool
+    return random.sample(pool, n)
+
+
+def _example_buttons(examples):
+    """Satu tombol per contoh (callback ex:<teks>)."""
+    return {"inline_keyboard": [[{"text": f"💡 {e}", "callback_data": f"ex:{e}"}]
+                                for e in examples]}
+
+
 def _make_ask_step(token, chat_id, draft):
     """Kirim pertanyaan untuk langkah draft saat ini."""
     d = draft.get('data') or {}
@@ -4664,10 +4725,12 @@ def _make_ask_step(token, chat_id, draft):
     if kind == 'playlist':
         if step == 'theme':
             send_message(token, chat_id,
-                         "🎵 *Buat Playlist — langkah 1: Tema musik*\n\nTema musiknya apa Bos? (mis. `lagu malaysia lawas`, `lofi`, `piano santai`)")
+                         "🎵 *Buat Playlist — langkah 1: Tema musik*\n\nTema musiknya apa Bos? Pencet salah satu contoh di bawah — langsung saya pakai — atau ketik sendiri.",
+                         reply_markup=_example_buttons(_wizard_examples(_PLAYLIST_THEME_EXAMPLES)))
         elif step == 'pixabay':
             send_message(token, chat_id,
-                         "🖼️ *Langkah 2: Tema footage Pixabay*\n\nTema footage-nya apa Bos? (mis. `autumn`, `pantai`, `kota malam`)\nKetik `lewati` untuk auto (pakai tema musik).")
+                         "🖼️ *Langkah 2: Tema footage Pixabay*\n\nTema footage-nya apa Bos? Pencet salah satu contoh di bawah — langsung saya pakai — atau ketik sendiri.\nKetik `lewati` untuk auto (pakai tema musik).",
+                         reply_markup=_example_buttons(_wizard_examples(_PIXABAY_THEME_EXAMPLES)))
         elif step == 'duration':
             # 🔥 v1.3.56: tombol durasi tinggal klik + Custom (ketik sendiri).
             # Nilai tombol dipakai ulang oleh parser yang sama
@@ -4701,7 +4764,8 @@ def _make_ask_step(token, chat_id, draft):
         if step == 'theme':
             send_message(token, chat_id,
                          "🎬 *Buat Short — langkah 2 dari 3: Tema atau judul*\n\n"
-                         "Tema atau judulnya apa, Bos? (mis. `anak-anak`, `tidur`, atau ketik judul sendiri)")
+                         "Tema atau judulnya apa, Bos? Pencet salah satu contoh di bawah — langsung saya pakai — atau ketik sendiri.",
+                         reply_markup=_example_buttons(_wizard_examples(_SHORT_THEME_EXAMPLES)))
         elif step == 'publish':
             nxt = _next_slot_for_channel(next((c for c in load_channels()
                                               if c.get('yt_id') == d.get('yt_id')), None))

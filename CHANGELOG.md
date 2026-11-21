@@ -1,3 +1,6 @@
+## 1.3.89
+- Contoh acak di wizard + satu ketuk (permintaan user 21 Nov 2026 — contoh "autumn, pantai, kota malam" itu template tetap): langkah tema playlist, tema footage Pixabay, dan tema Short kini menampilkan 3 contoh yang diambil ACAK tiap kali ditanya (random.sample dari pool 18–20 pilihan, tanpa seed tetap — 10 undian berurutan memberi 10 trio berbeda di tes). Contoh bisa dipencet — tombol `ex:<teks>` diproses persis seperti jawaban ketikan (tanpa logika ganda); ketik sendiri tetap bisa, `lewati` di langkah Pixabay tetap ada. Catatan: tombol yang langsung mengisi kolom chat butuh mode inline bot (saat ini NONAKTIF di @ziqmusebot, dicek via getMe) — jadi dipakai satu ketuk langsung, lebih cepat daripada isi-kolom-lalu-Enter; bila Bos tetap mau versi isi-kolom, perlu aktifkan inline di BotFather + handler inline. Tes lokal 22/22 kasus lolos.
+
 ## 1.3.88
 - Tombol jadwal digabung (koreksi user 21 Nov 2026 — "kalau sama kenapa ada 2?"): "Lewati" dan "Default" artinya sama (pakai jadwal berikutnya), jadi kini SATU tombol "⏭️ Lewati / Default (jadwal berikutnya)" + "🚀 Publish langsung". v1.3.87 sempat membuat dua tombol terpisah karena perintah "sama lewati dan default" dibaca harfiah — itu membingungkan, diperbaiki di sini. Tes lokal 15/15 kasus lolos.
 

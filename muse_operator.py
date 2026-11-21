@@ -3762,6 +3762,49 @@ def handle_callback_query(token, chat_id, callback_query):
         answer_callback(token, cq_id, "Sip, saya buatkan dengan referensi ini! 🎵")
         _playlist_try_create_from_draft(token, chat_id, draft)
         return
+    # 🔥 v1.3.87: plsch:<publish|skip> = tombol jadwal tayang (dulu cuma
+    # instruksi ketik). 'publish' = langsung tayang setelah render;
+    # 'skip' = lewati/default = pakai jadwal berikutnya (server atur).
+    # Berlaku untuk wizard playlist, short, zumo & zumorakit yang sedang
+    # di langkah 'publish' — draft yang tidak cocok dijawab "tidak berlaku".
+    if data.startswith('plsch:'):
+        arg = data.split(':', 1)[1]
+        draft = _load_make_draft(chat_id)
+        if (not draft or draft.get('step') != 'publish'
+                or draft.get('kind') not in ('playlist', 'short', 'zumo', 'zumorakit')):
+            answer_callback(token, cq_id, "Pilihannya sudah tidak berlaku 😅")
+            send_message(token, chat_id,
+                         "😅 *Pilihan jadwalnya sudah tidak berlaku* — mulai lagi dari langkah jadwal ya Bos!")
+            return
+        d = draft.get('data') or {}
+        kind = draft.get('kind')
+        word = 'publish' if arg == 'publish' else 'lewati'
+        if kind in ('zumo', 'zumorakit'):
+            # Zumo: 'lewati' = publish_date kosong (server atur slot
+            # berikutnya); 'publish' = jam sekarang (langsung tayang).
+            err = _zumo_apply_publish_answer(d, word)
+            if err:
+                answer_callback(token, cq_id, "Eh, tidak dikenal 😅")
+                return
+            draft['step'] = _zumo_next_step(d) if kind == 'zumo' else _zumorakit_next_step(d)
+        else:
+            if arg == 'publish':
+                d['publish_date'] = _playlist_publish_now_date()
+                d['publish_now'] = True
+                d.pop('publish_note', None)
+            else:
+                ch = next((c for c in load_channels() if c.get('yt_id') == d.get('yt_id')), None)
+                d['publish_date'] = _next_slot_for_channel(ch)
+                d.pop('publish_now', None)
+                d.pop('publish_note', None)
+            draft['step'] = _playlist_next_step(d) if kind == 'playlist' else 'confirm'
+        draft['data'] = d
+        _save_make_draft(chat_id, draft)
+        answer_callback(token, cq_id,
+                        "Siap, langsung tayang setelah render! 🚀" if arg == 'publish'
+                        else "Siap, pakai jadwal berikutnya! 🕐")
+        _make_ask_step(token, chat_id, draft)
+        return
     # --- ⚙️ ATUR JADWAL (v1.2.20): tombol alur /aturjadwal ---
     # aj:ch:<idx> pilih channel → aj:field:<key> pilih yang diubah →
     # aj:theme:<niche> pilih tema → aj:yes / aj:no konfirmasi simpan.
@@ -4509,6 +4552,17 @@ def _make_check_bg_or_cancel(token, chat_id, draft):
     draft['data'] = d
     return True
 
+def _publish_step_keyboard():
+    """Tombol jadwal tayang (v1.3.87): publish / lewati / default — tadinya
+    cuma instruksi ketik, Bos minta tinggal pencet. 'Lewati' dan 'Default'
+    artinya SAMA: pakai jadwal berikutnya (server yang atur) — 'default'
+    = jadwal default channel itu. Keduanya dipetakan ke plsch:skip."""
+    return {"inline_keyboard": [
+        [{"text": "🚀 Publish langsung", "callback_data": "plsch:publish"},
+         {"text": "⏭️ Lewati", "callback_data": "plsch:skip"}],
+        [{"text": "🕐 Default (jadwal berikutnya)", "callback_data": "plsch:skip"}]]}
+
+
 def _make_ask_step(token, chat_id, draft):
     """Kirim pertanyaan untuk langkah draft saat ini."""
     d = draft.get('data') or {}
@@ -4561,8 +4615,9 @@ def _make_ask_step(token, chat_id, draft):
             nxt = _next_slot_for_channel(next((c for c in load_channels()
                                               if c.get('yt_id') == d.get('yt_id')), None))
             send_message(token, chat_id,
-                         "Langkah 8 dari 8: Jadwal tayang\n\nTulis jamnya — mis. `hari ini jam 9`, `besok jam 7 malam`, atau `2026-11-20 19:00`.\n"
-                         f"Ketik `lewati` untuk jadwal berikutnya (`{nxt}`, server yang atur) atau `publish` untuk langsung tayang setelah render.")
+                         "Langkah 8 dari 8: Jadwal tayang\n\nPencet salah satu ya Bos — atau tulis jamnya sendiri (mis. `hari ini jam 9`, `besok jam 7 malam`, atau `2026-11-20 19:00`).\n\n"
+                         f"🚀 Publish = langsung tayang setelah render (tanpa jadwal).\n⏭️ Lewati / 🕐 Default = pakai jadwal berikutnya (`{nxt}`) — server yang atur, artinya sama.",
+                         reply_markup=_publish_step_keyboard())
         elif step == 'confirm':
             send_message(token, chat_id, _make_zumo_summary(d),
                          reply_markup={"inline_keyboard": [
@@ -4597,8 +4652,9 @@ def _make_ask_step(token, chat_id, draft):
             nxt = _next_slot_for_channel(next((c for c in load_channels()
                                               if c.get('yt_id') == d.get('yt_id')), None))
             send_message(token, chat_id,
-                         "Langkah 3 dari 3: Jadwal tayang\n\nTulis jamnya — mis. `hari ini jam 9`, `besok jam 7 malam`, atau `2026-11-20 19:00`.\n"
-                         f"Ketik `lewati` untuk jadwal berikutnya (`{nxt}`, server yang atur) atau `publish` untuk langsung tayang setelah render.")
+                         "Langkah 3 dari 3: Jadwal tayang\n\nPencet salah satu ya Bos — atau tulis jamnya sendiri (mis. `hari ini jam 9`, `besok jam 7 malam`, atau `2026-11-20 19:00`).\n\n"
+                         f"🚀 Publish = langsung tayang setelah render (tanpa jadwal).\n⏭️ Lewati / 🕐 Default = pakai jadwal berikutnya (`{nxt}`) — server yang atur, artinya sama.",
+                         reply_markup=_publish_step_keyboard())
         elif step == 'confirm':
             send_message(token, chat_id, _make_zumo_assemble_summary(d),
                          reply_markup={"inline_keyboard": [
@@ -4632,9 +4688,9 @@ def _make_ask_step(token, chat_id, draft):
             nxt = _next_slot_for_channel(next((c for c in load_channels()
                                               if c.get('yt_id') == d.get('yt_id')), None))
             send_message(token, chat_id,
-                         "🗓️ *Langkah 5: Jadwal tayang*\n\nKetik `publish` untuk langsung tayang setelah render (tanpa jadwal), "
-                         "atau tulis jamnya — mis. `hari ini jam 9`, `besok jam 7 malam`, atau `2026-11-20 19:00`.\n"
-                         f"Ketik `lewati` atau `default` untuk jadwal berikutnya (`{nxt}`).")
+                         "🗓️ *Langkah 5: Jadwal tayang*\n\nPencet salah satu ya Bos — atau tulis jamnya sendiri (mis. `hari ini jam 9`, `besok jam 7 malam`, atau `2026-11-20 19:00`).\n\n"
+                         f"🚀 Publish = langsung tayang setelah render (tanpa jadwal).\n⏭️ Lewati / 🕐 Default = pakai jadwal berikutnya (`{nxt}`) — server yang atur, artinya sama.",
+                         reply_markup=_publish_step_keyboard())
         elif step == 'confirm':
             send_message(token, chat_id, _make_playlist_summary(d),
                          reply_markup={"inline_keyboard": [
@@ -4650,8 +4706,9 @@ def _make_ask_step(token, chat_id, draft):
             nxt = _next_slot_for_channel(next((c for c in load_channels()
                                               if c.get('yt_id') == d.get('yt_id')), None))
             send_message(token, chat_id,
-                         "🗓️ *Langkah 3 dari 3: Jadwal tayang*\n\nTulis jamnya — mis. `hari ini jam 9`, `besok jam 7 malam`, atau `2026-11-20 19:00`.\n"
-                         f"Ketik `lewati` untuk jadwal berikutnya (`{nxt}`) atau `publish` untuk langsung tayang setelah render.")
+                         "🗓️ *Langkah 3 dari 3: Jadwal tayang*\n\nPencet salah satu ya Bos — atau tulis jamnya sendiri (mis. `hari ini jam 9`, `besok jam 7 malam`, atau `2026-11-20 19:00`).\n\n"
+                         f"🚀 Publish = langsung tayang setelah render (tanpa jadwal).\n⏭️ Lewati / 🕐 Default = pakai jadwal berikutnya (`{nxt}`) — server yang atur, artinya sama.",
+                         reply_markup=_publish_step_keyboard())
         elif step == 'confirm':
             send_message(token, chat_id, _make_short_summary(d),
                          reply_markup={"inline_keyboard": [

@@ -2431,6 +2431,17 @@ def _nlu_group_word(text):
     return re.sub(r'\s+', ' ', m.group(1)).strip(' -')
 
 
+def _nlu_has_content_word(clean, group_name):
+    """True bila teks menyebut konten (playlist/short/video/lagu) DI LUAR
+    nama group-nya sendiri. 🔥 v1.3.77: group 'Playlist M' mengandung kata
+    'playlist' — nama group harus dibuang dulu sebelum dicek, kalau tidak
+    'lihat group Playlist M' ikut terblokir sebagai perintah konten."""
+    t = clean or ''
+    if group_name:
+        t = t.replace(_nlu_clean(group_name), ' ')
+    return ('playlist' in t or 'short' in t or 'video' in t or 'lagu' in t)
+
+
 def _nlu_expand_channels(value, channels):
     """'all' / 'group:<nama>' / daftar yt_id → daftar yt_id."""
     if value == 'all':
@@ -6257,8 +6268,13 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
             # 🔥 v1.3.76: jawaban berupa nama group ('group Playlist M')
             # diperlakukan sama seperti 'semua channel' (target 'group:<nama>').
             _grp = _nlu_match_group(ans, channels)
+            # 🔥 v1.3.77: jawaban berupa jumlah ('ketiga' / '3 channel') —
+            # lempar ke NLU dengan channel_count, bot menanyakan pilih 3.
+            # Group menang bila keduanya disebut (group lebih spesifik).
+            _cnt = _nlu_match_count(_nlu_clean(ans)) \
+                if not all_flag and not _grp else None
             _target = 'all' if all_flag else ('group:' + _grp if _grp else None)
-            if all_flag or _grp:
+            if all_flag or _grp or _cnt:
                 if kind == 'zumo':
                     send_message(token, chat_id,
                                  "Playlist Zumo dibuat 1 channel sekali proses Bos — pilih 1 channel ya: balas angkanya atau ketik namanya.")
@@ -6281,7 +6297,8 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
                     # NLU Short memakai bank konten per niche; konfirmasi
                     # NLU menampilkan rencananya sebelum dieksekusi.
                     _clear_make_draft(chat_id)
-                    _slots = {'channels': _target}
+                    _slots = ({'channels': [], 'channel_count': _cnt}
+                              if _cnt else {'channels': _target})
                     if d.get('theme'):
                         _slots['niche'] = d.get('theme')
                     _pending = {'intent': 'buat_short', 'slots': _slots,
@@ -6301,8 +6318,10 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
                     # auto/jadwal) — sebelumnya slot dibangun dari nol
                     # sehingga tema & durasi yang sudah diisi hilang.
                     _th = _nlu_extract_playlist_theme(_nlu_clean(ans), channels) or d.get('theme')
-                    _slots = {'channels': _target,
-                              'playlist_theme': _th}
+                    _slots = ({'channels': [], 'channel_count': _cnt,
+                               'playlist_theme': _th}
+                              if _cnt else {'channels': _target,
+                                           'playlist_theme': _th})
                     if d.get('pixabay_theme'):
                         _slots['pixabay_theme'] = d['pixabay_theme']
                     if d.get('duration_min_sec') is not None:
@@ -7000,13 +7019,28 @@ def _nlu_norm_name(name):
     return re.sub(r'[^a-z0-9 ]', '', (name or '').lower()).strip()
 
 
+# 🔥 v1.3.77: jumlah channel dari kata ("ketiga" / "tiga channel" /
+# "ke-3" → 3; "ke 4 channel" / "4 channel" → 4). Dulu 'ketiga'/'ke-3'
+# dianggap SEMUA channel (warisan saat Bos cuma punya 3 channel) —
+# sekarang Bos punya 8, jadi 'ketiga' harus berarti 3, bukan 8.
+def _nlu_match_count(clean):
+    """Jumlah channel yang diminta (int) atau None."""
+    if 'ketiga' in clean or 'tiga channel' in clean \
+            or re.search(r'\bke\s*3\b', clean):
+        return 3
+    m = re.search(r'(\d+)\s*channel\b', clean)
+    if m:
+        return max(1, min(10, int(m.group(1))))
+    return None
+
+
 def _nlu_match_channels(clean, channels):
     """(matched, all_flag): cocokkan nama channel di teks. matched = channel
     yang namanya (atau kata pertamanya, min 4 huruf) disebut. all_flag True
-    bila teks menyebut 'semua'/'ke-3'/'ketiga' channel."""
-    all_flag = ('semua channel' in clean or 'ketiga' in clean
-                or 'tiga channel' in clean
-                or bool(re.search(r'\bke\s*3\b', clean))
+    bila teks menyebut 'semua' channel. 🔥 v1.3.77: 'ketiga'/'tiga channel'/
+    'ke-3' TIDAK lagi berarti semua (warisan 3 channel) — itu jumlah (3),
+    ditangani _nlu_match_count."""
+    all_flag = ('semua channel' in clean
                 or bool(re.search(r'\bsemua\b', clean))
                 or ('semua' in clean and 'channel' in clean))
     matched = []
@@ -7614,6 +7648,18 @@ def _is_publish_now_order(clean):
     return False
 
 
+_NLU_QUESTION_WORDS = {'apa', 'apakah', 'bagaimana', 'gimana', 'kenapa',
+                       'mengapa', 'siapa', 'kapan', 'dimana', 'berapa',
+                       'bisakah', 'bolehkah'}
+
+
+def _nlu_is_question(clean):
+    """True bila teks berupa pertanyaan (kata tanya), bukan perintah.
+    🔥 v1.3.77: dipakai guard cabang Zumo — 'zumo itu apa?' bukan order."""
+    words = set((clean or '').split())
+    return bool(words & _NLU_QUESTION_WORDS) or 'apa itu' in (clean or '')
+
+
 def parse_natural_command(text, channels):
     """Terjemahkan pesan bebas → {intent, confidence 0-100, slots}.
     Intent: buat_short, buat_long, buat_playlist, buat_zumo, buat_zumobank, buat_zumorakit, status, laporan, kuota, stok, statistik,
@@ -7647,12 +7693,12 @@ def parse_natural_command(text, channels):
     if 'channel' in clean and not matched and not all_flag:
         slots['channel_unknown'] = True
     # Jumlah channel ("buatkan untuk 2 channel") — BUKAN angka tetap:
-    # hanya bila channel tidak disebut namanya dan bukan 'semua'/'ke-3'.
-    # 'ke-3 channel' / 'ketiga' sudah ditangkap all_flag di atas.
+    # hanya bila channel tidak disebut namanya dan bukan 'semua'.
+    # 🔥 v1.3.77: 'ketiga'/'tiga channel'/'ke-3' = 3 (bukan semua).
     if not all_flag and not matched:
-        _mch = re.search(r'(\d+)\s*channel\b', clean)
-        if _mch:
-            slots['channel_count'] = max(1, min(10, int(_mch.group(1))))
+        _cnt = _nlu_match_count(clean)
+        if _cnt:
+            slots['channel_count'] = _cnt
 
     # Permintaan konten (judul/deskripsi/hashtag/ide) tetap ditangani cabang
     # lama — jangan sampai ketangkap intent buat_short.
@@ -7719,9 +7765,15 @@ def parse_natural_command(text, channels):
             slots['group_action'] = 'assign'
             slots['group_name'] = _gname
             conf = 60
-        elif ('lihat' in clean or 'daftar' in clean or 'list' in clean
-              or 'tampilkan' in clean or 'tampil' in clean
-              or clean.strip() in ('group', 'grup')):
+        elif (('lihat' in clean or 'daftar' in clean or 'list' in clean
+               or 'tampilkan' in clean or 'tampil' in clean
+               or clean.strip() in ('group', 'grup'))
+              and not _nlu_has_content_word(clean, _grp)):
+            # 🔥 v1.3.77: 'tampilkan playlist group X' BUKAN 'lihat group' —
+            # bila disebut konten (playlist/short/video/lagu) di luar nama
+            # group-nya, jangan jadi laporan group; biarkan tidak_dikenali
+            # (dijawab Muse). ('list' di dalam kata 'playlist' dulu ikut
+            # memicu cabang ini.)
             intent = 'atur_group'
             slots['group_action'] = 'list'
             conf = 70
@@ -7774,7 +7826,11 @@ def parse_natural_command(text, channels):
     # tanpa kata kerja 40 — selalu DI BAWAH frasa zumo eksplisit dan
     # tidak pernah merebut 'buatkan playlist ...' (ada kata 'playlist'
     # → jatuh ke buat_playlist di bawah).
-    elif 'zumo' in clean or (create_verb and 'kie' in clean and 'lagu' in clean):
+    elif ('zumo' in clean or (create_verb and 'kie' in clean and 'lagu' in clean)) \
+            and not (_nlu_is_question(clean) and not create_verb):
+        # 🔥 v1.3.77: pertanyaan tentang Zumo ('zumo itu apa?') BUKAN order —
+        # tanpa kata kerja buat + ada kata tanya → lewati cabang ini supaya
+        # jatuh ke tidak_dikenali dan dijawab Muse lewat jembatan.
         intent = 'buat_zumo'
         conf = 80
     elif create_verb and 'lagu' in clean and 'playlist' not in clean \
@@ -9453,6 +9509,14 @@ def _nlu_try_complete_pending(token, chat_id, raw_cmd, clean_cmd):
             if 0 <= idx < len(cands):
                 return _accumulate([cands[idx]])
             return False
+        # 🔥 v1.3.77: jawaban berupa jumlah ('ketiga' / '3 channel') —
+        # bukan pilihan channel, tapi jumlah yang harus dipilih.
+        _cnt = _nlu_match_count(clean_cmd)
+        if _cnt:
+            slots['channel_count'] = _cnt
+            _save_nlu_pending(chat_id, pending)
+            _nlu_advance(token, chat_id, pending)
+            return True
         matched, all_flag = _nlu_match_channels(clean_cmd, chans)
         if all_flag:
             return _accumulate(list(cands))

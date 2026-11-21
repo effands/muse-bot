@@ -10350,9 +10350,20 @@ def handle_user_command(token, chat_id, text, message_id=None):
             if not first_word.startswith("/") and clean_cmd not in _MAIN_BUTTON_TEXTS:
                 if _handle_nlu_message(token, chat_id, raw_cmd, clean_cmd):
                     return
-                send_message(token, chat_id,
-                             "⌛ *Eh Bos, draft buat videonya sudah hangus (>30 menit tidak ada kabar)* 😅\n"
-                             "Ketik /buatshort atau /buatlong untuk mulai lagi ya Bos!")
+                # 🔥 v1.3.94: pesan bebas yang NLU tidak kenal BUKAN jawaban
+                # draft — JANGAN ditelan pesan hangus saja; teruskan ke Muse
+                # lewat jembatan (seperti fallback default) supaya ditangani
+                # (instruksi / pengingat / pertanyaan). 22 Nov 2026 00:23
+                # WIB: instruksi "besok jam 5 riset, jam 6 render" Bos mati
+                # di sini — tidak pernah sampai ke Muse (inbox kosong).
+                if _bridge_forward(token, chat_id, message_id, raw_cmd):
+                    send_message(token, chat_id,
+                                 "⌛ *Eh Bos, draft buat videonya sudah hangus (>30 menit tidak ada kabar)* 😅\n"
+                                 "Tapi pesan Bos sudah saya teruskan ke Muse — saya balas sebentar lagi ya 📩")
+                else:
+                    send_message(token, chat_id,
+                                 "⌛ *Eh Bos, draft buat videonya sudah hangus (>30 menit tidak ada kabar)* 😅\n"
+                                 "Ketik /buatshort atau /buatlong untuk mulai lagi ya Bos!")
                 return
         if _draft:
             if first_word in ("/start", "/help"):
@@ -10391,9 +10402,17 @@ def handle_user_command(token, chat_id, text, message_id=None):
             if not first_word.startswith("/") and clean_cmd not in _MAIN_BUTTON_TEXTS:
                 if _handle_nlu_message(token, chat_id, raw_cmd, clean_cmd):
                     return
-                send_message(token, chat_id,
-                             "⌛ *Eh Bos, pengaturan jadwalnya sudah hangus (>30 menit tidak ada kabar)* 😅\n"
-                             "Ketik /aturjadwal untuk mulai lagi ya Bos!")
+                # 🔥 v1.3.94: sama seperti draft buat video — pesan bebas yang
+                # NLU tidak kenal diteruskan ke Muse lewat jembatan, bukan
+                # ditelan pesan hangus saja (lihat cabang di atas).
+                if _bridge_forward(token, chat_id, message_id, raw_cmd):
+                    send_message(token, chat_id,
+                                 "⌛ *Eh Bos, pengaturan jadwalnya sudah hangus (>30 menit tidak ada kabar)* 😅\n"
+                                 "Tapi pesan Bos sudah saya teruskan ke Muse — saya balas sebentar lagi ya 📩")
+                else:
+                    send_message(token, chat_id,
+                                 "⌛ *Eh Bos, pengaturan jadwalnya sudah hangus (>30 menit tidak ada kabar)* 😅\n"
+                                 "Ketik /aturjadwal untuk mulai lagi ya Bos!")
                 return
         if _aj:
             if first_word in ("/start", "/help"):

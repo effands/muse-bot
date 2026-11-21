@@ -7074,12 +7074,33 @@ function copyAddChCode() {
 }
 
 // 🔥 v1.3.51: klik link google.com/device = SALIN (bukan buka tab baru).
+// 🔥 v1.3.78: panel jalan lewat HTTP (bukan HTTPS) → navigator.clipboard
+// TIDAK tersedia di browser (butuh secure context), jadi dulu kode ini
+// langsung menyerah ("Browser ini tidak mendukung salin otomatis").
+// Sekarang pakai fallback textarea + execCommand('copy') seperti copyLogs()
+// — jalan di HTTP. Bila itu pun gagal, URL ditampilkan utuh supaya Bos
+// bisa seleksi & salin manual.
 function copyDeviceUrl() {
   const el = document.getElementById('add-ch-url');
   const url = (el && el.getAttribute('data-url')) || 'https://www.google.com/device';
   const done = () => { toast('Link disalin — tempel di browser profil channel.', 'success'); if (el) { el.textContent = '✓ Disalin'; setTimeout(() => { el.textContent = 'google.com/device'; }, 1500); } };
-  if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(url).then(done).catch(() => toast('Gagal menyalin — salin manual: ' + url, 'error')); }
-  else { toast('Browser ini tidak mendukung salin otomatis — salin manual: ' + url, 'error'); }
+  const fallback = () => {
+    let ok = false;
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = url;
+      ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch (e) { ok = false; }
+    if (ok) { done(); return; }
+    if (el) { el.textContent = url; }
+    toast('Salin otomatis gagal — seleksi & salin link di atas.', 'error');
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(url).then(done).catch(fallback); }
+  else { fallback(); }
 }
 
 function _pollDeviceModal(deviceCode, intervalSec) {

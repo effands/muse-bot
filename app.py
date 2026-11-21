@@ -11762,17 +11762,220 @@ def _playlist_thumb_gradient(w, h, c1, c2):
     return col.resize((w, h))
 
 
+def _playlist_parse_tracklist(description):
+    """Ambil daftar lagu dari deskripsi video referensi (videos().list
+    snippet — deskripsi PENUH, bukan cuplikan search).
+    Format yang dikenali (diuji pada 13 deskripsi referensi asli):
+      "1. Judul Lagu" / "01.Judul Lagu" / "1) Judul Lagu"
+      "00:00 Judul Lagu" / "04:34 Artis - Judul" (chapter ber-timestamp)
+    Kembalikan daftar judul lagu SESUAI URUTAN di deskripsi (tidak pernah
+    diurutkan ulang / dihapus duplikatnya) — urutan adalah syarat keras
+    user (22 Nov 2026). [] bila tidak ada daftar yang meyakinkan.
+    Aturan: ambil RANGKAIAN terpanjang (baris cocok berurutan, baris
+    kosong tidak memutus), minimal 4 lagu; nomor harus 1,2,3,... atau
+    timestamp harus naik terus; tolak rangkaian yang semua judulnya
+    satu kata pendek (itu biasanya daftar ajakan "1. LIKE 2. KOMENTAR",
+    bukan lagu). Maksimal 40 judul."""
+    lines = (description or '').splitlines()
+    # Pola per baris -> (jenis, kunci_urut, judul) atau None.
+    num_re = re.compile(r'^\s*(\d{1,2})[.)]\s*(.+?)\s*$')
+    ts_re = re.compile(r'^\s*(\d{1,2}):([0-5]\d)(?::([0-5]\d))?\s*[-\u2013\u2014]?\s*(.+?)\s*$')
+
+    def _parse_line(ln):
+        m = ts_re.match(ln)
+        if m:
+            hh, mm, ss, title = m.group(1), m.group(2), m.group(3), m.group(4)
+            sec = int(hh) * 3600 + int(mm) * 60 + (int(ss) if ss else 0)
+            title = re.sub(r'\s+', ' ', title).strip()
+            if title and re.search(r'[A-Za-z]', title):
+                return ('ts', sec, title)
+            return None
+        m = num_re.match(ln)
+        if m:
+            title = re.sub(r'\s+', ' ', m.group(2)).strip()
+            if title and re.search(r'[A-Za-z]', title):
+                return ('num', int(m.group(1)), title)
+        return None
+
+    parsed = [_parse_line(ln) for ln in lines]
+    # Rangkaian = baris cocok berurutan (None = baris kosong tidak memutus,
+    # baris lain memutus). Baris kosong dikenali dari lines[i] yang blank.
+    runs, cur = [], []
+    for ln, p in zip(lines, parsed):
+        if p is not None:
+            cur.append(p)
+        elif not ln.strip():
+            continue
+        else:
+            if cur:
+                runs.append(cur)
+            cur = []
+    if cur:
+        runs.append(cur)
+
+    def _valid(run):
+        if len(run) < 4:
+            return False
+        kind = run[0][0]
+        if any(r[0] != kind for r in run):
+            return False
+        if kind == 'num':
+            if run[0][1] != 1:
+                return False
+            if any(run[i][1] != run[i - 1][1] + 1 for i in range(1, len(run))):
+                return False
+        else:
+            if any(run[i][1] <= run[i - 1][1] for i in range(1, len(run))):
+                return False
+        titles = [r[2] for r in run]
+        # Tolak daftar ajakan (semua judul satu kata pendek).
+        if all(len(t.split()) == 1 and len(t) <= 12 for t in titles):
+            return False
+        return True
+
+    best = None
+    for run in runs:
+        if _valid(run) and (best is None or len(run) > len(best)):
+            best = run
+    if not best:
+        return []
+    return [r[2] for r in best[:40]]
+
+
 def _playlist_make_thumbnail(ref_thumb_url, new_title, channel_name, out_path,
-                             badge=None):
-    """Thumbnail playlist — v1.3.3: foto referensi dipakai APA ADANYA
-    (tanpa crop, tanpa resize, tanpa overlay teks/badge, tanpa gradien),
-    supaya teks asli thumbnail tidak hilang (kasus nostalgia 2000an:
-    layout split v1.2.22 memotong teks jadi "LAGU N..." / "POP ER...").
-    Simpan bytes asli; hanya bila >2MB, re-encode JPEG turunkan quality
-    bertahap (88→50) sampai <=2MB — tetap tanpa crop/resize. Bila unduhan
-    referensi gagal total → thumbnail gradien lokal + judul (tanpa foto),
-    seperti sebelumnya. Hanya unduh dari *.ytimg.com. Gagal total (PIL
-    rusak) → raise, JANGAN pakai thumbnail asli."""
+                             badge=None, ref_description=''):
+    """Thumbnail playlist — v1.3.96: DIGENERATE BARU (keputusan user
+    22 Nov 2026 — bukan lagi foto asli referensi seperti sejak v1.3.3).
+    Latar = foto referensi full-bleed yang di-BLUR KUAT + digelapkan,
+    supaya SEMUA teks bawaan foto — termasuk watermark/signature channel
+    lain di sudut mana pun — hancur jadi noda warna yang tidak terbaca
+    (PIL tidak punya pendeteksi watermark; blur adalah cara yang
+    posisinya tidak peduli). Di atasnya digambar ulang dengan bersih:
+    judul video gaya Zumo (serif, tengah-atas, baris terakhir emas) +
+    DAFTAR LAGU dari deskripsi referensi (via _playlist_parse_tracklist)
+    dengan URUTAN YANG SAMA PERSIS seperti referensi (tidak diurutkan
+    ulang, tidak dihapus duplikat; nomor ditulis ulang 01..N sesuai
+    urutan tampil) + nama channel kita di kanan bawah (emas).
+    Bila deskripsi referensi tidak berisi daftar lagu -> thumbnail
+    TANPA tracklist (hanya foto blur + judul gaya Zumo) — jangan
+    mengarang daftar lagu. Bila unduhan foto gagal -> gradien lokal
+    (judul + tracklist tetap digambar). Hanya unduh dari *.ytimg.com.
+    Gagal total (PIL rusak) -> raise. `badge` dipertahankan demi
+    kompatibilitas pemanggil lama, tidak lagi dipakai."""
+    if not ref_thumb_url or not re.match(r'^https://i\d*\.ytimg\.com/', ref_thumb_url):
+        raise ValueError('URL thumbnail referensi tidak valid.')
+    tracks = _playlist_parse_tracklist(ref_description)
+    photo = None
+    try:
+        photo, _photo_bytes = _playlist_thumb_fetch(ref_thumb_url)
+    except Exception as e:
+        print(f"[playlist] thumbnail referensi tidak bisa diunduh ({e}) "
+              f"— pakai gradien lokal.", flush=True)
+        photo = None
+    from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
+    gold = (255, 216, 140)
+    if photo is not None:
+        # Crop tengah 16:9 -> 1280x720 -> blur kuat -> gelapkan.
+        w, h = photo.size
+        target = 1280 / 720
+        if w / h > target:
+            nw = int(h * target)
+            x = (w - nw) // 2
+            photo = photo.crop((x, 0, x + nw, h))
+        else:
+            nh = int(w / target)
+            y = (h - nh) // 2
+            photo = photo.crop((0, y, w, y + nh))
+        img = photo.resize((1280, 720), Image.LANCZOS)
+        img = img.filter(ImageFilter.GaussianBlur(26))
+        img = ImageEnhance.Brightness(img).enhance(0.52)
+    else:
+        img = _playlist_thumb_gradient(1280, 720, (24, 24, 34), (8, 8, 14))
+    # Scrim atas (judul terbaca) + bawah (nama channel terbaca).
+    base = img.convert('RGBA')
+    scrim = Image.new('RGBA', (1280, 720), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(scrim)
+    for yy in range(240):
+        a = int(120 * (1 - yy / 240) ** 1.4)
+        sd.line([(0, yy), (1280, yy)], fill=(0, 0, 0, a))
+    for yy in range(600, 720):
+        a = int(90 * ((yy - 600) / 120) ** 1.4)
+        sd.line([(0, yy), (1280, yy)], fill=(0, 0, 0, a))
+    img = Image.alpha_composite(base, scrim).convert('RGB')
+    draw = ImageDraw.Draw(img, 'RGBA')
+    # Judul: serif tengah-atas, maks 3 baris, baris terakhir emas.
+    title = _clean_upload_text(new_title, max_len=100) or 'Musik Playlist'
+    max_w = 1160
+    font = _playlist_thumb_serif(66, bold=True)
+    lines = _playlist_wrap_text(title, font, max_w, draw)
+    for size in (66, 60, 54, 48, 42):
+        font = _playlist_thumb_serif(size, bold=True)
+        lines = _playlist_wrap_text(title, font, max_w, draw)
+        if len(lines) <= 3:
+            break
+    if len(lines) > 3:
+        lines = lines[:3]
+        while draw.textlength(lines[2] + '\u2026', font=font) > max_w and len(lines[2]) > 3:
+            lines[2] = lines[2][:-1]
+        lines[2] = lines[2].rstrip() + '\u2026'
+    line_h = int(font.size * 1.15)
+    y = 42
+    for i, ln in enumerate(lines):
+        col = gold if i == len(lines) - 1 else (255, 255, 255)
+        tw = draw.textlength(ln, font=font)
+        x = (1280 - tw) // 2
+        draw.text((x + 2, y + 4), ln, font=font, fill=(0, 0, 0, 170))
+        draw.text((x, y), ln, font=font, fill=col + (255,))
+        y += line_h
+    # Daftar lagu (bila ada): nomor emas + judul putih, urutan tampil
+    # = urutan deskripsi. 1 kolom s.d. 15 lagu, 2 kolom di atas itu.
+    y_tracks = y + 18
+    if tracks:
+        n = len(tracks)
+        two_col = n > 15
+        cols = 2 if two_col else 1
+        per_col = (n + cols - 1) // cols
+        avail = 652 - y_tracks
+        row_h = max(22, min(36, avail // max(1, per_col)))
+        fsize = max(18, row_h - 9)
+        fnum = _playlist_thumb_font(fsize)
+        ftitle = _playlist_thumb_font(fsize)
+        col_w = (1152 - 48) // cols if two_col else 1152
+        x0s = [64, 672] if two_col else [64]
+        shown = tracks[:30]
+        for idx, t in enumerate(shown):
+            ci = idx // per_col if two_col else 0
+            ri = idx % per_col if two_col else idx
+            x0 = x0s[ci]
+            yy = y_tracks + ri * row_h
+            num = '%02d.' % (idx + 1)
+            nw = draw.textlength(num + ' ', font=fnum)
+            tt = t
+            while tt and draw.textlength(tt, font=ftitle) > col_w - nw - 8:
+                tt = tt[:-1].rstrip()
+            if tt != t:
+                tt = tt.rstrip() + '\u2026'
+            draw.text((x0 + 2, yy + 3), num, font=fnum, fill=(0, 0, 0, 170))
+            draw.text((x0, yy), num, font=fnum, fill=gold + (255,))
+            draw.text((x0 + nw + 2, yy + 3), tt, font=ftitle, fill=(0, 0, 0, 170))
+            draw.text((x0 + nw, yy), tt, font=ftitle, fill=(255, 255, 255, 255))
+        if n > 30:
+            fmore = _playlist_thumb_font(22)
+            draw.text((66, 676), '+%d lagu lainnya' % (n - 30),
+                      font=fmore, fill=(255, 255, 255, 200))
+    # Nama channel kita kanan bawah (emas).
+    ch = _clean_upload_text(channel_name or '') or 'ZIMUSE'
+    fsmall = _playlist_thumb_font(26)
+    tw = draw.textlength(ch[:60], font=fsmall)
+    draw.text((1224 - tw + 2, 676 + 3), ch[:60], font=fsmall, fill=(0, 0, 0, 170))
+    draw.text((1224 - tw, 676), ch[:60], font=fsmall, fill=gold + (255,))
+    q = 88
+    while True:
+        img.save(out_path, 'JPEG', quality=q, optimize=True)
+        if os.path.getsize(out_path) <= 2_000_000 or q <= 50:
+            break
+        q -= 8
+    return out_path
     if not ref_thumb_url or not re.match(r'^https://i\d*\.ytimg\.com/', ref_thumb_url):
         raise ValueError('URL thumbnail referensi tidak valid.')
     photo = None
@@ -12355,7 +12558,8 @@ def _playlist_build_thread(job_id):
             try:
                 thumb_path = _playlist_make_thumbnail(
                     job['ref_thumbnail_url'], new_title, ch_name,
-                    os.path.join(job_dir, 'thumb.jpg'))
+                    os.path.join(job_dir, 'thumb.jpg'),
+                    ref_description=job.get('ref_description', ''))
             except Exception as e:
                 # 🔥 v1.2.22: thumbnail gagal = job GAGAL dengan pesan jelas.
                 # Jangan diam-diam lanjut tanpa thumbnail (dulu: saat upload

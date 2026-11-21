@@ -9371,6 +9371,135 @@ def channel_add_cancel():
     return jsonify({"status": "success", "message": "Penambahan channel dibatalkan."})
 
 
+# ── 🔥 v1.3.91: PERBAIKI JUDUL/DESKRIPSI VIDEO TAYANG ────────────────────
+# Tombol ✏️ di tiap baris HISTORY (Task Monitor) → modal → videos.update.
+# PENTING: videos.update MENIMPA SELURUH snippet — jadi snippet DIAMBIL
+# ULANG dari YouTube dulu, lalu hanya judul/deskripsi/tags yang diganti;
+# categoryId + defaultLanguage dipertahankan, kalau tidak tags & kategori
+# video ikut terhapus. Status/privasi tidak disentuh (tanpa part status).
+# Biaya: videos.list 1 + videos.update 50 unit kuota.
+def _video_parse_tags(raw):
+    """Pecah tags koma -> list bersih (aturan YouTube: tiap tag maks 30
+    karakter, total maks 500 karakter). Tag yang terlalu panjang dibuang;
+    pemotongan berhenti di batas 500 karakter."""
+    out = []
+    for t in str(raw or '').split(','):
+        t = t.strip()
+        if not t or len(t) > 30:
+            continue
+        if len(','.join(out + [t])) > 500:
+            break
+        out.append(t)
+    return out
+
+
+def _video_update_history_title(video_id, title):
+    """Samakan judul di riwayat panel supaya tidak tampil judul lama."""
+    try:
+        changed = False
+        for t in history_tasks:
+            if isinstance(t, dict) and t.get('video_id') == video_id:
+                if t.get('title') != title:
+                    t['title'] = title
+                    changed = True
+        if changed:
+            save_tasks_db()
+    except Exception:
+        pass
+
+
+@app.route('/api/video_snippet', methods=['GET'])
+def video_snippet():
+    """Baca judul/deskripsi/tags video milik channel sendiri (untuk modal
+    perbaiki metadata). Butuh login panel (GET, tanpa CSRF)."""
+    video_id = (request.args.get('video_id') or '').strip()
+    yt_id = (request.args.get('yt_id') or '').strip()
+    if not re.fullmatch(r'[A-Za-z0-9_-]{11}', video_id or ''):
+        return jsonify({"status": "error", "message": "video_id tidak valid."}), 400
+    ch = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+    if not ch:
+        return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
+    youtube, err = _build_youtube_client_for_channel(ch)
+    if not youtube:
+        return jsonify({"status": "error", "message": err or "Tidak bisa memakai kredensial channel."}), 400
+    try:
+        res = youtube.videos().list(part='snippet,status', id=video_id).execute()
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Gagal membaca video: {e}"}), 502
+    items = (res or {}).get('items') or []
+    if not items:
+        return jsonify({"status": "error", "message": "Video tidak ditemukan."}), 404
+    sn = items[0].get('snippet') or {}
+    if sn.get('channelId') != yt_id:
+        return jsonify({"status": "error", "message": "Video ini bukan milik channel tersebut."}), 403
+    return jsonify({"status": "success",
+                    "video_id": video_id, "yt_id": yt_id,
+                    "title": sn.get('title') or '',
+                    "description": sn.get('description') or '',
+                    "tags": sn.get('tags') or [],
+                    "category_id": sn.get('categoryId') or '',
+                    "privacy": (items[0].get('status') or {}).get('privacyStatus') or '',
+                    "channel_title": sn.get('channelTitle') or ''})
+
+
+@app.route('/api/video_update', methods=['POST'])
+def video_update():
+    """Perbaiki judul/deskripsi/tags video yang sudah tayang via
+    videos.update. Butuh login panel + CSRF (otomatis dari wrapper fetch
+    panel). Judul 1–100 karakter, deskripsi maks 5000 karakter."""
+    data = request.get_json(silent=True) or {}
+    video_id = str(data.get('video_id') or '').strip()
+    yt_id = str(data.get('yt_id') or '').strip()
+    title = str(data.get('title') or '').strip()
+    description = str(data.get('description') or '')
+    if not re.fullmatch(r'[A-Za-z0-9_-]{11}', video_id):
+        return jsonify({"status": "error", "message": "video_id tidak valid."}), 400
+    ch = next((c for c in database_channel if c.get('yt_id') == yt_id), None)
+    if not ch:
+        return jsonify({"status": "error", "message": "Channel tidak ditemukan."}), 404
+    if not title:
+        return jsonify({"status": "error", "message": "Judul tidak boleh kosong."}), 400
+    if len(title) > 100:
+        return jsonify({"status": "error", "message": "Judul maksimal 100 karakter."}), 400
+    if len(description) > 5000:
+        return jsonify({"status": "error", "message": "Deskripsi maksimal 5000 karakter."}), 400
+    tags = _video_parse_tags(data.get('tags') or '')
+    youtube, err = _build_youtube_client_for_channel(ch)
+    if not youtube:
+        return jsonify({"status": "error", "message": err or "Tidak bisa memakai kredensial channel."}), 400
+    try:
+        cur = youtube.videos().list(part='snippet,status', id=video_id).execute()
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Gagal membaca video: {e}"}), 502
+    items = (cur or {}).get('items') or []
+    if not items:
+        return jsonify({"status": "error", "message": "Video tidak ditemukan."}), 404
+    sn = items[0].get('snippet') or {}
+    if sn.get('channelId') != yt_id:
+        return jsonify({"status": "error", "message": "Video ini bukan milik channel tersebut."}), 403
+    new_snippet = {
+        'title': title,
+        'description': description,
+        'tags': tags,
+        'categoryId': sn.get('categoryId') or '22',
+    }
+    if sn.get('defaultLanguage'):
+        new_snippet['defaultLanguage'] = sn['defaultLanguage']
+    if sn.get('defaultAudioLanguage'):
+        new_snippet['defaultAudioLanguage'] = sn['defaultAudioLanguage']
+    try:
+        upd = youtube.videos().update(part='snippet', body={'id': video_id, 'snippet': new_snippet}).execute()
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Gagal memperbarui video: {e}"}), 502
+    _video_update_history_title(video_id, title)
+    return jsonify({"status": "success",
+                    "message": f"Judul/deskripsi '{title}' berhasil diperbarui.",
+                    "video_id": video_id,
+                    "title": (upd.get('snippet') or {}).get('title') or title,
+                    "tags_applied": tags,
+                    "url": f"https://youtu.be/{video_id}"})
+
+
     return jsonify({"status": "success", "message": _msg, "channel": _name, "yt_id": item['id'], "created": created})
 
 

@@ -2535,6 +2535,18 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
   </div>
 </div>
 
+<!-- ✏️ MODAL PERBAIKI VIDEO (v1.3.91) — ubah judul/deskripsi/tags video
+     yang sudah tayang, dari tombol ✏️ di tiap baris HISTORY. -->
+<div id="edit-video-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closeEditVideoModal()">
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);max-width:560px;width:100%;max-height:85vh;overflow:auto;padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.35)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div class="card-title" style="font-size:15px">✏️ PERBAIKI VIDEO</div>
+      <button type="button" class="btn btn-g btn-sm" onclick="closeEditVideoModal()" title="Tutup">✕</button>
+    </div>
+    <div id="edit-video-body" style="font-size:13px;line-height:1.6"></div>
+  </div>
+</div>
+
 <script>
 // 🔒 #12: semua fetch POST ke /api/* otomatis membawa header X-CSRF-Token.
 // (Satu tempat — jadi tidak ada POST panel yang terlewat, termasuk FormData.)
@@ -6136,7 +6148,10 @@ function renderTasks() {
             const ytLink = vid ? ` <a href="https://youtu.be/${vid}" target="_blank" rel="noopener" style="color:var(--accent)">▶ Lihat</a>` : '';
             const dl = histDownloadUrl(t);
             const dlLink = dl ? ` <a href="${escapeHtml(dl)}" target="_blank" rel="noopener" style="color:var(--accent)">[Download]</a>` : '';
-            return `<tr><td class="hist-id-cell"><span class="hist-id" title="#${t.id}">#${String(t.id).slice(-6)}</span></td><td><span style="display:flex;gap:8px;align-items:baseline;min-width:0"><span class="hist-time" title="Jam tayang">${shortDate(t.time)}</span><span title="${t.kind === 'shorts_muse' ? 'Short' : ((t.blueprint && (t.blueprint.playlist_job_id || t.blueprint.playlist_render_method)) ? 'Playlist' : 'Video panjang')}">${t.kind === 'shorts_muse' ? '📱' : ((t.blueprint && (t.blueprint.playlist_job_id || t.blueprint.playlist_render_method)) ? '🎵' : '🎬')}</span><span class="hist-title" title="${escapeHtml(t.title || '—')}">${escapeHtml(t.title || '—')}</span>${renderInfo}</span></td><td style="color:${c};font-weight:600">${escapeHtml(histCleanStatus(t))}${ytLink}${dlLink}${t.thumb_status ? `<span class="hist-sub">🖼️ ${escapeHtml(t.thumb_status)}</span>` : ''}</td><td style="text-align:center"><button class="btn btn-g btn-sm hist-del" title="Hapus entri ini dari riwayat" onclick="deleteHistoryItem(${t.id})">🗑️</button></td></tr>`;
+            // 🔥 v1.3.91: tombol ✏️ perbaiki judul/deskripsi — hanya bila ada
+            // video YouTube-nya dan channel-nya dikenal (butuh kredensial).
+            const editBtn = (vid && !isUnknown) ? `<button class="btn btn-g btn-sm hist-del" style="margin-right:4px" title="Perbaiki judul/deskripsi video ini" onclick="openEditVideoModal('${vid}', '${key}')">✏️</button>` : '';
+            return `<tr><td class="hist-id-cell"><span class="hist-id" title="#${t.id}">#${String(t.id).slice(-6)}</span></td><td><span style="display:flex;gap:8px;align-items:baseline;min-width:0"><span class="hist-time" title="Jam tayang">${shortDate(t.time)}</span><span title="${t.kind === 'shorts_muse' ? 'Short' : ((t.blueprint && (t.blueprint.playlist_job_id || t.blueprint.playlist_render_method)) ? 'Playlist' : 'Video panjang')}">${t.kind === 'shorts_muse' ? '📱' : ((t.blueprint && (t.blueprint.playlist_job_id || t.blueprint.playlist_render_method)) ? '🎵' : '🎬')}</span><span class="hist-title" title="${escapeHtml(t.title || '—')}">${escapeHtml(t.title || '—')}</span>${renderInfo}</span></td><td style="color:${c};font-weight:600">${escapeHtml(histCleanStatus(t))}${ytLink}${dlLink}${t.thumb_status ? `<span class="hist-sub">🖼️ ${escapeHtml(t.thumb_status)}</span>` : ''}</td><td style="text-align:center;white-space:nowrap">${editBtn}<button class="btn btn-g btn-sm hist-del" title="Hapus entri ini dari riwayat" onclick="deleteHistoryItem(${t.id})">🗑️</button></td></tr>`;
           }).join('');
           
           html += `<tbody>${rows}</tbody>`;
@@ -6201,6 +6216,74 @@ async function deleteHistoryItem(id) {
   fetch('/api/delete_history_item', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task_id: id }) })
     .then(r => r.json()).then(d => { toast(d.message, d.status === 'success' ? 'success' : 'error'); fetchServerTasks(); })
     .catch(() => toast('Gagal menghapus entri riwayat', 'error'));
+}
+
+// 🔥 v1.3.91: PERBAIKI JUDUL/DESKRIPSI video tayang (tombol ✏️ di HISTORY).
+// Modal memuat snippet asli dari YouTube (judul/deskripsi/tags), lalu
+// menyimpan via POST /api/video_update (videos.update). CSRF ditangani
+// wrapper fetch global. Kategori & bahasa dipertahankan server.
+let _editVideoCtx = null; // {video_id, yt_id}
+
+function openEditVideoModal(vid, ytId) {
+  const modal = document.getElementById('edit-video-modal');
+  const body = document.getElementById('edit-video-body');
+  if (!modal || !body) return;
+  _editVideoCtx = { video_id: vid, yt_id: ytId };
+  modal.style.display = 'flex';
+  body.innerHTML = '<div style="color:var(--muted)">⏳ Memuat judul/deskripsi dari YouTube…</div>';
+  fetch('/api/video_snippet?video_id=' + encodeURIComponent(vid) + '&yt_id=' + encodeURIComponent(ytId))
+    .then(r => r.json())
+    .then(d => {
+      if (d.status !== 'success') {
+        body.innerHTML = '<div style="color:var(--red,#f43f5e);font-weight:700;margin-bottom:8px">❌ ' + escapeHtml(d.message || 'Gagal memuat video.') + '</div>';
+        return;
+      }
+      const chName = d.channel_title ? escapeHtml(d.channel_title) : '';
+      body.innerHTML = '<div style="margin-bottom:10px;font-size:12px;color:var(--muted)">'
+        + (chName ? 'Channel: <b style="color:var(--text)">' + chName + '</b> · ' : '')
+        + 'Privasi: <b style="color:var(--text)">' + escapeHtml(d.privacy || '—') + '</b> · '
+        + '<a href="https://youtu.be/' + escapeHtml(d.video_id) + '" target="_blank" rel="noopener" style="color:var(--accent)">▶ Lihat di YouTube</a></div>'
+        + '<label style="display:block;font-weight:700;margin-bottom:4px">Judul <span id="ev-title-count" style="font-weight:400;color:var(--muted)"></span></label>'
+        + '<input id="ev-title" type="text" maxlength="100" value="' + escapeHtml(d.title) + '" style="width:100%;padding:9px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:13px">'
+        + '<label style="display:block;font-weight:700;margin:10px 0 4px">Deskripsi <span id="ev-desc-count" style="font-weight:400;color:var(--muted)"></span></label>'
+        + '<textarea id="ev-desc" rows="8" maxlength="5000" style="width:100%;padding:9px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:13px;resize:vertical">' + escapeHtml(d.description) + '</textarea>'
+        + '<label style="display:block;font-weight:700;margin:10px 0 4px">Tags <span style="font-weight:400;color:var(--muted)">(pisahkan dengan koma, tiap tag maks 30 karakter)</span></label>'
+        + '<input id="ev-tags" type="text" value="' + escapeHtml((d.tags || []).join(', ')) + '" style="width:100%;padding:9px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:13px">'
+        + '<div style="display:flex;gap:8px;margin-top:14px"><button type="button" class="btn btn-p" id="ev-save" onclick="saveEditVideo()">💾 Simpan Perubahan</button><button type="button" class="btn btn-g" onclick="closeEditVideoModal()">Batal</button></div>'
+        + '<div style="font-size:11px;color:var(--muted);margin-top:10px">Kategori & bahasa video dipertahankan otomatis — hanya judul, deskripsi & tags yang berubah. Biaya kuota: 51 unit.</div>';
+      const tEl = document.getElementById('ev-title');
+      const dEl = document.getElementById('ev-desc');
+      const tCnt = document.getElementById('ev-title-count');
+      const dCnt = document.getElementById('ev-desc-count');
+      if (tEl && tCnt) { tCnt.textContent = tEl.value.length + '/100'; tEl.addEventListener('input', () => { tCnt.textContent = tEl.value.length + '/100'; }); }
+      if (dEl && dCnt) { dCnt.textContent = dEl.value.length + '/5000'; dEl.addEventListener('input', () => { dCnt.textContent = dEl.value.length + '/5000'; }); }
+    })
+    .catch(() => { body.innerHTML = '<div style="color:var(--red,#f43f5e);font-weight:700">❌ Gagal menghubungi server.</div>'; });
+}
+
+function closeEditVideoModal() {
+  const modal = document.getElementById('edit-video-modal');
+  if (modal) modal.style.display = 'none';
+  _editVideoCtx = null;
+}
+
+function saveEditVideo() {
+  if (!_editVideoCtx) return;
+  const titleEl = document.getElementById('ev-title');
+  const descEl = document.getElementById('ev-desc');
+  const tagsEl = document.getElementById('ev-tags');
+  const saveBtn = document.getElementById('ev-save');
+  const title = titleEl ? titleEl.value.trim() : '';
+  if (!title) { toast('Judul tidak boleh kosong.', 'error'); return; }
+  if (title.length > 100) { toast('Judul maksimal 100 karakter.', 'error'); return; }
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '⏳ Menyimpan…'; }
+  fetch('/api/video_update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ video_id: _editVideoCtx.video_id, yt_id: _editVideoCtx.yt_id, title: title, description: descEl ? descEl.value : '', tags: tagsEl ? tagsEl.value : '' }) })
+    .then(r => r.json())
+    .then(d => {
+      if (d.status === 'success') { toast(d.message || 'Video diperbarui.', 'success'); closeEditVideoModal(); fetchServerTasks(); }
+      else { toast(d.message || 'Gagal memperbarui video.', 'error'); if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '💾 Simpan Perubahan'; } }
+    })
+    .catch(() => { toast('Gagal menghubungi server.', 'error'); if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '💾 Simpan Perubahan'; } });
 }
 
 // 🔥 BARU: memulihkan task gagal (watchdog stuck) dari history ke antrean aktif

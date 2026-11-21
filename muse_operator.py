@@ -3636,12 +3636,10 @@ def handle_callback_query(token, chat_id, callback_query):
                     "bgm_file": d.get('bgm_file', 'none'),
                 })
             elif kind == 'playlist':
-                ok, info, resp = _operator_post('/api/operator/playlist_create', {
-                    "job_id": d.get('job_id'), "video_id": d.get('video_id'),
-                    "publish_date": d.get('publish_date'), "privacy": "public",
-                    "pixabay_theme": d.get('pixabay_theme') or '',
-                })
-                resp = resp or {}
+                # v1.3.84: satu jalur create — dedupe ditangani di dalam
+                # (tawarkan kandidat lain, draft dipertahankan).
+                _playlist_try_create_from_draft(token, chat_id, draft)
+                return
             elif kind in ('zumo', 'zumobank', 'zumorakit'):
                 ok, info, resp = _operator_post('/api/operator/zumo_create',
                                                 _zumo_create_payload(d))
@@ -3665,8 +3663,6 @@ def handle_callback_query(token, chat_id, callback_query):
                 _send_zumo_bank_created_message(token, chat_id, d, resp)
             elif kind == 'zumorakit':
                 _send_zumo_assemble_created_message(token, chat_id, d, resp)
-            elif kind == 'playlist':
-                _send_playlist_created_message(token, chat_id, d, resp)
             else:
                 _send_make_created_message(token, chat_id, kind, d, resp)
         finally:
@@ -3729,6 +3725,42 @@ def handle_callback_query(token, chat_id, callback_query):
         _save_make_draft(chat_id, draft)
         answer_callback(token, cq_id, "Sip, kandidat dipilih!")
         _make_ask_step(token, chat_id, draft)
+        return
+    # --- 🎵 PLAYLIST: pilihan referensi alternatif (v1.3.84) ---
+    # Dipakai saat create ditolak dedupe (referensi sudah dipakai 24 jam):
+    # plalt:<idx> = buat langsung dengan kandidat itu (setting sama),
+    # plalt:research = riset ulang tema yang sama.
+    if data.startswith('plalt:'):
+        arg = data.split(':', 1)[1]
+        draft = _load_make_draft(chat_id)
+        if not draft or draft.get('kind') != 'playlist':
+            answer_callback(token, cq_id, "Pilihannya sudah tidak berlaku 😅")
+            send_message(token, chat_id,
+                         "😅 *Pilihan referensinya sudah tidak berlaku* — ketik /playlist untuk mulai lagi ya Bos!")
+            return
+        if arg == 'research':
+            answer_callback(token, cq_id, "Siap, saya cari referensi baru! 🔍")
+            draft['step'] = 'research'
+            _save_make_draft(chat_id, draft)
+            _pl_run_research(token, chat_id, draft)
+            return
+        try:
+            idx = int(arg)
+        except Exception:
+            answer_callback(token, cq_id, "Pilihan tidak dikenal.")
+            return
+        cands = (draft.get('data') or {}).get('candidates') or []
+        if not (0 <= idx < len(cands)):
+            answer_callback(token, cq_id, "Pilihan tidak dikenal.")
+            return
+        cand = cands[idx]
+        d = draft.get('data') or {}
+        d['video_id'] = cand.get('video_id')
+        d['ref_title'] = cand.get('title', '')
+        draft['data'] = d
+        _save_make_draft(chat_id, draft)
+        answer_callback(token, cq_id, "Sip, saya buatkan dengan referensi ini! 🎵")
+        _playlist_try_create_from_draft(token, chat_id, draft)
         return
     # --- ⚙️ ATUR JADWAL (v1.2.20): tombol alur /aturjadwal ---
     # aj:ch:<idx> pilih channel → aj:field:<key> pilih yang diubah →
@@ -6815,6 +6847,64 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
     _make_ask_step(token, chat_id, draft)
     return True
 
+def _playlist_offer_alternatives(token, chat_id, draft, failed_video_id):
+    """Tawarkan kandidat lain saat create playlist ditolak dedupe
+    (referensi sudah dipakai channel ini 24 jam terakhir) — v1.3.84.
+    Prinsip Bos (20 Nov 2026): tiap pesan bot yang menawarkan sesuatu
+    harus diakhiri shortcut yang menebak langkah berikutnya; pesan gagal
+    tanpa tawaran (\"coba lagi /playlist\") melanggar itu.
+    Kembalikan True bila tawaran terkirim (draft dipertahankan supaya
+    pilihan bisa langsung dibuat), False bila tidak ada kandidat tersisa."""
+    d = draft.get('data') or {}
+    tried = set(d.get('_tried_refs') or [])
+    if failed_video_id:
+        tried.add(failed_video_id)
+    d['_tried_refs'] = sorted(tried)
+    cands = d.get('candidates') or []
+    alts = [c for c in cands if c.get('video_id') not in tried][:4]
+    if not alts:
+        return False
+    draft['data'] = d
+    _save_make_draft(chat_id, draft)
+    lines = ["⚠️ *Referensi itu sudah dipakai channel ini dalam 24 jam terakhir* 😅\n",
+             "Mau tukar ke lagu lain? Pilih salah satu ya Bos — langsung saya buatkan dengan setting yang sama (channel, tema, footage, jadwal tidak berubah):\n"]
+    rows = []
+    for c in alts:
+        idx = cands.index(c)
+        views_txt = f"{c.get('views') or 0:,}".replace(',', '.')
+        lines.append(f"• *{_tg_escape((c.get('title') or '')[:60])}* — {_tg_escape(c.get('channel') or '')} ({views_txt} views)")
+        rows.append([{"text": f"🎵 {(c.get('title') or '')[:40]}", "callback_data": f"plalt:{idx}"}])
+    rows.append([{"text": "🔄 Riset ulang tema ini", "callback_data": "plalt:research"},
+                 {"text": "❌ Batal", "callback_data": "mkplaylist:no"}])
+    send_message(token, chat_id, "\n".join(lines), reply_markup={"inline_keyboard": rows})
+    return True
+
+
+def _playlist_try_create_from_draft(token, chat_id, draft):
+    """Buat playlist dari draft — satu-satunya jalur create wizard
+    (tombol ✅, jawaban 'ya', pilihan alternatif plalt:). Sukses → draft
+    dihapus + pesan sukses. Ditolak dedupe → tawarkan kandidat lain
+    (draft dipertahankan). Gagal lain → draft dihapus + pesan gagal."""
+    d = draft.get('data') or {}
+    ok, info, resp = _operator_post('/api/operator/playlist_create', {
+        "job_id": d.get('job_id'), "video_id": d.get('video_id'),
+        "publish_date": d.get('publish_date'), "privacy": "public",
+        "pixabay_theme": d.get('pixabay_theme') or '',
+    })
+    resp = resp or {}
+    if ok:
+        _clear_make_draft(chat_id)
+        _send_playlist_created_message(token, chat_id, d, resp)
+        return
+    if 'sudah dipakai' in (info or '') or 'sudah dibuat' in (info or ''):
+        if _playlist_offer_alternatives(token, chat_id, draft, d.get('video_id')):
+            return
+    _clear_make_draft(chat_id)
+    send_message(token, chat_id,
+                 f"⚠️ *Yah Bos, gagal dibuat* 😅\n{info}\n"
+                 "Coba lagi dengan /playlist ya Bos!")
+
+
 def _confirm_make_create(token, chat_id, draft):
     """Eksekusi pembuatan dari jawaban teks 'ya' di langkah konfirmasi
     (jalur yang sama dengan tombol inline ✅)."""
@@ -6840,12 +6930,10 @@ def _confirm_make_create(token, chat_id, draft):
             "theme": d.get('theme', ''),
         })
     elif kind == 'playlist':
-        ok, info, resp = _operator_post('/api/operator/playlist_create', {
-            "job_id": d.get('job_id'), "video_id": d.get('video_id'),
-            "publish_date": d.get('publish_date'), "privacy": "public",
-            "pixabay_theme": d.get('pixabay_theme') or '',
-        })
-        resp = resp or {}
+        # v1.3.84: satu jalur create — dedupe ditangani di dalam
+        # (tawarkan kandidat lain, draft dipertahankan).
+        _playlist_try_create_from_draft(token, chat_id, draft)
+        return
     elif kind in ('zumo', 'zumobank', 'zumorakit'):
         ok, info, resp = _operator_post('/api/operator/zumo_create',
                                         _zumo_create_payload(d))
@@ -6871,9 +6959,6 @@ def _confirm_make_create(token, chat_id, draft):
         return
     if kind == 'zumorakit':
         _send_zumo_assemble_created_message(token, chat_id, d, resp)
-        return
-    if kind == 'playlist':
-        _send_playlist_created_message(token, chat_id, d, resp)
         return
     _send_make_created_message(token, chat_id, kind, d, resp)
 

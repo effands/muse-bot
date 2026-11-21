@@ -2391,6 +2391,59 @@ def _group_canonical(name, channels):
     return want
 
 
+# 🔥 v1.3.76 — UPLOAD PER GROUP. Target group direpresentasikan sebagai
+# string 'group:<nama kanonis>' di slots['channels'] (sejajar 'all'),
+# lalu diuraikan jadi daftar yt_id oleh _nlu_expand_channels di
+# _nlu_advance (sebelum konfirmasi/eksekusi) — jadi semua jalur yang
+# sudah bisa multi-channel ('semua channel') otomatis bisa group.
+def _nlu_match_group(text, channels):
+    """Nama group kanonis yang disebut di teks ('' bila tidak ada).
+    Dikenali bila disebut setelah kata 'group'/'grup' ('untuk group
+    Playlist M'), ATAU nama group-nya disebut polos ('untuk Playlist M').
+    Hanya group yang SUDAH ADA yang dikenali — group baru tidak lahir
+    dari perintah upload."""
+    groups = _group_list(channels)
+    if not groups:
+        return ''
+    low = _nlu_clean(text or '')
+    # 1) Setelah kata 'group'/'grup' — cocokkan nama group yang dikenal.
+    m = re.search(r'\b(?:group|grup)\b\s*(.*)$', low)
+    if m:
+        tail = m.group(1)
+        for g in groups:
+            gl = _nlu_clean(g)
+            if gl and (tail.startswith(gl)
+                       or re.search(r'\b' + re.escape(gl) + r'\b', tail)):
+                return g
+    # 2) Nama group disebut polos (tanpa kata 'group').
+    for g in groups:
+        gl = _nlu_clean(g)
+        if gl and re.search(r'\b' + re.escape(gl) + r'\b', low):
+            return g
+    return ''
+
+
+def _nlu_group_word(text):
+    """Kata setelah 'group'/'grup' (untuk pesan 'group tidak ditemukan')."""
+    m = re.search(r'(?:group|grup)\s+([A-Za-z0-9][\w \-]{0,39})', text or '', re.I)
+    if not m:
+        return ''
+    return re.sub(r'\s+', ' ', m.group(1)).strip(' -')
+
+
+def _nlu_expand_channels(value, channels):
+    """'all' / 'group:<nama>' / daftar yt_id → daftar yt_id."""
+    if value == 'all':
+        return [c.get('yt_id') for c in (channels or [])]
+    if isinstance(value, str) and value.startswith('group:'):
+        g = value[len('group:'):]
+        return [c.get('yt_id') for c in (channels or [])
+                if _group_of(c) == g]
+    if isinstance(value, list):
+        return [y for y in value if y]
+    return []
+
+
 def _set_channel_group_op(yt_id, group):
     """Set group satu channel lewat endpoint operator.
     (ok, info, data). group '' = keluarkan dari group."""
@@ -2424,6 +2477,7 @@ def build_group_report():
             lines.append(f"  • {_tg_escape(_channel_display_name(c))}")
         lines.append("")
     lines.append("Atur group: `Aruya masuk ke Group Playlist A` · pindah: `Aruya pindah ke Group ZUMO 1` · keluar: `Aruya keluar group`")
+    lines.append("Upload ke group: `buatkan playlist untuk group Playlist M` · `buatkan short untuk group Playlist M`")
     return "\n".join(lines)
 
 
@@ -3775,6 +3829,12 @@ def handle_callback_query(token, chat_id, callback_query):
             cands = pending.get('candidates') or [c.get('yt_id') for c in load_channels()]
             if arg == 'all':
                 pending.setdefault('slots', {})['channels'] = list(cands)
+            elif arg.startswith('group:'):
+                # 🔥 v1.3.76: tombol Group di _nlu_ask_channel.
+                _g = arg[len('group:'):]
+                pending.setdefault('slots', {})['channels'] = [
+                    c.get('yt_id') for c in load_channels()
+                    if _group_of(c) == _g]
             else:
                 try:
                     idx = int(arg)
@@ -4388,7 +4448,7 @@ def _make_pick_channel(channels, multi=False):
         mark = " ⏸️ Dijeda" if c.get('paused') else ""
         lines.append(f"{i}. {_tg_escape(_channel_display_name(c))}{mark}")
     if multi:
-        lines.append("\nBalas dengan angkanya saja (mis. `1`), ketik nama channelnya, atau `semua channel` untuk semua channel.")
+        lines.append("\nBalas dengan angkanya saja (mis. `1`), ketik nama channelnya, `semua channel` untuk semua channel, atau nama group (mis. `group Playlist M`) untuk semua channel di group itu.")
     else:
         lines.append("\nBalas dengan angkanya saja (mis. `1`) atau ketik nama channelnya.")
     return None, "\n".join(lines)
@@ -5246,6 +5306,41 @@ def _pl_run_research(token, chat_id, draft):
     _pl_send_candidates(token, chat_id, draft)
 
 
+def _make_throw_to_nlu(token, chat_id, kind, data, target):
+    """Lempar order multi-channel ('all' / 'group:<nama>') dari wizard /
+    one-shot ke jalur NLU — jalurnya yang sudah bisa eksekusi per
+    channel (cek login, konfirmasi sekali, lalu buat per channel).
+    Dipakai jalur group v1.3.76; jalur 'semua channel' yang sudah ada
+    tetap memakai kodenya sendiri (tidak diubah)."""
+    _clear_make_draft(chat_id)
+    _slots = {'channels': target}
+    if kind == 'short':
+        if data.get('theme'):
+            _slots['niche'] = data.get('theme')
+    else:  # playlist
+        if data.get('theme'):
+            _slots['playlist_theme'] = data.get('theme')
+        if data.get('pixabay_theme'):
+            _slots['pixabay_theme'] = data['pixabay_theme']
+        if data.get('duration_min_sec') is not None:
+            _slots['duration_min_sec'] = data['duration_min_sec']
+            _slots['duration_max_sec'] = data.get('duration_max_sec')
+            _slots['duration_note'] = data.get('duration_note') or ''
+        if data.get('auto_pick'):
+            _slots['auto_pick'] = True
+        if data.get('publish_date'):
+            _slots['publish_date'] = data['publish_date']
+            if data.get('publish_note'):
+                _slots['publish_note'] = data['publish_note']
+        else:
+            _slots['publish_now'] = True
+    _pending = {'intent': 'buat_short' if kind == 'short' else 'buat_playlist',
+                'slots': _slots, 'awaiting': None, 'confirmed': False,
+                'created_at': time.time()}
+    _save_nlu_pending(chat_id, _pending)
+    _nlu_advance(token, chat_id, _pending)
+
+
 def _start_make_playlist(token, chat_id, raw_cmd):
     """Mulai alur /playlist & /buatplaylist. Dukung sekali kirim:
     /buatplaylist <tema> | <channel> | <tema pixabay> | <durasi> — slot
@@ -5289,6 +5384,14 @@ def _start_make_playlist(token, chat_id, raw_cmd):
             parsed = _parse_playlist_duration(parts[3])
             if parsed and parsed[0] is not None:
                 pre['duration_min_sec'], pre['duration_max_sec'], pre['duration_note'] = parsed
+    # 🔥 v1.3.76: segmen channel berupa nama group
+    # ('/buatplaylist tema | group Playlist M | ...') — lempar ke NLU.
+    if not pre.get('yt_id') and len(parts) > 1 and parts[1]:
+        _grp = _nlu_match_group(parts[1], channels)
+        if _grp:
+            _make_throw_to_nlu(token, chat_id, 'playlist', dict(pre),
+                               'group:' + _grp)
+            return
     draft = {"kind": "playlist", "step": "theme", "data": dict(pre)}
     if pre.get('yt_id'):
         draft['step'] = _playlist_next_step(draft['data'])
@@ -6151,7 +6254,11 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
         if ch is None and kind in ('playlist', 'zumo', 'zumobank', 'zumorakit', 'short', 'long'):
             # Playlist/Zumo/bank/rakit/Short/Long: jawaban bebas diterima — ketik nama channel juga boleh.
             matched, all_flag = _nlu_match_channels(_nlu_clean(ans), channels)
-            if all_flag:
+            # 🔥 v1.3.76: jawaban berupa nama group ('group Playlist M')
+            # diperlakukan sama seperti 'semua channel' (target 'group:<nama>').
+            _grp = _nlu_match_group(ans, channels)
+            _target = 'all' if all_flag else ('group:' + _grp if _grp else None)
+            if all_flag or _grp:
                 if kind == 'zumo':
                     send_message(token, chat_id,
                                  "Playlist Zumo dibuat 1 channel sekali proses Bos — pilih 1 channel ya: balas angkanya atau ketik namanya.")
@@ -6174,7 +6281,7 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
                     # NLU Short memakai bank konten per niche; konfirmasi
                     # NLU menampilkan rencananya sebelum dieksekusi.
                     _clear_make_draft(chat_id)
-                    _slots = {'channels': 'all'}
+                    _slots = {'channels': _target}
                     if d.get('theme'):
                         _slots['niche'] = d.get('theme')
                     _pending = {'intent': 'buat_short', 'slots': _slots,
@@ -6194,7 +6301,7 @@ def _handle_make_answer(token, chat_id, draft, raw_cmd):
                     # auto/jadwal) — sebelumnya slot dibangun dari nol
                     # sehingga tema & durasi yang sudah diisi hilang.
                     _th = _nlu_extract_playlist_theme(_nlu_clean(ans), channels) or d.get('theme')
-                    _slots = {'channels': 'all',
+                    _slots = {'channels': _target,
                               'playlist_theme': _th}
                     if d.get('pixabay_theme'):
                         _slots['pixabay_theme'] = d['pixabay_theme']
@@ -7527,6 +7634,16 @@ def parse_natural_command(text, channels):
         slots['channels'] = 'all'
     elif matched:
         slots['channels'] = [c.get('yt_id') for c in matched]
+    # 🔥 v1.3.76: upload per group — 'buatkan playlist untuk group
+    # Playlist M' / 'short untuk Playlist M'. Hanya bila tidak ada
+    # channel yang disebut namanya (channel eksplisit menang).
+    _grp = _nlu_match_group(text, channels)
+    if _grp and not matched and not all_flag:
+        slots['channels'] = 'group:' + _grp
+    elif not matched and not all_flag:
+        _gw = _nlu_group_word(text)
+        if _gw:
+            slots['group_unknown'] = _gw
     if 'channel' in clean and not matched and not all_flag:
         slots['channel_unknown'] = True
     # Jumlah channel ("buatkan untuk 2 channel") — BUKAN angka tetap:
@@ -7569,12 +7686,16 @@ def parse_natural_command(text, channels):
     # Dicek SEBELUM jeda/mode supaya 'pindah'/'masuk' tidak jatuh ke
     # tidak_dikenali, TAPI dilewati bila frasanya perintah buat konten
     # untuk sebuah group ('buatkan playlist untuk group X' tetap jadi
-    # buat_playlist, bukan atur group). Nama group diambil dari teks ASLI
+    # buat_playlist, bukan atur group). 🔥 v1.3.76: 'jadwalkan playlist
+    # untuk group X' juga dilewati (itu order konten, bukan atur group —
+    # tanpa ini, 'list' di dalam kata 'playlist' salah dibaca sebagai
+    # perintah 'lihat group'). Nama group diambil dari teks ASLI
     # (bukan clean) supaya huruf besar/kecilnya tetap seperti yang Bos
     # ketik ('Monet' tetap 'Monet', bukan 'monet').
     elif ('group' in clean or 'grup' in clean) and not (
-            create_verb and ('playlist' in clean or 'short' in clean
-                             or 'lagu' in clean or 'video' in clean)):
+            (create_verb or re.search(r'\b(jadwalkan|jadwalin)\b', clean))
+            and ('playlist' in clean or 'short' in clean
+                 or 'lagu' in clean or 'video' in clean)):
         _gm = re.search(r'(?:group|grup)\s+([A-Za-z0-9][\w \-]{0,39})',
                         text or '', re.I)
         _gname = (_gm.group(1).strip() if _gm else '')
@@ -7691,18 +7812,18 @@ def parse_natural_command(text, channels):
         intent = 'buat_short'
         conf = 40
         slots['kind_ambiguous'] = True
-    elif create_verb and (matched or all_flag or slots.get('channel_count')):
+    elif create_verb and (matched or all_flag or _grp or slots.get('channel_count')):
         # "buatkan untuk 2 channel" / "buatkan untuk semua channel" —
         # objek tidak disebut, default Short (konfirmasi akan menyatakan
         # tafsiran ini, Bos bisa menolak bila maksudnya video long).
         intent = 'buat_short'
         conf = 45
-    elif ('short' in clean and (matched or all_flag or 'tema' in clean
+    elif ('short' in clean and (matched or all_flag or _grp or 'tema' in clean
                                 or 'semua' in clean)):
         # Tanpa kata kerja tapi jelas ("short tema anak untuk semua channel").
         intent = 'buat_short'
         conf = 40
-    elif ('playlist' in clean and (matched or all_flag or 'tema' in clean
+    elif ('playlist' in clean and (matched or all_flag or _grp or 'tema' in clean
                                    or 'semua' in clean)):
         # Tanpa kata kerja tapi jelas ("playlist lofi untuk Aruya").
         intent = 'buat_playlist'
@@ -8045,10 +8166,11 @@ def _nlu_describe(pending):
     intent = pending.get('intent')
     # 🔥 v1.3.2: 'all' (dari "semua channel" / tombol Semua channel)
     # diuraikan ke daftar nama supaya konfirmasi menyebut semua channel,
-    # bukan sekadar "semua channel".
+    # bukan sekadar "semua channel". 🔥 v1.3.76: 'group:<nama>' juga.
     _ch_ids = slots.get('channels')
-    if _ch_ids == 'all':
-        _ch_ids = [c.get('yt_id') for c in load_channels()]
+    if _ch_ids == 'all' or (isinstance(_ch_ids, str)
+                            and _ch_ids.startswith('group:')):
+        _ch_ids = _nlu_expand_channels(_ch_ids, load_channels())
     names = _nlu_channel_names(_ch_ids or [])
     if names:
         ch = ', '.join(names)
@@ -8225,6 +8347,10 @@ def _nlu_ask_channel(token, chat_id, pending, multi=True):
                       "callback_data": f"nlu:ch:{i}"}])
     if multi:
         rows.append([{"text": "🌐 Semua channel", "callback_data": "nlu:ch:all"}])
+        # 🔥 v1.3.76: satu tombol per group (upload per group).
+        for g in _group_list(chans):
+            rows.append([{"text": f"📁 Group {g}",
+                          "callback_data": f"nlu:ch:group:{g}"}])
     slots = pending.get('slots') or {}
     picked = slots.get('channels') or []
     need = slots.get('channel_count') or 0
@@ -8304,12 +8430,38 @@ def _nlu_advance(token, chat_id, pending):
         _clear_nlu_pending(chat_id)
         send_message(token, chat_id, build_group_report())
         return
-    # --- Channel: isi dari 'all' / cek apakah sudah ada. ---
+    # --- Channel: isi dari 'all' / 'group:<nama>' / cek apakah sudah ada. ---
     if intent in ('buat_short', 'buat_long', 'buat_playlist', 'jadwalkan_playlist', 'perpanjang_jadwal', 'ubah_mode',
                   'jeda_channel', 'lanjutkan_channel', 'hapus', 'hentikan_antrean',
                   'atur_group', 'atur_jadwal'):
-        if slots.get('channels') == 'all':
-            slots['channels'] = [c.get('yt_id') for c in chans]
+        _ch_val = slots.get('channels')
+        if _ch_val == 'all' or (isinstance(_ch_val, str)
+                                and _ch_val.startswith('group:')):
+            # 🔥 v1.3.76: group diuraikan ke anggotanya. Bila group-nya
+            # kosong (semua channel keluar), beri tahu Bos, jangan diam-diam
+            # minta pilih channel (itu perintah lain).
+            slots['channels'] = _nlu_expand_channels(_ch_val, chans)
+            if not slots['channels'] and isinstance(_ch_val, str) \
+                    and _ch_val.startswith('group:'):
+                _gname = _ch_val[len('group:'):]
+                send_message(token, chat_id,
+                             f"Group *{_tg_escape(_gname)}* sekarang kosong Bos — "
+                             "belum ada channel di dalamnya. Masukkan channel dulu "
+                             "(`Aruya masuk ke Group " + _tg_escape(_gname) + "`), lalu coba lagi ya.")
+                _clear_nlu_pending(chat_id)
+                return
+        if slots.get('group_unknown') and not slots.get('channels'):
+            # 🔥 v1.3.76: 'group X' disebut tapi X belum ada.
+            _gu = slots.get('group_unknown')
+            _have = _group_list(chans)
+            _have_txt = (", ".join(_have) if _have
+                         else "belum ada group sama sekali")
+            send_message(token, chat_id,
+                         f"Saya nggak nemu group *{_tg_escape(_gu)}* Bos 😅 — "
+                         f"group yang ada: {_tg_escape(_have_txt)}. "
+                         "Coba sebut nama group-nya lagi ya, atau lihat daftarnya dengan /group.")
+            _clear_nlu_pending(chat_id)
+            return
         if not slots.get('channels') and slots.get('channel_unknown') \
                 and not slots.get('channel_count'):
             # 🔥 v1.3.2: 'channel_unknown' JANGAN menahan bila channel
@@ -8625,10 +8777,11 @@ def _execute_nlu_publish_now(token, chat_id, pending):
     langsung — panel yang pegang state in-memory)."""
     slots = pending.get('slots') or {}
     chans = slots.get('channels')
-    if chans == 'all' or not chans:
-        yt_ids = [c.get('yt_id') for c in load_channels() if c.get('yt_id')]
+    if chans:
+        # 🔥 v1.3.76: 'all' / 'group:<nama>' / daftar — pakai helper yang sama.
+        yt_ids = _nlu_expand_channels(chans, load_channels())
     else:
-        yt_ids = [y for y in chans if y]
+        yt_ids = [c.get('yt_id') for c in load_channels() if c.get('yt_id')]
     ok, msg, data = _operator_post('/api/operator/publish_now', {'yt_ids': yt_ids})
     if not ok:
         send_message(token, chat_id,
@@ -9303,6 +9456,11 @@ def _nlu_try_complete_pending(token, chat_id, raw_cmd, clean_cmd):
         matched, all_flag = _nlu_match_channels(clean_cmd, chans)
         if all_flag:
             return _accumulate(list(cands))
+        # 🔥 v1.3.76: jawaban berupa nama group ('group Playlist M').
+        _grp = _nlu_match_group(raw_cmd, chans)
+        if _grp:
+            return _accumulate([c.get('yt_id') for c in chans
+                                if _group_of(c) == _grp])
         if matched:
             return _accumulate([c.get('yt_id') for c in matched])
         # Bukan jawaban atas klarifikasi (mis. perintah baru "cek status")

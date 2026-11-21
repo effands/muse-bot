@@ -12554,7 +12554,7 @@ def _zumo_render(task_id, task, yt_id):
     """Render video Zumo: gambar latar STATIS (tanpa zoompan) + spectrum
     TIPIS di bawah (1920x140, y=940) + loop salju/sakura ikut beat
     (denyut eq per segmen lagu). 1 pass FFmpeg, H.264 1080p30 + AAC.
-    Spectrum sudah ikut beat secara bawaan (showspectrum dari frame
+    Spectrum sudah ikut beat secara bawaan (showfreqs EQ bars dari frame
     audio) — tidak perlu modulasi tambahan. Partikel ikut beat lewat
     denyut brightness eq per-frame pada BPM tiap lagu (Opsi D desain
     §5.3 — BUKAN geq per-frame, BUKAN render frame-by-frame Python).
@@ -12590,31 +12590,31 @@ def _zumo_render(task_id, task, yt_id):
     color = (task.get('zumo_spectrum_color') or 'white').strip().lower()
     if color not in ('white', 'cyan', 'viridis'):
         color = 'white'
-    # showspectrum `color` HANYA menerima enum preset (0-14: channel,
-    # intensity, rainbow, viridis, ...) — nama warna polos ('white'/'cyan')
-    # DITOLAK FFmpeg 8.1.2 ("Undefined constant ... in 'white'").
-    # Jadi putih/cyan dibuat dari `color=intensity` -> `format=gray`
-    # (batang abu-abu netral, latar tetap hitam) -> `lutrgb` KALI 2.2
-    # (bukan `eq=brightness`, yang ikut mengangkat latar jadi abu-abu).
-    # Cyan: `colorchannelmixer` mematikan kanal merah sebelum lutrgb.
-    # Terverifikasi empiris di harness v1.3.0 (piksel terang putih
-    # 217,217,217 / cyan 5,250,244, latar tetap hitam).
-    # OPACITY spectrum 65% (user 21:21 WIB: 60-70%, semi-transparan
-    # supaya gambar latar tetap tembus di balik spectrum — jangan 100%
-    # solid): ujung rantai `format=yuva420p,colorchannelmixer=aa=0.65`
-    # memberi alpha 0.65 ke SELURUH strip (batang + latar hitamnya),
-    # lalu `overlay` memadukan alpha itu di atas gambar. Nilai tengah
-    # 0.65 dari rentang 0.60-0.70 yang diminta user.
+    # Spectrum = EQ BARS vertikal (showfreqs mode=bar) — batang naik-turun
+    # mengikuti musik, BUKAN spectrogram yang menggeser kiri-kanan
+    # (showspectrum slide=scroll, dipakai s.d. v1.3.82 — dikomplain user
+    # 21 Nov 2026: "malah jadi video geser kanan ke kiri, harusnya
+    # spectrum equalizer"). showfreqs tidak punya opsi warna enum:
+    # batang diwarnai lewat `format=gray` (netral) -> `lutrgb` (tint,
+    # sama seperti dulu). ascale=log ≈ scale=log lama; fscale=log.
+    # win_size=512 -> ~256 bin di lebar 1920 (batang chunky, bukan
+    # garis tipis rapat); ascale=lin dicoba — batang hampir tak terlihat.
+    # Batang dipendekkan (scale 100 + pad 40 atas) supaya ada ruang hitam
+    # di atasnya, jangkar tetap di bawah. OPACITY 65% seperti sebelumnya
+    # (user 21:21 WIB: 60-70%): `colorchannelmixer=aa=0.65` di ujung.
+    # Terverifikasi empiris di VPS 21 Nov 2026 (frame uji varian B).
     _SPEC_FILTERS = {
-        'white': ("showspectrum=s=1920x140:mode=separate:scale=log:color=intensity:slide=scroll,"
+        'white': ("showfreqs=s=1920x140:mode=bar:ascale=log:fscale=log:win_size=512,"
                   "format=gray,lutrgb=r='min(255,val*2.2)':g='min(255,val*2.2)':b='min(255,val*2.2)',"
-                  "format=yuva420p,colorchannelmixer=aa=0.65"),
-        'cyan': ("showspectrum=s=1920x140:mode=separate:scale=log:color=intensity:slide=scroll,"
+                  "format=yuva420p,scale=1920:100,pad=1920:140:0:40,colorchannelmixer=aa=0.65"),
+        'cyan': ("showfreqs=s=1920x140:mode=bar:ascale=log:fscale=log:win_size=512,"
                  "format=gray,colorchannelmixer=rr=0:gg=1:bb=1,"
                  "lutrgb=r='min(255,val*2.2)':g='min(255,val*2.2)':b='min(255,val*2.2)',"
-                 "format=yuva420p,colorchannelmixer=aa=0.65"),
-        'viridis': ("showspectrum=s=1920x140:mode=separate:scale=log:color=viridis:slide=scroll,"
-                    "format=yuva420p,colorchannelmixer=aa=0.65"),
+                 "format=yuva420p,scale=1920:100,pad=1920:140:0:40,colorchannelmixer=aa=0.65"),
+        'viridis': ("showfreqs=s=1920x140:mode=bar:ascale=log:fscale=log:win_size=512,"
+                    "format=gray,"
+                    "lutrgb=r='clip((val-100)*2.2,0,255)':g='clip(val*1.9,0,255)':b='clip((180-val)*1.4,0,255)',"
+                    "format=yuva420p,scale=1920:100,pad=1920:140:0:40,colorchannelmixer=aa=0.65"),
     }
     ff = get_ffmpeg_path()
     # Denyut partikel per segmen lagu (eq brightness, amplitudo 0.06 —

@@ -694,8 +694,11 @@ def make_particle_loop(kind, out_path, duration=8.0, fps=30,
     n_frames = int(round(duration * fps))
     if kind == 'snow':
         n_part = 170
+        # Radius 1.5-4.5 (was 2.0-6.0): user 21 Nov 2026 bilang partikel
+        # salju "udah lumayan oke, hanya size-nya kurang kecil dikit" —
+        # dikecilkan ~25%.
         parts = [{'x': rng.uniform(0, width), 'y': rng.uniform(0, height),
-                  'r': rng.uniform(2.0, 6.0), 'vy': rng.uniform(55, 130),
+                  'r': rng.uniform(1.5, 4.5), 'vy': rng.uniform(55, 130),
                   'sway': rng.uniform(0.4, 1.4), 'ph': rng.uniform(0, 6.28),
                   'a': rng.randint(150, 255)} for _ in range(n_part)]
     else:

@@ -1,3 +1,8 @@
+## 1.3.83
+- Spectrum Zumo jadi EQ BARS vertikal (komplain user 21 Nov 2026: spectrum lama "malah jadi video geser kanan ke kiri, harusnya spectrum equalizer"): `showspectrum slide=scroll` diganti `showfreqs mode=bar` (batang naik-turun mengikuti musik, jangkar di bawah, ruang hitam di atasnya; win_size=512 supaya batang chunky; ascale=lin dicoba — batang hampir tak terlihat). Warna putih/cyan/viridis tetap didukung lewat rantai gray → lutrgb yang sama.
+- Partikel salju diperkecil ~25% (radius 2.0-6.0 → 1.5-4.5): user bilang partikel "udah lumayan oke, hanya size-nya kurang kecil dikit".
+- Judul/deskripsi video Zumo pertama (lj3bfh-4FWc) diperbaiki langsung via API (tanpa re-upload): judul SEO Bahasa Inggris 89 karakter, deskripsi Inggris ~1000 karakter + CTA subscribe + hashtag.
+
 ## 1.3.82
 - Thumbnail Zumo dirombak total (komplain user 21 Nov 2026 + analisa thumbnail YouTube niche relaxing jazz / coffee: 'RELAX JAZZ CAFE', 'November Morning Bossa Nova Jazz', 'Cozy November Coffee Jazz'): foto FULL-BLEED tanpa panel split, tanpa badge ZUMO, tanpa nama channel; teks pendek maks 3 kata di atas gambar (3 kata terakhir segmen pertama judul), 2 baris serif elegan tengah-atas — baris 1 putih, baris 2 krem keemasan — + scrim gelap halus di atas supaya terbaca. Contoh: 'Cozy European Morning Coffee Jazz' → 'Morning Coffee' / 'Jazz'.
 - Judul video Zumo dibersihkan: tema tidak diulang bila kata-katanya sudah ada di judul lagu, suffix '(N Lagu)' dibuang (bukan gaya judul YouTube; jumlah lagu tetap ada di deskripsi/tracklist).

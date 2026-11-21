@@ -2553,6 +2553,10 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
     _fetch('/api/csrf_token').then(r => r.json()).then(d => { window.CSRF_TOKEN = d.csrf_token || ''; }).catch(() => {});
   }
 })();
+// 🔥 v1.3.79: _fetch di atas HANYA hidup di dalam IIFE ini (const, scope lokal).
+// Kode top-level di file ini WAJIB pakai fetch(...) (global yang sudah dibungkus
+// CSRF di atas) — dulu confirmDeviceAddChannel dkk memanggil _fetch(...) dan
+// tombolnya mati total (ReferenceError) tanpa pesan apa pun.
 // ────────────────────────────────────────────────────────
 //  STATE
 // ────────────────────────────────────────────────────────
@@ -3232,7 +3236,7 @@ async function saveChannelGroupInput(el) {
   await saveChannelGroup(td.dataset.yt || '', name, td);
 }
 async function saveChannelGroup(ytId, group, el) {
-  const res = await _fetch('/api/set_channel_group', { method: 'POST', body: JSON.stringify({ yt_id: ytId, group }) });
+  const res = await fetch('/api/set_channel_group', { method: 'POST', body: JSON.stringify({ yt_id: ytId, group }) });
   const d = await res.json().catch(() => ({}));
   if (res.ok && d.status === 'success') {
     toast(group ? `Group tersimpan → ${group}.` : 'Channel keluar dari group.', 'ok');
@@ -3367,7 +3371,7 @@ async function saveChannelEmail(el) {
   const inp = td.querySelector('.em-input'); if (!inp) return;
   const email = inp.value.trim();
   const ytId = td.dataset.yt || '';
-  const res = await _fetch('/api/set_channel_email', { method: 'POST', body: JSON.stringify({ yt_id: ytId, email }) });
+  const res = await fetch('/api/set_channel_email', { method: 'POST', body: JSON.stringify({ yt_id: ytId, email }) });
   const d = await res.json().catch(() => ({}));
   if (res.ok && d.status === 'success') {
     toast(email ? 'Email tersimpan.' : 'Email dikosongkan.', 'ok');
@@ -6645,7 +6649,7 @@ function analyticsMakeUrl() {
   if (!yt) { toast('Pilih channel dulu.', 'error'); return; }
   if (box) box.style.display = 'block';
   if (out) out.value = 'Membuat link…';
-  _fetch('/api/analytics_auth_url', { method: 'POST', body: JSON.stringify({ yt_id: yt, client_id: cid }) })
+  fetch('/api/analytics_auth_url', { method: 'POST', body: JSON.stringify({ yt_id: yt, client_id: cid }) })
     .then(d => {
       if (d.status !== 'success') { toast(d.message || 'Gagal membuat link.', 'error'); if (out) out.value = ''; return; }
       if (out) out.value = d.auth_url || '';
@@ -6661,7 +6665,7 @@ function analyticsSaveCode() {
   const cid = (document.getElementById('an-client') || {}).value || '';
   const code = ((document.getElementById('an-code') || {}).value || '').trim();
   if (!yt || !code) { toast('Pilih channel dan tempel kodenya dulu.', 'error'); return; }
-  _fetch('/api/analytics_auth_code', { method: 'POST', body: JSON.stringify({ yt_id: yt, client_id: cid, code }) })
+  fetch('/api/analytics_auth_code', { method: 'POST', body: JSON.stringify({ yt_id: yt, client_id: cid, code }) })
     .then(d => {
       if (d.status !== 'success') { toast(d.message || 'Kode ditolak.', 'error'); return; }
       toast(d.message || 'Analytics aktif.', 'success');
@@ -6684,7 +6688,7 @@ function channelAddMakeUrl() {
   const out = document.getElementById('ca-url-out');
   if (box) box.style.display = 'block';
   if (out) out.value = 'Membuat link…';
-  _fetch('/api/channel_add_url', { method: 'POST', body: JSON.stringify({ client_id: cid }) })
+  fetch('/api/channel_add_url', { method: 'POST', body: JSON.stringify({ client_id: cid }) })
     .then(d => {
       if (d.status !== 'success') { toast(d.message || 'Gagal membuat link.', 'error'); if (out) out.value = ''; return; }
       if (out) out.value = d.auth_url || '';
@@ -6699,7 +6703,7 @@ function channelAddSaveCode() {
   const cid = (document.getElementById('ca-client') || {}).value || '';
   const code = ((document.getElementById('ca-code') || {}).value || '').trim();
   if (!code) { toast('Tempel kodenya dulu.', 'error'); return; }
-  _fetch('/api/channel_add_code', { method: 'POST', body: JSON.stringify({ client_id: cid, code }) })
+  fetch('/api/channel_add_code', { method: 'POST', body: JSON.stringify({ client_id: cid, code }) })
     .then(d => {
       if (d.status === 'confirm') { showChannelAddConfirm(d); return; }
       if (d.status !== 'success') { toast(d.message || 'Kode ditolak.', 'error'); return; }
@@ -6719,7 +6723,7 @@ function showChannelAddConfirm(d) {
   if (box) box.style.display = 'block';
 }
 function channelAddConfirm() {
-  _fetch('/api/channel_add_confirm', { method: 'POST', body: JSON.stringify({}) })
+  fetch('/api/channel_add_confirm', { method: 'POST', body: JSON.stringify({}) })
     .then(d => {
       if (d.status !== 'success') { toast(d.message || 'Gagal menambah channel.', 'error'); return; }
       toast(d.message || 'Channel ditambahkan.', 'success');
@@ -6730,7 +6734,7 @@ function channelAddConfirm() {
     }).catch(() => toast('Gagal menambah channel.', 'error'));
 }
 function channelAddCancel() {
-  _fetch('/api/channel_add_cancel', { method: 'POST', body: JSON.stringify({}) })
+  fetch('/api/channel_add_cancel', { method: 'POST', body: JSON.stringify({}) })
     .then(() => { const box = document.getElementById('ca-confirm-box'); if (box) box.style.display = 'none'; toast('Penambahan channel dibatalkan.', 'info'); })
     .catch(() => { const box = document.getElementById('ca-confirm-box'); if (box) box.style.display = 'none'; });
 }
@@ -7143,7 +7147,7 @@ function closeAddChannelModal() {
   if (modal) modal.style.display = 'none';
 }
 function confirmDeviceAddChannel() {
-  _fetch('/api/channel_add_confirm', { method: 'POST', body: JSON.stringify({}) })
+  fetch('/api/channel_add_confirm', { method: 'POST', body: JSON.stringify({}) })
     .then(data => {
       const st = document.getElementById('add-ch-status');
       if (data.status === 'success') {
@@ -7158,7 +7162,7 @@ function confirmDeviceAddChannel() {
     .catch(() => { const st = document.getElementById('add-ch-status'); if (st) st.innerHTML = '<span style="color:var(--red,#f43f5e)">❌ Gagal menghubungi server.</span>'; });
 }
 function cancelDeviceAddChannel() {
-  _fetch('/api/channel_add_cancel', { method: 'POST', body: JSON.stringify({}) }).catch(() => {});
+  fetch('/api/channel_add_cancel', { method: 'POST', body: JSON.stringify({}) }).catch(() => {});
   closeAddChannelModal();
 }
 

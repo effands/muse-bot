@@ -1,3 +1,7 @@
+## 1.3.79
+- Perbaiki tombol "Ya, Tambah Channel Ini" / "Batal" di modal Tambah Channel yang mati total saat diklik (laporan Bos 21 Nov 2026, channel NadaKoplo): penyebabnya `confirmDeviceAddChannel()`/`cancelDeviceAddChannel()` memanggil `_fetch(...)`, padahal `_fetch` hanya dideklarasikan di dalam IIFE pembungkus CSRF (scope lokal) — dari fungsi top-level, namanya tidak dikenal sehingga klik langsung error tanpa pesan apa pun. Perbaikan: semua pemanggil top-level kini memakai `fetch(...)` (global yang sudah dibungkus header CSRF). Satu akar masalah yang sama juga memperbaiki 5 tombol lain yang diam-diam mati: simpan group channel, simpan email channel, buat link Analytics, konfirmasi/batal tambah channel via 1x login browser, dan kirim kode Analytics.
+- Termasuk perbaikan v1.3.78 (salin link google.com/device) dalam deploy yang sama.
+
 ## 1.3.78
 - Perbaiki klik link google.com/device di modal Tambah Channel (laporan Bos 21 Nov 2026): klik link tidak menyalin apa-apa, malah muncul "Browser ini tidak mendukung salin otomatis". Penyebab: panel jalan lewat HTTP (bukan HTTPS) sehingga `navigator.clipboard` tidak tersedia di browser (butuh secure context) dan kode langsung menyerah. Sekarang pakai fallback textarea + `execCommand('copy')` seperti tombol salin lain di panel — jalan di HTTP. Bila itu pun gagal, URL ditampilkan utuh di tempat link supaya bisa diseleksi & disalin manual. Perilaku tetap: klik = salin, bukan buka tab baru.
 

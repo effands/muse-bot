@@ -11282,6 +11282,43 @@ def _playlist_thumb_font(size):
     return ImageFont.load_default()
 
 
+def _playlist_thumb_serif(size, bold=True):
+    """Font serif (DejaVu Serif) untuk teks thumbnail gaya YouTube
+    relaxing-jazz: judul elegan, bukan sans tebal. Fallback ke font
+    sans bila serif tidak ada."""
+    from PIL import ImageFont
+    name = 'DejaVuSerif-Bold.ttf' if bold else 'DejaVuSerif.ttf'
+    for p in (f'/usr/share/fonts/truetype/dejavu/{name}',
+              f'/usr/share/fonts/TTF/{name}'):
+        try:
+            if os.path.exists(p):
+                return ImageFont.truetype(p, size)
+        except Exception:
+            pass
+    return _playlist_thumb_font(size)
+
+
+def _zumo_thumb_short_text(title):
+    """Teks pendek thumbnail dari judul video — gaya thumbnail YouTube
+    niche relaxing jazz / coffee (lihat referensi user 21 Nov 2026):
+    MAKSIMAL 3 kata, yang diambil 3 kata TERAKHIR dari segmen pertama
+    judul (kata kuncinya ada di akhir: '... Morning Coffee Jazz').
+    Kembalikan [baris1, baris2]: baris1 = semua kata kecuali terakhir,
+    baris2 = kata terakhir. Contoh: 'Morning Coffee Jazz' ->
+    ['Morning Coffee', 'Jazz']."""
+    t = _clean_upload_text(title or '', max_len=100) or ''
+    t = re.sub(r'\s*\([^)]*\)\s*$', '', t).strip()
+    first = re.split(r'\s+[—–-]\s+', t)[0].strip()
+    words = first.split()
+    if len(words) > 3:
+        words = words[-3:]
+    if not words:
+        words = ['Relaxing', 'Jazz']
+    if len(words) == 1:
+        return [words[0]]
+    return [' '.join(words[:-1]), words[-1]]
+
+
 def _playlist_wrap_text(text, font, max_w, draw):
     """Bungkus teks ke beberapa baris sesuai lebar maksimum."""
     words, lines, cur = (text or '').split(), [], ''
@@ -12299,6 +12336,33 @@ def _zumo_background_path(yt_id):
     return None
 
 
+def _zumo_background_video_path(yt_id):
+    """Video latar animasi channel (loop) — urutan: 1) galeri
+    uploads/<yt_id>/backgrounds/zumo_cozy_sax_bg.mp4 (stem sama dengan
+    ZUMO_BG_FILENAME, ganti .jpg -> .mp4); 2) file .mp4 apa pun di
+    galeri backgrounds/ channel itu. Bila ada, _zumo_render memakai
+    video ini (loop sampai durasi lagu) sebagai latar, BUKAN gambar
+    statis — permintaan user 21 Nov 2026 (asap kopi + daun/lampu
+    bergerak, kamera statis)."""
+    try:
+        bg_dir = _safe_join_under(BASE_UPLOAD, yt_id, 'backgrounds')
+    except Exception:
+        return None
+    stem = os.path.splitext(_zumo_core.ZUMO_BG_FILENAME)[0] if _ZUMO_CORE_OK else 'zumo_cozy_sax_bg'
+    cand = os.path.join(bg_dir, stem + '.mp4')
+    if os.path.isfile(cand) and os.path.getsize(cand) > 0:
+        return cand
+    try:
+        for f in sorted(os.listdir(bg_dir)):
+            if f.lower().endswith('.mp4'):
+                p = os.path.join(bg_dir, f)
+                if os.path.getsize(p) > 0:
+                    return p
+    except Exception:
+        pass
+    return None
+
+
 def _zumo_bank_save_track(yt_id, channel_name, src_path, meta):
     """Simpan 1 lagu mentah ke bank (uploads/zumo_bank/<nama-channel>/).
     Kegagalan bank TIDAK PERNAH menggagalkan job upload — dicatat ke
@@ -12337,33 +12401,27 @@ def _zumo_ensure_particle_loop(kind):
 
 def _zumo_make_thumbnail(image_path, new_title, channel_name, out_path,
                          badge=None):
-    """Thumbnail Zumo 1280x720 — varian _playlist_make_thumbnail yang
-    menerima PATH GAMBAR LOKAL (bukan URL ytimg). Layout SAMA (split:
-    kiri gradien + badge + judul + channel; kanan foto). Bila image_path
-    kosong/tidak ada -> gradien lokal saja (tanpa foto). Gagal total
-    (PIL rusak) -> raise, JANGAN pakai thumbnail acak."""
-    title = _clean_upload_text(new_title, max_len=100) or 'Zumo Playlist'
-    ch = _clean_upload_text(channel_name or '') or 'ZIMUSE'
-    badge = (badge or 'ZUMO').strip()[:20].upper()
+    """Thumbnail Zumo 1280x720 — gaya thumbnail YouTube niche relaxing
+    jazz / coffee (analisa referensi 21 Nov 2026: 'RELAX JAZZ CAFE',
+    'November Morning Bossa Nova Jazz', 'Cozy November Coffee Jazz'):
+    foto FULL-BLEED (tanpa panel/split, tanpa badge, tanpa nama channel),
+    teks PENDEK di atas gambar (maks 3 kata, _zumo_thumb_short_text),
+    2 baris serif elegan di tengah-atas: baris 1 putih, baris 2 warna
+    krem keemasan + scrim gelap halus di atas supaya teks terbaca.
+    Bila image_path kosong/tidak ada -> gradien lokal saja (tanpa foto).
+    Gagal total (PIL rusak) -> raise, JANGAN pakai thumbnail acak."""
+    from PIL import Image, ImageDraw
+    lines = _zumo_thumb_short_text(new_title)
     photo = None
     if image_path and os.path.isfile(image_path):
         try:
-            from PIL import Image
             photo = Image.open(image_path).convert('RGB')
         except Exception as e:
             print(f"[zumo] thumbnail: gambar lokal tidak bisa dibuka ({e}) — pakai gradien.", flush=True)
             photo = None
-    from PIL import Image, ImageDraw
-    if photo is not None:
-        c1, c2, accent = _playlist_thumb_palette(photo)
-    else:
-        c1, c2, accent = (24, 24, 34), (8, 8, 14), (255, 212, 0)
-    img = _playlist_thumb_gradient(1280, 720, c1, c2)
-    draw = ImageDraw.Draw(img, 'RGBA')
-    photo_w = 520
     if photo is not None:
         w, h = photo.size
-        target = photo_w / 720
+        target = 1280 / 720
         if w / h > target:
             nw = int(h * target)
             x = (w - nw) // 2
@@ -12372,40 +12430,44 @@ def _zumo_make_thumbnail(image_path, new_title, channel_name, out_path,
             nh = int(w / target)
             y = (h - nh) // 2
             photo = photo.crop((0, y, w, y + nh))
-        photo = photo.resize((photo_w, 720), Image.LANCZOS)
-        img.paste(photo, (1280 - photo_w, 0))
-        draw.rectangle([1280 - photo_w - 6, 0, 1280 - photo_w, 720],
-                       fill=accent + (255,))
-        max_w = 1280 - photo_w - 6 - 56 - 40
+        img = photo.resize((1280, 720), Image.LANCZOS)
     else:
-        max_w = 1280 - 56 - 40
-    font_badge = _playlist_thumb_font(30)
-    tw = draw.textlength(badge, font=font_badge)
-    bx, by = 56, 52
-    draw.rounded_rectangle([bx, by, bx + tw + 40, by + 52], radius=26,
-                           fill=accent + (255,))
-    draw.text((bx + 20, by + 9), badge, font=font_badge, fill=(0, 0, 0))
-    font = _playlist_thumb_font(64)
-    lines = _playlist_wrap_text(title, font, max_w, draw)
-    for size in (64, 56, 48, 40, 36):
-        font = _playlist_thumb_font(size)
-        lines = _playlist_wrap_text(title, font, max_w, draw)
-        if len(lines) <= 5:
+        c1, c2 = (38, 28, 20), (12, 10, 8)
+        img = _playlist_thumb_gradient(1280, 720, c1, c2)
+    # Scrim atas: hitam transparan 150 -> 0 setinggi ~360px supaya teks
+    # putih terbaca di atas foto terang (langit pagi). Scrim dibuat
+    # seukuran gambar penuh (alpha_composite butuh ukuran sama).
+    base = img.convert('RGBA')
+    scrim = Image.new('RGBA', (1280, 720), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(scrim)
+    for yy in range(360):
+        a = int(150 * (1 - yy / 360) ** 1.4)
+        sd.line([(0, yy), (1280, yy)], fill=(0, 0, 0, a))
+    img = Image.alpha_composite(base, scrim).convert('RGB')
+    draw = ImageDraw.Draw(img, 'RGBA')
+    # Ukuran font: turunkan sampai semua baris muat (lebar maks 1120px).
+    max_w = 1120
+    size1, size2 = 92, 122
+    while size1 > 40:
+        f1 = _playlist_thumb_serif(size1, bold=True)
+        f2 = _playlist_thumb_serif(size2, bold=True)
+        fonts_try = [f1] * (len(lines) - 1) + [f2]
+        if all(draw.textlength(ln, font=f) <= max_w
+               for ln, f in zip(lines, fonts_try)):
             break
-    if len(lines) > 5:
-        lines = lines[:5]
-        while draw.textlength(lines[4] + '…', font=font) > max_w and len(lines[4]) > 3:
-            lines[4] = lines[4][:-1]
-        lines[4] = lines[4].rstrip() + '…'
-    line_h = int(font.size * 1.18)
-    block_h = line_h * len(lines)
-    y = 170 + max(0, (430 - block_h) // 2)
-    for ln in lines:
-        draw.text((58, y + 3), ln, font=font, fill=(0, 0, 0, 200))
-        draw.text((56, y), ln, font=font, fill=(255, 255, 255))
-        y += line_h
-    font_small = _playlist_thumb_font(30)
-    draw.text((56, 648), ch[:60], font=font_small, fill=accent)
+        size1 -= 6
+        size2 -= 8
+    f1 = _playlist_thumb_serif(size1, bold=True)
+    f2 = _playlist_thumb_serif(size2, bold=True)
+    fonts = [f1] * (len(lines) - 1) + [f2]
+    colors = [(255, 255, 255)] * (len(lines) - 1) + [(255, 216, 140)]
+    y = 64
+    for ln, f, col in zip(lines, fonts, colors):
+        tw = draw.textlength(ln, font=f)
+        x = (1280 - tw) // 2
+        draw.text((x + 2, y + 4), ln, font=f, fill=(0, 0, 0, 170))
+        draw.text((x, y), ln, font=f, fill=col + (255,))
+        y += int(f.size * 1.12)
     q = 88
     while True:
         img.save(out_path, 'JPEG', quality=q, optimize=True)
@@ -12415,13 +12477,22 @@ def _zumo_make_thumbnail(image_path, new_title, channel_name, out_path,
     return out_path
 
 
+
 def _zumo_rewrite_title(track_titles, theme, channel_name):
     """Judul video dari judul lagu hasil generate + tema. Nama channel
     TIDAK ditempel ke judul (v1.2.23 — _strip_channel_title_suffix juga
     berjaga di _clean_upload_text). Maks 100 karakter, bersih emoji."""
     first = (track_titles or [''])[0].strip() if track_titles else ''
     th = (theme or '').strip()
-    if first and th and first.lower() not in th.lower():
+    # 🔥 v1.3.82: jangan ulang tema bila kata-katanya sudah ada di judul
+    # lagu (dulu: 'Cozy European Morning Coffee Jazz — Cozy European
+    # Morning Coffee (2 Lagu)'). Suffix '(N Lagu)' juga dibuang — bukan
+    # gaya judul YouTube; jumlah lagu sudah ada di deskripsi (tracklist).
+    th_words = set(th.lower().split())
+    first_words = set(first.lower().split())
+    if first and th and th_words and th_words <= first_words:
+        raw = first
+    elif first and th and first.lower() not in th.lower():
         raw = f"{first} — {th}"
     elif first:
         raw = first
@@ -12429,9 +12500,6 @@ def _zumo_rewrite_title(track_titles, theme, channel_name):
         raw = th
     else:
         raw = 'Lagu Zumo'
-    n = len([t for t in (track_titles or []) if t])
-    if n > 1:
-        raw = f"{raw} ({n} Lagu)"
     return _clean_upload_text(raw, max_len=100, fallback='Lagu Zumo',
                               strip_channel=channel_name)
 
@@ -12511,7 +12579,10 @@ def _zumo_render(task_id, task, yt_id):
     bg = (task.get('zumo_bg_image') or '').strip()
     if not audio or not os.path.exists(audio):
         raise Exception('File audio Zumo tidak ditemukan.')
-    if not bg or not os.path.exists(bg):
+    # 🔥 v1.3.82: latar VIDEO (loop) didahulukan bila ada — gambar statis
+    # hanya dipakai bila tidak ada video. Video boleh ada tanpa gambar.
+    bg_video = _zumo_background_video_path(yt_id)
+    if not bg_video and (not bg or not os.path.exists(bg)):
         raise Exception('Gambar latar Zumo tidak ditemukan.')
     audio_dur = _playlist_media_duration(audio)
     if audio_dur <= 0:
@@ -12569,7 +12640,12 @@ def _zumo_render(task_id, task, yt_id):
         f"[specin]{_SPEC_FILTERS[color]}[spec];"
         "[bg][spec]overlay=0:940[bg2]"
     )
-    inputs = [ff, '-y', '-loop', '1', '-i', bg, '-i', audio]
+    inputs = [ff, '-y']
+    if bg_video:
+        inputs += ['-stream_loop', '-1', '-i', bg_video]
+    else:
+        inputs += ['-loop', '1', '-i', bg]
+    inputs += ['-i', audio]
     if loop and os.path.exists(loop):
         inputs += ['-stream_loop', '-1', '-i', loop]
         # Screen blend HARUS di ruang RGB (gbrp), bukan YUV: blend
@@ -12594,7 +12670,8 @@ def _zumo_render(task_id, task, yt_id):
                      total_sec=audio_dur, pct_base=0.0, pct_span=100.0)
     if not os.path.exists(final_video) or os.path.getsize(final_video) == 0:
         raise Exception('Render Zumo gagal (file final kosong).')
-    task['zumo_render_method'] = 'static+spectrum+particle' if loop else 'static+spectrum'
+    base_method = 'video+spectrum' if bg_video else 'static+spectrum'
+    task['zumo_render_method'] = base_method + '+particle' if loop else base_method
     try:
         _zumo_job_update(task.get('zumo_job_id'), render_method=task['zumo_render_method'])
     except Exception:

@@ -1,3 +1,8 @@
+## 1.3.82
+- Thumbnail Zumo dirombak total (komplain user 21 Nov 2026 + analisa thumbnail YouTube niche relaxing jazz / coffee: 'RELAX JAZZ CAFE', 'November Morning Bossa Nova Jazz', 'Cozy November Coffee Jazz'): foto FULL-BLEED tanpa panel split, tanpa badge ZUMO, tanpa nama channel; teks pendek maks 3 kata di atas gambar (3 kata terakhir segmen pertama judul), 2 baris serif elegan tengah-atas — baris 1 putih, baris 2 krem keemasan — + scrim gelap halus di atas supaya terbaca. Contoh: 'Cozy European Morning Coffee Jazz' → 'Morning Coffee' / 'Jazz'.
+- Judul video Zumo dibersihkan: tema tidak diulang bila kata-katanya sudah ada di judul lagu, suffix '(N Lagu)' dibuang (bukan gaya judul YouTube; jumlah lagu tetap ada di deskripsi/tracklist).
+- Latar video Zumo: bila ada file video di galeri backgrounds channel (`zumo_cozy_sax_bg.mp4`), render memakai video itu (loop sampai durasi lagu) sebagai latar, bukan gambar statis — asap kopi + daun/lampu bergerak, kamera statis (permintaan user 21 Nov 2026). Gambar statis tetap jadi fallback.
+
 ## 1.3.81
 - Hapus kolom TREND dan AVG dari tabel DETAIL CHANNEL (permintaan user 21 Nov 2026) — termasuk kalimat penjelasnya di catatan "Tentang data ini"; colspan baris kosong/muat disesuaikan (14 → 12).
 - Perbaiki tampilan dropdown GROUP yang aneh (laporan user 21 Nov 2026): dropdown tertutup hanya menampilkan chevron kecil tanpa nama group. Penyebab: aturan global `.content select { width:100% }` bikin select di sel tabel auto-layout menciut sampai tinggal chevron-nya. Sekarang select punya lebar tetap 130px, jadi nama group yang aktif ("Playlist M" / "— Tanpa Group —") selalu kelihatan tanpa harus dibuka.

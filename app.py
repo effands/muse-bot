@@ -1517,6 +1517,8 @@ DISK_MIN_FREE_BYTES = 5 * 1024 ** 3  # 5 GB ambang aman sebelum render
 DISK_BYTES_PER_SEC = 500_000         # perkiraan ukuran hasil render (500 KB/detik)
 UPLOAD_MAX_ATTEMPTS = 3              # 1 percobaan + maks 2x retry (Fase 5)
 UPLOAD_RETRY_BACKOFF_BASE = 10       # detik; jeda 10 lalu 20 (eksponensial x2)
+ZUMO_RENDER_MAX_ATTEMPTS = 3         # 1 percobaan + maks 2x retry render Zumo (v1.3.93)
+ZUMO_RENDER_RETRY_PAUSE = 60         # detik jeda antar percobaan render Zumo
 FAIL_STREAK_AUTO_PAUSE = 3           # gagal beruntun → jeda channel otomatis
 # 🔥 FASE 8: Shorts Muse — video vertikal 1080x1920 dari naskah + CTA.
 # Naskah/hook/CTA dibuat oleh Muse di chat; VPS hanya me-render & upload.
@@ -12675,13 +12677,19 @@ def _zumo_background_path(yt_id):
 
 
 def _zumo_background_video_path(yt_id):
-    """Video latar animasi channel (loop) — urutan: 1) galeri
+    """Video latar animasi channel (loop) — HANYA file eksplisit
     uploads/<yt_id>/backgrounds/zumo_cozy_sax_bg.mp4 (stem sama dengan
-    ZUMO_BG_FILENAME, ganti .jpg -> .mp4); 2) file .mp4 apa pun di
-    galeri backgrounds/ channel itu. Bila ada, _zumo_render memakai
+    ZUMO_BG_FILENAME, ganti .jpg -> .mp4). Bila ada, _zumo_render memakai
     video ini (loop sampai durasi lagu) sebagai latar, BUKAN gambar
     statis — permintaan user 21 Nov 2026 (asap kopi + daun/lampu
-    bergerak, kamera statis)."""
+    bergerak, kamera statis).
+    🔥 v1.3.93: fallback "file .mp4 apa pun di backgrounds/" DIHAPUS.
+    Insiden 22 Nov 2026 00:07 WIB: folder backgrounds/ Cozy Sax berisi
+    3 klip anak (clip-cozy-sax-01/02/03.mp4, sisa Shorts anak Nov 18) —
+    fallback itu memilih clip-cozy-sax-01.mp4 (kereta kartun anak siang
+    terang) sebagai latar video Smooth Jazz 90s (lounge malam gelap),
+    render harus dihentikan manual. File .mp4 lain di backgrounds/ BUKAN
+    latar — hanya nama eksplisit di atas yang dipakai."""
     try:
         bg_dir = _safe_join_under(BASE_UPLOAD, yt_id, 'backgrounds')
     except Exception:
@@ -12690,14 +12698,6 @@ def _zumo_background_video_path(yt_id):
     cand = os.path.join(bg_dir, stem + '.mp4')
     if os.path.isfile(cand) and os.path.getsize(cand) > 0:
         return cand
-    try:
-        for f in sorted(os.listdir(bg_dir)):
-            if f.lower().endswith('.mp4'):
-                p = os.path.join(bg_dir, f)
-                if os.path.getsize(p) > 0:
-                    return p
-    except Exception:
-        pass
     return None
 
 
@@ -13004,10 +13004,40 @@ def _zumo_render(task_id, task, yt_id):
                     '-r', '30', '-c:a', 'aac', '-b:a', '192k',
                     '-t', f"{audio_dur:.3f}", '-movflags', '+faststart',
                     final_video]
-    _run_ffmpeg_zoom(task_id, cmd, "FFmpeg Zumo Render Error",
-                     total_sec=audio_dur, pct_base=0.0, pct_span=100.0)
-    if not os.path.exists(final_video) or os.path.getsize(final_video) == 0:
-        raise Exception('Render Zumo gagal (file final kosong).')
+    # 🔥 v1.3.93 — AUTO-RETRY render (permintaan user 22 Nov 2026, "buat auto
+    # retry 2-3x dong"): ffmpeg yang mati di tengah jalan (dibunuh, OOM,
+    # gangguan sesaat) TIDAK langsung menggagalkan task — coba lagi sampai
+    # ZUMO_RENDER_MAX_ATTEMPTS (1 + maks 2x retry), jeda
+    # ZUMO_RENDER_RETRY_PAUSE detik antar percobaan. Pola sama seperti
+    # retry upload (UPLOAD_MAX_ATTEMPTS). "Dibatalkan" tidak pernah
+    # di-retry (langsung naik). Cek pra-render (audio/bg/durasi) tetap di
+    # luar loop — gagal deterministik tidak dibakar 3x percobaan.
+    for _attempt in range(1, ZUMO_RENDER_MAX_ATTEMPTS + 1):
+        try:
+            _run_ffmpeg_zoom(task_id, cmd, "FFmpeg Zumo Render Error",
+                             total_sec=audio_dur, pct_base=0.0, pct_span=100.0)
+            if not os.path.exists(final_video) or os.path.getsize(final_video) == 0:
+                raise Exception('Render Zumo gagal (file final kosong).')
+            break
+        except Exception as _re:
+            if stop_flags.get(task_id) or 'Dibatalkan' in str(_re):
+                raise
+            if _attempt >= ZUMO_RENDER_MAX_ATTEMPTS:
+                raise
+            try:
+                with db_lock:
+                    for d in active_tasks:
+                        if d['id'] == task_id:
+                            d['status'] = f"Render Zumo gagal, Auto-Retry ({_attempt}/2)... 🔄"
+                            d['updated_at'] = time.time()
+                save_tasks_db()
+            except Exception:
+                pass
+            try:
+                _activity_log(f"🔄 Auto-retry render Zumo {task_id} (percobaan {_attempt + 1}/3): {str(_re)[:100]}")
+            except Exception:
+                pass
+            time.sleep(ZUMO_RENDER_RETRY_PAUSE)
     base_method = 'video+spectrum' if bg_video else 'static+spectrum'
     task['zumo_render_method'] = base_method + '+particle' if loop else base_method
     try:

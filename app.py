@@ -10736,6 +10736,11 @@ def _seo_analyze_id(clean, year='', kind=''):
     rest = []
     for w in (clean or '').split():
         lw = w.lower()
+        # 🔥 v1.3.74: buang serpihan kata <3 huruf ('th' dari judul
+        # referensi "...Hati th 90an" sempat lolos jadi "...2026 th"
+        # di video Mahewa 07:42 WIB 21 Nov 2026).
+        if len(w) < 3:
+            continue
         if lw in used or lw in _SEO_STOPWORDS or lw in _SEO_TITLE_NOISE or lw in _SEO_KIND_WORDS:
             continue
         if lw == (year or '').lower():

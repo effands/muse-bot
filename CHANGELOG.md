@@ -1,3 +1,6 @@
+## 1.3.74
+- Analisa SEO: buang serpihan kata <3 huruf dari sisa kata ('th' dari judul referensi "...Hati th 90an" sempat lolos jadi "...2026 th" di video Mahewa 07:42 WIB 21 Nov 2026).
+
 ## 1.3.73
 - ANALISA SEO judul playlist (janji 20 Nov 2026, komplain Bos 21 Nov): judul TIDAK lagi menyalin judul referensi. Referensi diurai jadi komponen (genre, asal, mood, era, jenis, tahun, sisa kata) lalu judul BARU disusun dari komponen itu dengan 4 susunan kata berbeda per channel + sudut per channel — satu referensi yang sama menghasilkan 8 judul berbeda struktur (tes: 8/8 unik untuk ref slow rock hari ini, kata kunci SEO tetap ada). Sudut yang kata intinya sudah ada di judul ikut diganti sudut cadangan (tidak lagi "... Menyentuh Hati Paling Menyentuh").
 - ROTASI REFERENSI (order_playlist_nostalgia.py, dipakai cron harian): tiap channel dapat video referensi BERBEDA hari itu — auto-pick views tertinggi yang BELUM dipakai channel lain hari ini (seed dari task Tayang hari ini); bila semua kandidat sudah dipakai, pakai yang teratas.

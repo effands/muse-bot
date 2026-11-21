@@ -4553,14 +4553,14 @@ def _make_check_bg_or_cancel(token, chat_id, draft):
     return True
 
 def _publish_step_keyboard():
-    """Tombol jadwal tayang (v1.3.87): publish / lewati / default — tadinya
-    cuma instruksi ketik, Bos minta tinggal pencet. 'Lewati' dan 'Default'
-    artinya SAMA: pakai jadwal berikutnya (server yang atur) — 'default'
-    = jadwal default channel itu. Keduanya dipetakan ke plsch:skip."""
+    """Tombol jadwal tayang (v1.3.87, disederhanakan v1.3.88): publish /
+    lewati-default — tadinya cuma instruksi ketik, Bos minta tinggal
+    pencet. 'Lewati' dan 'Default' artinya SAMA (pakai jadwal
+    berikutnya, server yang atur), jadi v1.3.88 menggabungkannya jadi
+    SATU tombol — dua tombol yang sama itu membingungkan."""
     return {"inline_keyboard": [
-        [{"text": "🚀 Publish langsung", "callback_data": "plsch:publish"},
-         {"text": "⏭️ Lewati", "callback_data": "plsch:skip"}],
-        [{"text": "🕐 Default (jadwal berikutnya)", "callback_data": "plsch:skip"}]]}
+        [{"text": "🚀 Publish langsung", "callback_data": "plsch:publish"}],
+        [{"text": "⏭️ Lewati / Default (jadwal berikutnya)", "callback_data": "plsch:skip"}]]}
 
 
 def _make_ask_step(token, chat_id, draft):

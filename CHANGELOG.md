@@ -1,3 +1,6 @@
+## 1.3.88
+- Tombol jadwal digabung (koreksi user 21 Nov 2026 — "kalau sama kenapa ada 2?"): "Lewati" dan "Default" artinya sama (pakai jadwal berikutnya), jadi kini SATU tombol "⏭️ Lewati / Default (jadwal berikutnya)" + "🚀 Publish langsung". v1.3.87 sempat membuat dua tombol terpisah karena perintah "sama lewati dan default" dibaca harfiah — itu membingungkan, diperbaiki di sini. Tes lokal 15/15 kasus lolos.
+
 ## 1.3.87
 - Tombol jadwal tayang di wizard (permintaan user 21 Nov 2026 — "yang publish itu buat button aja biar tinggal klik aja", sama untuk lewati & default): langkah jadwal di /playlist (Langkah 5), /buatshort (Langkah 3), /zumo (Langkah 8) dan /zumorakit (Langkah 3) kini menampilkan 3 tombol — "🚀 Publish langsung", "⏭️ Lewati", "🕐 Default (jadwal berikutnya)" — plus penjelasan di pesan: Publish = langsung tayang setelah render (tanpa jadwal); Lewati / Default artinya SAMA = pakai jadwal berikutnya (server yang atur). Callback baru `plsch:publish` / `plsch:skip` di operator: publish set publish_date = jam sekarang + publish_now; skip set jadwal berikutnya (playlist/short) atau kosongkan publish_date (zumo — server yang atur); draft yang sudah tidak di langkah publish dijawab "tidak berlaku". Ketik jam manual tetap bisa. Tes lokal 15/15 kasus lolos.
 

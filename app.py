@@ -8997,6 +8997,109 @@ def upload_secret():
         print(f"Gagal upload client_secret: {e}", flush=True)
         return jsonify({"status": "error", "message": "Gagal mengunggah API key."})
 
+# ── 🔥 v1.3.90: SIMPANAN DEVICE LOGIN DI SERVER ──────────────────────────
+# Masalah: device_code + pending_add HANYA hidup di cookie sesi Flask.
+# Flask (default SESSION_REFRESH_EACH_REQUEST=True) mengirim ulang cookie
+# sesi di SETIAP respons — jadi request dashboard (auto-refresh tiap
+# beberapa detik) yang berangkat SEBELUM respons /api/device_code tiba
+# akan membalas dengan cookie LAMA (tanpa device_code) dan MENIMPA cookie
+# baru di browser. Akibatnya poll ke-1 berhasil, poll ke-2 sudah
+# "Sesi device login tidak ditemukan" (terjadi 22:27:54 WIB 2026-11-21,
+# 6 detik setelah kode dikeluarkan, sebelum Bos sempat memasukkan kode;
+# kejadian sama 02:20 + 10:22 UTC hari itu). Perbaikan: device_code juga
+# dicatat di server (file device_sessions.json, chmod 600, atomic write
+# seperti save_channels) + pending_add ikut disimpan — poll/confirm
+# memakai simpanan server bila sesinya hilang. File ikut tercakup backup
+# otomatis (berada di BASE_DIR). Entri kedaluwarsa 900 dtk (batas server),
+# di-prune tiap tulis (maks 3600 dtk).
+_DEVICE_SESSIONS_FILE = os.path.join(BASE_DIR, 'device_sessions.json')
+_DEVICE_SESSION_TTL = 900
+
+
+def _device_sessions_load():
+    try:
+        with open(_DEVICE_SESSIONS_FILE, 'r') as f:
+            d = json.load(f)
+        if isinstance(d, dict):
+            d.setdefault('sessions', {})
+            return d
+    except Exception:
+        pass
+    return {"sessions": {}, "pending_add": None}
+
+
+def _device_sessions_save(data):
+    try:
+        tmp = _DEVICE_SESSIONS_FILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(data, f)
+        try:
+            os.chmod(tmp, 0o600)
+        except Exception:
+            pass
+        os.replace(tmp, _DEVICE_SESSIONS_FILE)
+    except Exception:
+        pass
+
+
+def _device_sessions_prune(data):
+    now = time.time()
+    sessions = data.get('sessions') or {}
+    data['sessions'] = {k: v for k, v in sessions.items()
+                        if isinstance(v, dict) and now - float(v.get('created_at') or 0) <= 3600}
+    return data
+
+
+def _device_session_put(device_code, user_code, client_id):
+    data = _device_sessions_prune(_device_sessions_load())
+    data.setdefault('sessions', {})[device_code] = {
+        'user_code': user_code or '', 'client_id': client_id or '',
+        'created_at': time.time()}
+    _device_sessions_save(data)
+
+
+def _device_session_get(device_code):
+    """Entri device_code bila masih dalam TTL 900 dtk, else None."""
+    ent = _device_session_raw(device_code)
+    if ent is None:
+        return None
+    if time.time() - float(ent.get('created_at') or 0) > _DEVICE_SESSION_TTL:
+        return None
+    return ent
+
+
+def _device_session_raw(device_code):
+    """Entri mentah tanpa cek TTL (untuk membedakan 'tidak ada' vs
+    'kedaluwarsa' di pesan error poll)."""
+    data = _device_sessions_load()
+    ent = (data.get('sessions') or {}).get(device_code)
+    return ent if isinstance(ent, dict) else None
+
+
+def _device_session_pop(device_code):
+    data = _device_sessions_load()
+    if device_code in (data.get('sessions') or {}):
+        del data['sessions'][device_code]
+        _device_sessions_save(data)
+
+
+def _device_pending_put(pend):
+    data = _device_sessions_load()
+    data['pending_add'] = pend
+    _device_sessions_save(data)
+
+
+def _device_pending_get():
+    return _device_sessions_load().get('pending_add') or {}
+
+
+def _device_pending_pop():
+    data = _device_sessions_load()
+    if data.get('pending_add'):
+        data['pending_add'] = None
+        _device_sessions_save(data)
+
+
 @app.route('/api/device_code', methods=['POST'])
 def device_code_json():
     """📊 SHORTCUT TAMBAH CHANNEL (Dashboard): versi JSON dari /device_login
@@ -9031,6 +9134,7 @@ def device_code_json():
     session['device_code'] = res['device_code']
     session['device_code_at'] = time.time()
     session['device_client_id'] = entry.get('client_id')
+    _device_session_put(res['device_code'], res.get('user_code', ''), entry.get('client_id'))
     return jsonify({"status": "success",
                     "verification_url": res.get('verification_url', 'https://www.google.com/device'),
                     "user_code": res.get('user_code', ''),
@@ -9220,6 +9324,7 @@ def channel_add_code():
         'yt_id': item['id'], 'name': item['snippet']['title'],
         'thumbnail': item['snippet']['thumbnails']['default']['url'],
         'scopes': 'full'}
+    _device_pending_put(session['pending_add'])
     return jsonify({"status": "confirm",
                     "channel": {"yt_id": item['id'], "name": item['snippet']['title'],
                                 "thumbnail": item['snippet']['thumbnails']['default']['url'],
@@ -9233,6 +9338,10 @@ def channel_add_confirm():
     """Konfirmasi tambah channel (dipakai device flow + 1x login): simpan
     token yang ditunda di sesi menjadi channel."""
     pend = session.get('pending_add') or {}
+    if not pend:
+        # 🔥 v1.3.90: pending_add ikut disimpan di server (lihat
+        # _device_session_put) — pakai simpanan itu bila sesinya hilang.
+        pend = _device_pending_get()
     creds_json = pend.get('creds_json') or ''
     c_id = pend.get('client_id') or ''
     if not creds_json or not c_id:
@@ -9244,6 +9353,7 @@ def channel_add_confirm():
     except Exception as e:
         return jsonify({"status": "error", "message": f"Gagal menyimpan channel: {e}"}), 500
     session.pop('pending_add', None)
+    _device_pending_pop()
     if created:
         _msg = f"Channel {_name} berhasil ditambahkan."
     else:
@@ -9257,6 +9367,7 @@ def channel_add_confirm():
 def channel_add_cancel():
     """Batalkan penambahan channel yang menunggu konfirmasi."""
     session.pop('pending_add', None)
+    _device_pending_pop()
     return jsonify({"status": "success", "message": "Penambahan channel dibatalkan."})
 
 
@@ -9291,6 +9402,7 @@ def device_login():
     session['device_code'] = res['device_code']
     session['device_code_at'] = time.time()
     session['device_client_id'] = entry.get('client_id')
+    _device_session_put(res['device_code'], res.get('user_code', ''), entry.get('client_id'))
     _csrf = _get_csrf_token()
     # Kode + URL di-escape HTML (datang dari Google, tapi jangan pernah
     # menaruh string luar mentah ke HTML).
@@ -9336,13 +9448,32 @@ def poll_device_token():
     device_code = data.get('device_code')
     if not device_code or not isinstance(device_code, str):
         return jsonify({"status": "error", "error": "device_code wajib diisi."}), 400
+    # 🔥 v1.3.90: sesi cookie bisa tertimpa refresh dashboard (lihat
+    # _device_session_put) — bila sesi kosong/tidak cocok, pakai simpanan
+    # server sebagai fallback, lalu pulihkan sesinya. Kode yang tidak ada
+    # di sesi MAUPUN di simpanan server tetap ditolak seperti dulu.
     expected = session.get('device_code')
-    if not expected:
-        return jsonify({"status": "error", "error": "Sesi device login tidak ditemukan. Buka /device_login lagi."}), 400
-    if not hmac.compare_digest(str(device_code), str(expected)):
-        return jsonify({"status": "error", "error": "device_code tidak cocok dengan sesi ini."}), 403
-    if time.time() - float(session.get('device_code_at') or 0) > 900:
+    _created_at = session.get('device_code_at')
+    _client_id = session.get('device_client_id')
+    if not expected or not hmac.compare_digest(str(device_code), str(expected)):
+        _stored = _device_session_get(device_code)
+        if not _stored:
+            _raw = _device_session_raw(device_code)
+            if _raw is not None:
+                session.pop('device_code', None)
+                _device_session_pop(device_code)
+                return jsonify({"status": "error", "error": "Kode device sudah kedaluwarsa (15 menit). Buka /device_login lagi."}), 400
+            if not expected:
+                return jsonify({"status": "error", "error": "Sesi device login tidak ditemukan. Buka /device_login lagi."}), 400
+            return jsonify({"status": "error", "error": "device_code tidak cocok dengan sesi ini."}), 403
+        session['device_code'] = device_code
+        session['device_code_at'] = _stored.get('created_at') or time.time()
+        session['device_client_id'] = _stored.get('client_id') or ''
+        _created_at = session['device_code_at']
+        _client_id = session['device_client_id']
+    if time.time() - float(_created_at or 0) > 900:
         session.pop('device_code', None)
+        _device_session_pop(device_code)
         return jsonify({"status": "error", "error": "Kode device sudah kedaluwarsa (15 menit). Buka /device_login lagi."}), 400
     ip = request.remote_addr or '?'
     if _poll_rate_limited(ip):
@@ -9350,7 +9481,7 @@ def poll_device_token():
     # 🔥 v1.2.25: token diminta dengan client yang dipilih saat device
     # login (disimpan di sesi); fallback file tunggal lama bila registry
     # masih kosong (kompatibilitas).
-    _entry = _oauth_client_by_id(session.get('device_client_id')) if session.get('device_client_id') else _oauth_primary_client()
+    _entry = _oauth_client_by_id(_client_id) if _client_id else _oauth_primary_client()
     if _entry:
         c_id, c_sec = _oauth_client_conf(_entry)
     else:
@@ -9369,6 +9500,7 @@ def poll_device_token():
     session.pop('device_code', None)
     session.pop('device_code_at', None)
     session.pop('device_client_id', None)
+    _device_session_pop(device_code)
     creds = Credentials(token=res['access_token'], refresh_token=res.get('refresh_token'), token_uri='https://oauth2.googleapis.com/token', client_id=c_id, client_secret=c_sec, scopes=SCOPES)
     youtube = build('youtube', 'v3', credentials=creds); chan_res = youtube.channels().list(part="snippet", mine=True).execute()
     if chan_res['items']:
@@ -9378,6 +9510,7 @@ def poll_device_token():
             'yt_id': item['id'], 'name': item['snippet']['title'],
             'thumbnail': item['snippet']['thumbnails']['default']['url'],
             'scopes': 'upload'}
+        _device_pending_put(session['pending_add'])
         _exists = any(c.get('yt_id') == item['id'] for c in database_channel)
         return jsonify({"status": "confirm",
                         "channel": {"yt_id": item['id'], "name": item['snippet']['title'],

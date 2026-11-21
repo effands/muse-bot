@@ -7046,6 +7046,14 @@ function renderChannelTable() {
 // ────────────────────────────────────────────────────────
 let _addChTimer = null;
 let _addChPolling = false;
+let _addChCountdown = null;
+
+// 🔥 v1.3.90: TIMER HITUNG MUNDUR kode device (15 menit) — Bos minta
+// timer terlihat supaya tahu sisa waktu memasukkan kode. Dihentikan di
+// semua jalan keluar (sukses/konfirmasi/error/tutup modal/kedaluwarsa).
+function _stopAddChCountdown() {
+  if (_addChCountdown) { clearInterval(_addChCountdown); _addChCountdown = null; }
+}
 
 function openAddChannelModal() {
   const modal = document.getElementById('add-ch-modal');
@@ -7071,11 +7079,30 @@ function openAddChannelModal() {
       body.innerHTML = '<div style="margin-bottom:12px"><b>Langkah 1:</b> Buka <span id="add-ch-url" data-url="' + escapeHtml(d.verification_url) + '" onclick="copyDeviceUrl()" style="color:var(--accent);text-decoration:underline;cursor:pointer" title="Klik untuk menyalin link">google.com/device</span> di browser profil channel YouTube target.</div>'
         + '<div style="margin-bottom:12px"><b>Langkah 2:</b> Masukkan kode ini:'
         + '<div style="display:flex;gap:8px;margin-top:6px"><input type="text" id="add-ch-code" readonly value="' + escapeHtml(d.user_code) + '" style="flex:1;font-weight:700;font-size:18px;text-align:center;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"><button type="button" class="btn btn-p" onclick="copyAddChCode()">COPY</button></div></div>'
-        + '<div id="add-ch-status" style="font-weight:700;margin-top:6px">⏳ Menunggu Anda memasukkan kode… (kode kedaluwarsa 15 menit)</div>'
+        + '<div id="add-ch-status" style="font-weight:700;margin-top:6px">⏳ Menunggu Anda memasukkan kode… — sisa waktu <span id="add-ch-timer">15:00</span></div>'
         + '<div style="font-size:11px;color:var(--muted);margin-top:10px">Izin yang diminta: kelola video YouTube (upload & statistik). Jangan tutup modal ini sebelum selesai.</div>'
         + '<div style="font-size:11px;color:var(--muted);margin-top:8px">💡 Atau pakai <b>1x login browser</b> (upload + Analytics + email sekaligus) di Settings → GOOGLE OAUTH 2.0 API → Tambah Channel — 1x Login.</div>'
         + '<div style="font-size:11px;color:var(--muted);margin-top:8px">💡 1 akun Google bisa punya beberapa channel — yang terdeteksi nanti adalah channel yang sedang AKTIF di akun itu.</div>';
       _pollDeviceModal(d.device_code, d.interval || 5);
+      // 🔥 v1.3.90: timer hitung mundur — batas server 900 dtk (bukan
+      // expires_in Google yang 1800 dtk). Habis → berhenti polling +
+      // tampilkan pesan kedaluwarsa + tombol Coba Lagi.
+      _stopAddChCountdown();
+      const _addChDeadline = Date.now() + Math.min(d.expires_in || 900, 900) * 1000;
+      _addChCountdown = setInterval(() => {
+        const _el = document.getElementById('add-ch-timer');
+        const _left = Math.max(0, Math.floor((_addChDeadline - Date.now()) / 1000));
+        if (_el) _el.textContent = String(Math.floor(_left / 60)).padStart(2, '0') + ':' + String(_left % 60).padStart(2, '0');
+        if (_left <= 0) {
+          _stopAddChCountdown();
+          _addChPolling = false;
+          if (_addChTimer) { clearTimeout(_addChTimer); _addChTimer = null; }
+          const _st = document.getElementById('add-ch-status');
+          if (_st) _st.innerHTML = '<span style="color:var(--red,#f43f5e)">⌛ Kode kedaluwarsa (15 menit). Pencet Coba Lagi untuk kode baru.</span>';
+          const _body = document.getElementById('add-ch-body');
+          if (_body && !document.getElementById('add-ch-retry')) _body.innerHTML += '<div id="add-ch-retry" style="margin-top:12px"><button type="button" class="btn btn-p" onclick="openAddChannelModal()">🔁 Coba Lagi</button></div>';
+        }
+      }, 1000);
     })
     .catch(() => {
       body.innerHTML = '<div style="color:var(--red,#f43f5e);font-weight:700;margin-bottom:8px">❌ Gagal menghubungi server.</div><button type="button" class="btn btn-p" onclick="openAddChannelModal()">🔁 Coba Lagi</button>';
@@ -7127,6 +7154,7 @@ function _pollDeviceModal(deviceCode, intervalSec) {
       const st = document.getElementById('add-ch-status');
       if (data.status === 'success') {
         _addChPolling = false;
+        _stopAddChCountdown();
         if (st) st.innerHTML = '<span style="color:var(--green)">🎉 Berhasil! Channel tertaut — me-refresh daftar…</span>';
         loadChannels();
         fetchAnalytics();
@@ -7135,6 +7163,7 @@ function _pollDeviceModal(deviceCode, intervalSec) {
         _addChTimer = setTimeout(() => _pollDeviceModal(deviceCode, data.interval ? data.interval / 1000 : intervalSec), data.interval || intervalSec * 1000);
       } else if (data.status === 'confirm') {
         _addChPolling = false;
+        _stopAddChCountdown();
         const ch = data.channel || {};
         if (st) st.innerHTML = '<span style="color:var(--accent)">Channel terdeteksi: <b>' + escapeHtml(ch.name || '?') + '</b>' + (data.exists ? ' (sudah ada — token baru akan ditambahkan)' : '') + '</span>';
         const body = document.getElementById('add-ch-body');
@@ -7142,6 +7171,7 @@ function _pollDeviceModal(deviceCode, intervalSec) {
           + '<div style="display:flex;gap:8px;margin-top:12px"><button type="button" class="btn btn-p" onclick="confirmDeviceAddChannel()">✅ Ya, Tambah Channel Ini</button><button type="button" class="btn btn-g" onclick="cancelDeviceAddChannel()">❌ Batal</button></div>';
       } else {
         _addChPolling = false;
+        _stopAddChCountdown();
         if (st) st.innerHTML = '<span style="color:var(--red,#f43f5e)">❌ ' + escapeHtml(data.error || 'Gagal menautkan channel.') + '</span>';
         const body = document.getElementById('add-ch-body');
         if (body) body.innerHTML += '<div style="margin-top:12px"><button type="button" class="btn btn-p" onclick="openAddChannelModal()">🔁 Coba Lagi</button></div>';
@@ -7154,6 +7184,7 @@ function _pollDeviceModal(deviceCode, intervalSec) {
 
 function closeAddChannelModal() {
   _addChPolling = false;
+  _stopAddChCountdown();
   if (_addChTimer) { clearTimeout(_addChTimer); _addChTimer = null; }
   const modal = document.getElementById('add-ch-modal');
   if (modal) modal.style.display = 'none';

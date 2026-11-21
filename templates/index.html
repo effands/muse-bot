@@ -1269,11 +1269,11 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
                 <th style="padding:6px 8px">CHANNEL</th><th style="padding:6px 8px">STATUS</th><th style="padding:6px 8px">GROUP</th><th style="padding:6px 8px">UPDATED</th>
                 <th style="padding:6px 8px;text-align:right">SUBSCRIBE</th><th style="padding:6px 8px;text-align:right">VIDEOS</th>
                 <th style="padding:6px 8px;text-align:right">VIEW 28D</th><th style="padding:6px 8px;text-align:right">VIEW 48H</th>
-                <th style="padding:6px 8px">TREND</th><th style="padding:6px 8px;text-align:right;width:64px" title="WATCH 30D (est.) — estimasi kasar, bukan data YouTube">WATCH 30D</th>
-                <th style="padding:6px 8px;text-align:right">AVG</th><th style="padding:6px 8px">AGE</th>
+                <th style="padding:6px 8px;text-align:right;width:64px" title="WATCH 30D (est.) — estimasi kasar, bukan data YouTube">WATCH 30D</th>
+                <th style="padding:6px 8px">AGE</th>
                 <th style="padding:6px 8px">MONETISASI</th><th style="padding:6px 8px">OPEN</th>
               </tr></thead>
-              <tbody id="ch-detail-tbody"><tr><td colspan="14" style="padding:10px 8px;color:var(--muted)">Memuat detail channel…</td></tr></tbody>
+              <tbody id="ch-detail-tbody"><tr><td colspan="12" style="padding:10px 8px;color:var(--muted)">Memuat detail channel…</td></tr></tbody>
             </table>
           </div>
           <div id="ch-detail-note" style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5"></div>
@@ -3206,7 +3206,11 @@ function groupSelectHtml(c, handler) {
   const cur = (c.group || '').trim();
   const fn = handler || 'onGroupSelect';  // 🔥 v1.3.72: popup Kelola Group pakai 'onGroupSelectModal'
   const opts = groupListAll().map(g => `<option value="${escapeHtml(g)}"${g === cur ? ' selected' : ''}>${escapeHtml(g)}</option>`).join('');
-  return `<select onchange="${fn}(this, '${c.yt_id}')" title="Group channel ini — 1 channel = 1 group" style="font-size:11px;padding:2px 4px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);max-width:130px">`
+  // 🔥 v1.3.81: width:130px eksplisit — aturan global `.content select
+  // { width:100% }` bikin select di sel tabel auto-layout menciut sampai
+  // tinggal chevron-nya saja (nama group tidak kelihatan). Dengan lebar
+  // tetap, nama group yang aktif selalu tampil di dropdown tertutup.
+  return `<select onchange="${fn}(this, '${c.yt_id}')" title="Group channel ini — 1 channel = 1 group" style="font-size:11px;padding:2px 4px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);width:130px;max-width:130px">`
     + `<option value=""${cur ? '' : ' selected'}>— Tanpa Group —</option>` + opts
     + `<option value="__new__">＋ Buat group baru…</option></select>`;
 }
@@ -6906,7 +6910,7 @@ function renderChannelTable() {
   const chById = {}; (channels || []).forEach(c => { chById[c.yt_id] = c; });
   if (!rows.length) {
     const loading = (channels || []).length > 0;
-    tb.innerHTML = '<tr><td colspan="14" style="padding:10px 8px;color:var(--muted)">'
+    tb.innerHTML = '<tr><td colspan="12" style="padding:10px 8px;color:var(--muted)">'
       + ((_fv.indexOf('group:') === 0 && (analyticsData || []).length)
           ? 'Tidak ada data untuk group ini.'
           : (loading ? 'Memuat detail channel…'
@@ -6924,9 +6928,6 @@ function renderChannelTable() {
     const c = chById[d.yt_id] || {};
     const paused = !!c.paused;
     const thumb = c.thumbnail ? `<img src="${escapeHtml(c.thumbnail)}" style="width:28px;height:28px;border-radius:50%;vertical-align:middle;margin-right:6px;object-fit:cover">` : '';
-    const trend = d.trend === 'up' ? '<span style="color:var(--green)">▲ Naik</span>'
-      : d.trend === 'down' ? '<span style="color:var(--red,#f43f5e)">▼ Turun</span>'
-      : d.trend === 'flat' ? '<span style="color:var(--muted)">→ Datar</span>' : '—';
     const mon = d.monetization || {};
     const subsDone = (mon.subs || 0) >= (mon.subs_required || 1000);
     const monBadge = mon.status === 'monetized' ? '<span class="pill p-green">💰 Monetisasi Aktif</span>'
@@ -6947,9 +6948,7 @@ function renderChannelTable() {
       + '<td style="padding:6px 8px;text-align:right">' + _fmtNum(d.videos) + '</td>'
       + '<td style="padding:6px 8px;text-align:right" title="' + escapeHtml(v28title) + '">' + _fmtNum(d.views_28d) + '</td>'
       + '<td style="padding:6px 8px;text-align:right" title="' + escapeHtml(v48title) + '">' + _fmtNum(d.views_48h) + '</td>'
-      + '<td style="padding:6px 8px">' + trend + '</td>'
       + '<td style="padding:6px 8px;text-align:right" title="' + escapeHtml(w30real ? 'Jam tayang asli (Analytics API, 30 hari)' : w30title) + '">' + (w30v == null ? '—' : Number(w30v).toLocaleString() + ' jam' + (w30real ? ' ✓' : '')) + '</td>'
-      + '<td style="padding:6px 8px;text-align:right">' + _fmtNum(d.avg_views) + '</td>'
       + '<td style="padding:6px 8px">' + escapeHtml(d.age_label || '—') + '</td>'
       + '<td style="padding:6px 8px">' + monBadge + '</td>'
       + '<td style="padding:6px 8px"><a href="https://www.youtube.com/channel/' + escapeHtml(d.yt_id) + '" target="_blank" rel="noopener" style="color:var(--accent)">Open ↗</a></td>'
@@ -6963,9 +6962,7 @@ function renderChannelTable() {
   if (noteEl) noteEl.innerHTML = '<details class="data-note"><summary>ⓘ Tentang data ini</summary><div>'
     + 'Views, Subscribe, Videos, Umur channel: <b>YouTube Data API</b> (cache 1 jam). '
     + 'VIEW 28D / 48H: selisih dari <b>snapshot harian channel</b> — kolom terisi bertahap; channel baru tampil "—" sampai riwayat snapshot cukup (butuh snapshot 28 / 2 hari). '
-    + 'TREND: views 28D terbaru vs 28 hari sebelumnya (±2% = datar). '
     + 'WATCH 30D (est.): views 30 hari × durasi rata-rata blueprint video long channel — <b>estimasi kasar</b>, bukan data YouTube. '
-    + 'AVG: total views / jumlah video. '
     + 'Jam tayang untuk kesiapan monetisasi adalah <b>estimasi</b> (90 hari terakhir); keputusan akhir monetisasi ada di YouTube Studio. '
     + 'REVENUE tidak ditampilkan — tidak ada data penghasilan dari API; estimasi RPM hanya di kartu Monetisasi di bawah.'
     + (anySnap ? '' : ' <b>Snapshot channel baru mulai tercatat hari ini</b> — kolom delta & tren akan terisi bertahap dalam 2–28 hari.')

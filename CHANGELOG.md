@@ -1,3 +1,7 @@
+## 1.3.81
+- Hapus kolom TREND dan AVG dari tabel DETAIL CHANNEL (permintaan user 21 Nov 2026) — termasuk kalimat penjelasnya di catatan "Tentang data ini"; colspan baris kosong/muat disesuaikan (14 → 12).
+- Perbaiki tampilan dropdown GROUP yang aneh (laporan user 21 Nov 2026): dropdown tertutup hanya menampilkan chevron kecil tanpa nama group. Penyebab: aturan global `.content select { width:100% }` bikin select di sel tabel auto-layout menciut sampai tinggal chevron-nya. Sekarang select punya lebar tetap 130px, jadi nama group yang aktif ("Playlist M" / "— Tanpa Group —") selalu kelihatan tanpa harus dibuka.
+
 ## 1.3.80
 - Perbaiki pesan "Gagal menautkan channel" yang bohong (laporan user 21 Nov 2026): klik pertama "Ya, Tambah Channel Ini" sebenarnya BERHASIL di server (channel Wiji Fiko Teren tertambah jam 12:30:52, terverifikasi di log + channels_db.json), tapi panel menampilkan "Gagal". Penyebab: 6 fungsi (confirmDeviceAddChannel, channelAddConfirm, channelAddMakeUrl, channelAddSaveCode, analyticsMakeUrl, analyticsSaveCode) membaca jawaban server tanpa `r.json()` dulu — yang dibaca adalah objek Response mentah yang status-nya angka HTTP (200), bukan string 'success', sehingga selalu masuk cabang error. Sekarang semua membaca JSON dulu, jadi sukses tampil sebagai sukses dan pesan error asli server tampil bila memang gagal. Efek samping yang ikut teratasi: klik kedua dst dulu selalu 400 karena channel sudah tertambah (pending_add sudah dihapus) — user tidak lagi disesatkan untuk mengulang klik.
 

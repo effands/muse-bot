@@ -2831,9 +2831,15 @@ def _run_ffmpeg_zoom(task_id, cmd, err_tag, total_sec=None, pct_base=0.0, pct_sp
     active_processes[task_id] = proc
     last_ping = time.time()
     last_prog = time.time()
-    # 🔒 #16: batas waktu 3600 dtk per panggilan ffmpeg Zoom (satu segmen /
-    # gabung durasinya paling lama = durasi video, maks ~80 menit).
-    _zoom_deadline = time.time() + 3600
+    # 🔒 #16: batas waktu per panggilan ffmpeg Zoom — dulu 3600 dtk tetap,
+    # tapi render Zumo 27 menit butuh ~90 menit (0,3x realtime) sehingga
+    # selalu mentok timeout dan auto-retry 3x pun gagal di batas yang sama
+    # (v1.3.95). Kini skala dengan durasi target: 6x durasi video,
+    # minimal 3600 dtk, maksimal 4 jam. Shorts 60 dtk tidak berubah.
+    _zoom_deadline_sec = 3600
+    if total_sec and float(total_sec) > 0:
+        _zoom_deadline_sec = min(max(3600, int(float(total_sec) * 6)), 4 * 3600)
+    _zoom_deadline = time.time() + _zoom_deadline_sec
     try:
         while proc.poll() is None:
             if stop_flags.get(task_id):
@@ -2841,7 +2847,7 @@ def _run_ffmpeg_zoom(task_id, cmd, err_tag, total_sec=None, pct_base=0.0, pct_sp
                 raise Exception("Dibatalkan")
             if time.time() > _zoom_deadline:
                 proc.terminate()
-                raise Exception(f"{err_tag}: timeout (3600 dtk)")
+                raise Exception(f"{err_tag}: timeout ({_zoom_deadline_sec} dtk)")
             now_t = time.time()
             if now_t - last_ping > 60:
                 last_ping = now_t

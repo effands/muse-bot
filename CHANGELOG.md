@@ -1,3 +1,6 @@
+## 1.3.95
+- Batas timeout render Zumo kini mengikuti durasi video (gagal 22 Nov 2026 03:16 WIB — video Smooth Jazz 90s "Midnight Rain" gagal "FFmpeg Zumo Render Error: timeout (3600 dtk)"): `_run_ffmpeg_zoom` dulu pakai deadline tetap 3600 dtk, sementara render Zumo 27 menit butuh ~90 menit (0,3x realtime) — auto-retry 3x (v1.3.93) pun mentok di batas yang sama, 3x60 menit lalu gagal. Kini deadline = 6x durasi target, minimal 3600 dtk, maksimal 4 jam (video 27 menit dapat 9720 dtk / 2,7 jam). Shorts 60 dtk tidak berubah (tetap 3600 dtk). Pesan error kini menyebut batas sebenarnya, mis. "timeout (9720 dtk)".
+
 ## 1.3.94
 - Perbaiki pesan Telegram yang "ditelan" pesan draft hangus (laporan user 22 Nov 2026 00:23 WIB — "kenapa gak langsung di handle muse ya"): bila ada draft buat-video / aturjadwal yang sudah basi (>30 menit), pesan bebas yang NLU-nya tidak kenal kini DITERUSKAN ke Muse lewat jembatan (seperti fallback default) — bukan hanya dibalas "draft sudah hangus" lalu berhenti. Bot tetap memberitahu draftnya hangus, tapi menambahkan "pesan Bos sudah saya teruskan ke Muse". Bila bridge gagal tulis, pesan hangus lama yang dipakai. Perintah yang NLU kenal tetap jalan lewat NLU (tidak ikut diteruskan); perintah "/" dan tombol keyboard tidak berubah. Tes lokal 9/9 kasus lolos (teruskan + kabari, bridge gagal, NLU kenal, tanpa draft).
 

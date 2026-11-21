@@ -10388,6 +10388,76 @@ def _playlist_try_creds(channel, fn):
     return None, (last_err or 'tidak ada kredensial tersimpan'), False, None, None, tried_pids
 
 
+# ============================================================
+# 🔥 v1.3.86: FILTER VIDEO OFFICIAL dari riset playlist (strategi
+# Bos, 21 Nov 2026 — video rilisan official dari penyanyi/artis
+# TIDAK masuk strategi, jangan jadi referensi; yang dicari cover,
+# DJ remix, dan kompilasi). Diterapkan di _playlist_search_one_tier
+# (SEBELUM tier dinyatakan berhasil) — bila satu tier hanya berisi
+# video official, tier itu dianggap kosong dan riset lanjut ke tier
+# berikutnya yang lebih longgar. Link kiriman Bos (jiplak) TIDAK
+# lewat sini, jadi tidak ikut tersaring. Logika sama dengan filter
+# riset trending (bodi cron v2): pola judul + artis-vs-channel.
+# Batasan yang sama: hanya segmen artis SESUDAH pemisah yang dicek
+# (pola "Artis - Lagu" tanpa kata official lolos — pola itu jarang
+# di niche ini, dan cek sisi depan berisiko membuang kompilasi yang
+# judulnya diawali nama channel-nya sendiri).
+# ============================================================
+_OFFICIAL_REF_PATTERNS = (
+    'official music video', 'official live music video', 'official audio',
+    'official lyric video', 'official video', 'official mv',
+    'official music', 'official video clip', '(official', '[official',
+)
+# Kata yang menandakan segmen judul adalah DESKRIPSI, bukan nama artis.
+_OFFICIAL_REF_DESC_WORDS = frozenset(
+    'viral terbaru terbaik kompilasi kumpulan playlist lagu dangdut koplo remix dj full album hits top'.split())
+
+
+def _playlist_norm_name(s):
+    """Normalisasi nama untuk perbandingan artis-vs-channel: huruf kecil,
+    buang kata 'official'/'channel'/'music'/'tv' + angka/tahun."""
+    t = (s or '').lower()
+    t = re.sub(r'[^a-z0-9 ]+', ' ', t)
+    t = ' '.join(w for w in t.split()
+                 if w not in ('official', 'channel', 'music', 'tv')
+                 and not w.isdigit())
+    return t
+
+
+def _playlist_is_official_reference(title, channel_title):
+    """True bila video ini rilisan official artis (bukan cover/kompilasi):
+    (a) judul mengandung frasa official, atau (b) nama artis di judul
+    SAMA dengan nama channel yang meng-upload. Kembalikan False bila
+    tidak cukup bukti (lebih baik lolos daripada salah buang)."""
+    t = (title or '').lower()
+    if any(p in t for p in _OFFICIAL_REF_PATTERNS):
+        return True
+    # (b) artis = segmen sesudah pemisah '—'/'–'/' - ' (ambil yang
+    # terakhir bila ada beberapa), sampai '(' atau '|' atau ','.
+    artist = None
+    for sep in ('—', '–', ' - '):
+        if sep in (title or ''):
+            artist = (title or '').rsplit(sep, 1)[-1]
+            break
+    if not artist:
+        return False
+    artist = re.split(r'[\(|,\[]', artist)[0].strip()
+    if not artist:
+        return False
+    if any(w in _OFFICIAL_REF_DESC_WORDS for w in artist.lower().split()):
+        return False
+    chan = _playlist_norm_name(channel_title)
+    if not chan:
+        return False
+    # 'x'/'&'/'feat.' → cek tiap bagiannya.
+    parts = re.split(r'\s+(?:x|&|feat\.?|ft\.?)\s+', artist, flags=re.I)
+    for p in parts:
+        n = _playlist_norm_name(p)
+        if n and n == chan:
+            return True
+    return False
+
+
 def _playlist_search_one_tier(channel, search_q, days, max_results, min_views,
                               tier_no, tier_label):
     """Satu tier riset: search.list (+ videos().list) dengan publishedAfter
@@ -10453,6 +10523,12 @@ def _playlist_search_one_tier(channel, search_q, days, max_results, min_views,
             'tags': list(sn.get('tags') or []),
             'tier': tier_no, 'tier_label': tier_label,
         })
+    # 🔥 v1.3.86: buang rilisan official artis (strategi Bos) — tier yang
+    # hanya berisi video official dianggap kosong, riset lanjut ke tier
+    # berikutnya yang lebih longgar.
+    cands = [c for c in cands
+             if not _playlist_is_official_reference(c.get('title', ''),
+                                                    c.get('channel', ''))]
     cands.sort(key=lambda c: (-c['views'], -(c.get('duration_sec') or 0)))
     return cands, None, False
 

@@ -3410,6 +3410,18 @@ def handle_callback_query(token, chat_id, callback_query):
                 _cb_in_flight.discard(data)
             return
     # --- v1.3.16: tawaran isi jadwal saat /jadwal kosong (total 0) ---
+    # --- v1.3.75: tombol "Buat video baru" dari notif stok jadwal /
+    # "Buat Playlist" dari notif Lingkaran Analitik — wizard playlist
+    # dengan channel sudah terisi, langsung ke langkah tema. ---
+    if data.startswith('stok:buat:'):
+        _yt = data.split(':', 2)[2].strip()
+        _ch = next((c for c in load_channels() if c.get('yt_id') == _yt), None)
+        if not _ch:
+            answer_callback(token, cq_id, "Channel-nya sudah tidak ada 😅")
+            return
+        answer_callback(token, cq_id, "Siap Bos, buat video baru 🎵")
+        _start_make_playlist(token, chat_id, '/buatplaylist | ' + _channel_display_name(_ch))
+        return
     if data in ('jadwal:buat_playlist', 'jadwal:perpanjang30'):
         if data.endswith('buat_playlist'):
             answer_callback(token, cq_id, "Siap Bos, buat playlist ya 🎵")

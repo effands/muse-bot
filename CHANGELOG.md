@@ -1,3 +1,8 @@
+## 1.3.75
+- Pixabay: klip unduhan WAJIB video bergerak — tolak codec gambar (mjpeg/png/dll), durasi <2 dtk, dan klip statis (3 frame sampel identik = foto); klip bermasalah dilewati, tidak gugurkan job; pencarian lewati klip <3 dtk. (Video Aruya + Mahewa 21 Nov 2026 freeze 20-33 dtk.)
+- Render playlist: klip tidak seragam (beda codec/resolusi/fps) langsung normalisasi ke 720p30, tidak coba copy; validasi hasil copy + cek celah PTS (gap >2 dtk = freeze → jatuh ke normalisasi).
+- Notifikasi WAJIB bawa tombol saran: pesan stok jadwal (🎵 Buat video baru → wizard playlist channel terisi, 📅 Lihat jadwal) + Lingkaran Analitik (🎵 Buat Playlist, 📊 Statistik); handler baru `stok:buat:<yt_id>` di operator.
+
 ## 1.3.74
 - Analisa SEO: buang serpihan kata <3 huruf dari sisa kata ('th' dari judul referensi "...Hati th 90an" sempat lolos jadi "...2026 th" di video Mahewa 07:42 WIB 21 Nov 2026).
 

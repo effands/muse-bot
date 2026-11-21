@@ -6036,8 +6036,13 @@ def _tune_all_formulas(notify=True):
             if sig:
                 best = max(sig, key=lambda x: x['new'])
                 ch_name = c.get('name', yt_id)
+                # 🔥 v1.3.75: tiap notif WAJIB bawa tombol saran (prinsip
+                # 20 Nov 2026) — Bos tinggal tap, tidak cuma baca.
                 notify_event("🔁", f"Lingkaran Analitik — {ch_name}",
-                    f"Bos, lingkaran analitik udah jalan nih 😎 Judul '{best['title'][:60]}' lagi naik daun — bobotnya saya naikin ke {best['new']} biar makin sering kepilih 💪 Yang sepi saya turunin dikit, tapi tetap saya kasih kesempatan kok. Total {len(r['changes'])} judul disesuaikan hari ini.")
+                    f"Bos, lingkaran analitik udah jalan nih 😎 Judul '{best['title'][:60]}' lagi naik daun — bobotnya saya naikin ke {best['new']} biar makin sering kepilih 💪 Yang sepi saya turunin dikit, tapi tetap saya kasih kesempatan kok. Total {len(r['changes'])} judul disesuaikan hari ini.",
+                    reply_markup={"inline_keyboard": [
+                        [{"text": "🎵 Buat Playlist", "callback_data": f"stok:buat:{yt_id}"},
+                         {"text": "📊 Statistik", "callback_data": "rep:statistik"}]]})
     return results
 
 _formula_tune_last_date = ""
@@ -10204,6 +10209,9 @@ def _pixabay_search_clips(theme, count=PLAYLIST_MAX_CLIPS, job_id=''):
         if masked not in used_masks:
             used_masks.append(masked)
         for hit in data.get('hits', []):
+            _hd = hit.get('duration')
+            if isinstance(_hd, (int, float)) and _hd < 3:
+                continue  # 🔥 v1.3.75: klip <3 dtk bukan footage layak
             videos = hit.get('videos') or {}
             best = None
             for size in ('medium', 'large', 'small', 'tiny'):
@@ -10243,8 +10251,41 @@ def _pixabay_search_clips(theme, count=PLAYLIST_MAX_CLIPS, job_id=''):
     return clips, used_masks
 
 
+def _pixabay_clip_has_motion(path, dur):
+    """Cek klip benar-benar video BERGERAK: ambil 3 frame (10%, 50%,
+    90% durasi) — bila ketiganya identik, klip itu foto/statis, bukan
+    video. v1.3.75: video Aruya + Mahewa 21 Nov 2026 freeze 20-33 dtk
+    karena klip statis lolos ke render (mata penonton: kayak foto)."""
+    try:
+        hashes = []
+        for frac in (0.1, 0.5, 0.9):
+            tmp = "%s.motion%d.png" % (path, int(frac * 100))
+            try:
+                r = subprocess.run([get_ffmpeg_path(), '-v', 'error',
+                                    '-ss', "%.2f" % (dur * frac), '-i', path,
+                                    '-frames:v', '1', '-y', tmp],
+                                   capture_output=True, timeout=60)
+                if r.returncode == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 0:
+                    with open(tmp, 'rb') as f:
+                        hashes.append(zlib.crc32(f.read()))
+            finally:
+                try:
+                    os.remove(tmp)
+                except Exception:
+                    pass
+        return len(hashes) >= 2 and len(set(hashes)) >= 2
+    except Exception:
+        return False
+
+
+_STILL_IMAGE_CODECS = frozenset({'mjpeg', 'png', 'bmp', 'gif', 'webp', 'tiff', 'jpeg'})
+
+
 def _pixabay_download_clip(url, dest):
-    """Unduh 1 klip footage (hanya dari CDN Pixabay)."""
+    """Unduh 1 klip footage (hanya dari CDN Pixabay).
+    🔥 v1.3.75: pastikan yang terunduh benar-benar VIDEO BERGERAK —
+    codec gambar (mjpeg/png/dll), durasi <2 dtk, atau 3 frame sampel
+    identik (foto/statis) langsung ditolak, bukan ikut ke render."""
     if not url.startswith('https://cdn.pixabay.com/'):
         raise ValueError("URL footage bukan dari CDN Pixabay.")
     r = requests.get(url, stream=True, timeout=60,
@@ -10263,6 +10304,17 @@ def _pixabay_download_clip(url, dest):
                 raise RuntimeError("Footage terlalu besar (>300 MB).")
     if total == 0:
         raise RuntimeError("Footage kosong.")
+    pv = _probe_video(dest)
+    vs = [s for s in ((pv or {}).get('streams') or []) if s.get('codec_type') == 'video'] if pv else []
+    if not vs:
+        raise ValueError("Footage bukan video (tidak ada stream video).")
+    if (vs[0].get('codec_name') or '').lower() in _STILL_IMAGE_CODECS:
+        raise ValueError("Footage bukan video bergerak (codec gambar).")
+    _dur = _playlist_media_duration(dest)
+    if _dur < 2.0:
+        raise ValueError("Footage terlalu pendek (<2 detik).")
+    if not _pixabay_clip_has_motion(dest, _dur):
+        raise ValueError("Footage tidak bergerak (gambar diam/statis).")
     return dest
 
 
@@ -11479,12 +11531,40 @@ def _playlist_fps(stream):
         return 30.0
 
 
+def _playlist_copy_pts_ok(path, max_gap=2.0):
+    """Cek celah timestamp (PTS) antar paket video berurutan.
+    Celah > max_gap detik = gambar akan freeze selama itu di player
+    (penyebab video Aruya/Mahewa 21 Nov 2026 freeze 20-33 dtk).
+    Probe gagal -> lolos (fail-open: jangan gagalkan render bagus
+    hanya karena checker error)."""
+    try:
+        out = subprocess.run(
+            [get_ffprobe_path(), '-v', 'error', '-select_streams', 'v:0',
+             '-show_entries', 'packet=pts_time', '-of', 'csv=p=0', path],
+            capture_output=True, text=True, timeout=600)
+        if out.returncode != 0:
+            return True
+        prev = None
+        for line in (out.stdout or '').splitlines():
+            try:
+                t = float(line.strip())
+            except Exception:
+                continue
+            if prev is not None and t - prev > max_gap:
+                return False
+            prev = t
+        return True
+    except Exception:
+        return True
+
+
 def _playlist_copy_valid(path, audio_dur, tol=5.0):
     """Validasi hasil concat copy: file ada, ada stream video, durasi
     mendekati durasi audio (+-tol detik). Copy yang 'sukses' (exit 0)
     tapi durasinya ngaco — mis. timestamp berantakan karena klip beda
     fps/timebase — dianggap gagal, supaya _playlist_render jatuh ke
-    normalisasi, bukan meng-upload video rusak."""
+    normalisasi, bukan meng-upload video rusak.
+    🔥 v1.3.75: + cek celah PTS (freeze) via _playlist_copy_pts_ok."""
     try:
         if not path or not os.path.exists(path) or os.path.getsize(path) == 0:
             return False
@@ -11495,7 +11575,7 @@ def _playlist_copy_valid(path, audio_dur, tol=5.0):
         if not vs:
             return False
         dur = float((pv.get('format') or {}).get('duration') or 0)
-        return dur > 0 and abs(dur - audio_dur) <= tol
+        return dur > 0 and abs(dur - audio_dur) <= tol and _playlist_copy_pts_ok(path)
     except Exception:
         return False
 
@@ -11593,19 +11673,25 @@ def _playlist_render(task_id, task, yt_id):
         # dan jatuh ke normalisasi, progres normalisasi 0-70% lalu concat
         # 70-100% (angka bisa mundur — itu artinya percobaan copy gagal).
         # "Dibatalkan"/timeout diteruskan apa adanya (bukan gagal copy).
+        # 🔥 v1.3.75: klip TIDAK seragam (beda codec/resolusi/fps) JANGAN
+        # coba copy — concat copy klip beda fps/timebase terbukti bikin
+        # gambar freeze belasan–puluhan detik (video Aruya + Mahewa
+        # 21 Nov 2026). Langsung normalisasi ke 720p30.
         copy_ok = False
-        try:
-            _run_ffmpeg_zoom(task_id, cmd, "FFmpeg Playlist Concat Error",
-                             total_sec=audio_dur, pct_base=0.0, pct_span=100.0)
-            copy_ok = _playlist_copy_valid(final_video, audio_dur)
-        except Exception as _ce:
-            if 'Dibatalkan' in str(_ce) or 'timeout' in str(_ce).lower():
-                raise
-            copy_ok = False
+        if uniform:
+            try:
+                _run_ffmpeg_zoom(task_id, cmd, "FFmpeg Playlist Concat Error",
+                                 total_sec=audio_dur, pct_base=0.0, pct_span=100.0)
+                copy_ok = _playlist_copy_valid(final_video, audio_dur)
+            except Exception as _ce:
+                if 'Dibatalkan' in str(_ce) or 'timeout' in str(_ce).lower():
+                    raise
+                copy_ok = False
         if not copy_ok:
-            # Copy gagal atau hasilnya tidak valid (durasi ngaco) →
-            # normalisasi semua klip ke 720p30, lalu concat ulang.
-            method = 'normalize (fallback)'
+            # Copy gagal / tidak dicoba (klip tidak seragam) / hasilnya
+            # tidak valid (durasi ngaco / ada celah PTS) → normalisasi
+            # semua klip ke 720p30, lalu concat ulang.
+            method = 'normalize (fallback)' if uniform else 'normalize (non-uniform)'
             norm_paths = []
             for idx, info in enumerate(infos):
                 np_out = os.path.join(os.path.dirname(concat_txt), f"pl_norm_{task_id}_{idx}.mp4")
@@ -11842,8 +11928,20 @@ def _playlist_build_thread(job_id):
         clip_paths = []
         for i, c in enumerate(clips):
             dest = os.path.join(job_dir, f"clip_{i + 1:02d}.mp4")
-            _pixabay_download_clip(c['url'], dest)
+            try:
+                _pixabay_download_clip(c['url'], dest)
+            except Exception as e:
+                # 🔥 v1.3.75: klip bermasalah (bukan video / statis /
+                # unduh gagal) dilewati saja, jangan gugurkan job.
+                print(f"[pixabay] klip {i + 1} dilewati: {e}", flush=True)
+                try:
+                    os.remove(dest)
+                except Exception:
+                    pass
+                continue
             clip_paths.append(dest)
+        if len(clip_paths) < PLAYLIST_MIN_CLIPS:
+            raise RuntimeError(f"Footage Pixabay valid kurang (dapat {len(clip_paths)}, butuh min {PLAYLIST_MIN_CLIPS}) — coba tema/kata kunci lain.")
         _prog = f"{len(clip_paths)} klip footage siap (key Pixabay {masks[0] if masks else '?'})"
         if pixabay_fallback:
             _prog += f" — tema footage '{footage_theme}' kurang klip, pakai tema musik."
@@ -12922,8 +13020,19 @@ def _zumo_finish_video(job_id, job, job_dir, kept, profile, total_credits,
         clip_paths = []
         for i, c in enumerate(clips):
             dest = os.path.join(job_dir, f"clip_{i + 1:02d}.mp4")
-            _pixabay_download_clip(c['url'], dest)
+            try:
+                _pixabay_download_clip(c['url'], dest)
+            except Exception as e:
+                # 🔥 v1.3.75: klip bermasalah dilewati saja (lihat jalur playlist).
+                print(f"[pixabay] klip {i + 1} dilewati: {e}", flush=True)
+                try:
+                    os.remove(dest)
+                except Exception:
+                    pass
+                continue
             clip_paths.append(dest)
+        if len(clip_paths) < PLAYLIST_MIN_CLIPS:
+            raise RuntimeError(f"Footage Pixabay valid kurang (dapat {len(clip_paths)}, butuh min {PLAYLIST_MIN_CLIPS}) — coba tema/kata kunci lain.")
         res = _playlist_create_task({
             'yt_id': yt_id, 'title': new_title, 'description': new_desc,
             'tags': new_tags, 'publish_date': job.get('publish_date') or '',
@@ -14818,9 +14927,14 @@ def telegram_reminder_worker():
                         msg = f"Notifikasi Ziqva Muse Bot\n\nChannel: *{_tg_escape(c['name'])}*\nStok jadwal video hampir habis!\nJadwal terakhir: {_tg_escape(last_date_str)}\n\nWaktunya buat video baru, Bos K!"
                         try:
                             # Kirim pesan ke Telegram
+                            # 🔥 v1.3.75: notif WAJIB bawa tombol saran
+                            # (prinsip 20 Nov 2026) — Bos tinggal tap.
                             requests.post(
-                                f"https://api.telegram.org/bot{token}/sendMessage", 
-                                json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}
+                                f"https://api.telegram.org/bot{token}/sendMessage",
+                                json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown",
+                                      "reply_markup": {"inline_keyboard": [
+                                          [{"text": "🎵 Buat video baru", "callback_data": f"stok:buat:{c.get('yt_id')}"}],
+                                          [{"text": "📅 Lihat jadwal", "callback_data": "rep:jadwal"}]]}}
                             )
                             c['reminder_sent'] = True
                             changed = True

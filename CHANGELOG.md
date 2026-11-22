@@ -1,3 +1,6 @@
+## 1.4.12
+- Kartu statistik Task Monitor kini bisa diklik (permintaan user 22 Nov 2026 — "buat ini nge link bisa gak sih?"): CHANNELS → Dashboard (tabel channel), ACTIVE → scroll ke antrean RENDER & UPLOAD QUEUE, DONE → Riwayat Channel, DIJADWALKAN → Jadwal Rutin. Class baru `.stat-link` (cursor pointer + hover: border accent + glow + naik sedikit) + tooltip "Lihat …" di tiap kartu; kartu antrean diberi id `queue-card` sebagai target scroll.
+
 ## 1.4.11
 - Rapikan header Bank Lagu (komplain user 22 Nov 2026 — subjudul terpotong 2 baris, jelek): subjudul jadi "Stok lagu mentah per channel." (kata "untuk video harian" dibuang) + `white-space:nowrap` supaya sebaris. Tombol "➕ Upload Audio" kini warna mencolok (btn-p, gradasi accent + glow, sebelumnya btn-g polos) + `white-space:nowrap` supaya teksnya sebaris.
 

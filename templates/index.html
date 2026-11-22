@@ -518,6 +518,8 @@ body::before {
 .stat-val { font-size:26px; font-weight:700; line-height:1; margin-bottom:3px; }
 .stat-note { font-family:var(--font-m); font-size:10px; color:var(--muted); }
 .stat-ico { position:absolute; right:14px; top:50%; transform:translateY(-50%); font-size:24px; opacity:.08; }
+.stat-link { cursor:pointer; transition:.15s; }
+.stat-link:hover { border-color:var(--accent); box-shadow:0 0 12px var(--accent-dim); transform:translateY(-1px); }
 
 .g2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
 .g3 { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
@@ -1508,10 +1510,10 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
       </div>
 
       <div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:18px">
-        <div class="stat s3"><div class="stat-lbl">CHANNELS</div><div class="stat-val" id="tm-ch" style="color:var(--accent3)">0</div><div class="stat-note">Connected</div></div>
-        <div class="stat s1"><div class="stat-lbl">ACTIVE</div><div class="stat-val" id="tm-act" style="color:var(--accent)">0</div><div class="stat-note">Running</div></div>
-        <div class="stat s4"><div class="stat-lbl">DONE</div><div class="stat-val" id="tm-done" style="color:var(--green)">0</div><div class="stat-note">History</div></div>
-        <div class="stat s2"><div class="stat-lbl">DIJADWALKAN</div><div class="stat-val" id="tm-sched" style="color:var(--accent2)">0</div><div class="stat-note" id="tm-sched-next">Belum tayang</div></div>
+        <div class="stat s3 stat-link" onclick="go('dashboard')" title="Lihat tabel channel"><div class="stat-lbl">CHANNELS</div><div class="stat-val" id="tm-ch" style="color:var(--accent3)">0</div><div class="stat-note">Connected</div></div>
+        <div class="stat s1 stat-link" onclick="document.getElementById('queue-card').scrollIntoView({behavior:'smooth'})" title="Lihat antrean render & upload"><div class="stat-lbl">ACTIVE</div><div class="stat-val" id="tm-act" style="color:var(--accent)">0</div><div class="stat-note">Running</div></div>
+        <div class="stat s4 stat-link" onclick="go('history')" title="Lihat riwayat upload"><div class="stat-lbl">DONE</div><div class="stat-val" id="tm-done" style="color:var(--green)">0</div><div class="stat-note">History</div></div>
+        <div class="stat s2 stat-link" onclick="go('schedules')" title="Lihat jadwal rutin"><div class="stat-lbl">DIJADWALKAN</div><div class="stat-val" id="tm-sched" style="color:var(--accent2)">0</div><div class="stat-note" id="tm-sched-next">Belum tayang</div></div>
       </div>
 
       <!-- 🔥 v1.3.28: ringkasan upload HARI INI (per channel) -->
@@ -1526,7 +1528,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         <div class="card-body" style="padding:6px 16px 10px"><div id="tm-channels" style="font-size:12px;color:var(--muted)">Memuat channel…</div></div>
       </div>
 
-      <div class="card">
+      <div class="card" id="queue-card">
         <div class="card-head"><span class="card-title">◉ RENDER & UPLOAD QUEUE</span><span class="pill p-cyan" id="q-badge">0 aktif</span></div>
         <div style="padding:10px 16px 6px"><div id="taskList"><div style="text-align:center;padding:24px;color:var(--muted);font-family:var(--font-m);font-size:11px">Tidak ada task aktif.</div></div></div>
       </div>

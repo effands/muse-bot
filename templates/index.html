@@ -1617,8 +1617,21 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
           <span style="font-family:var(--font-m);font-size:11px;color:var(--muted)">Channel:</span><select id="bank-ch-sel" onchange="renderBank()" style="width:180px"><option value="">-- Pilih Channel --</option></select>
           <span class="pill p-cyan" id="bank-count">0 lagu</span>
           <span class="pill" id="bank-dur">—</span>
+          <button class="btn btn-g btn-sm" onclick="toggleBankUpload()">➕ Upload Audio</button>
           <button class="btn btn-g btn-sm" onclick="fetchBank()">🔄 Refresh</button>
         </div>
+      </div>
+      <div id="bank-upload-form" style="display:none;margin-bottom:12px;padding:10px 12px;border:1px solid var(--border);border-radius:10px">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input type="file" id="bank-up-file" accept=".mp3,.wav" style="max-width:230px">
+          <input type="text" id="bank-up-title" placeholder="Judul lagu (wajib)" style="width:220px">
+          <input type="text" id="bank-up-style" placeholder="Style (opsional)" style="width:180px">
+          <label style="font-size:12px;display:flex;gap:4px;align-items:center"><input type="checkbox" id="bank-up-inst" checked> Instrumental</label>
+          <button class="btn btn-sm" id="bank-up-btn" onclick="uploadBankAudio()">Upload ke Bank</button>
+          <button class="btn btn-g btn-sm" onclick="toggleBankUpload(false)">Batal</button>
+          <span id="bank-up-status" style="font-size:12px;color:var(--muted)"></span>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:6px">MP3/WAV maks 100 MB — lagu masuk bank channel yang dipilih, 0 kredit, langsung dipakai rakit video harian (acak). Model tercatat "Manual".</div>
       </div>
       <div id="bank-player" style="display:none;margin-bottom:12px;padding:10px 12px;border:1px solid var(--border);border-radius:10px">
         <div style="font-size:12px;font-weight:700;margin-bottom:6px">▶️ <span id="bank-now">—</span></div>
@@ -3992,6 +4005,54 @@ async function deleteBankTrack(id) {
   fetch('/api/zumo_bank/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ yt_id: yt, id: id }) })
     .then(r => r.json()).then(d => { if (d.status === 'success') fetchBank(); else alert(d.message || 'Gagal menghapus lagu.'); })
     .catch(() => alert('Gagal menghapus lagu.'));
+}
+function toggleBankUpload(show) {
+  const w = document.getElementById('bank-upload-form');
+  if (!w) return;
+  const next = (show === false) ? 'none' : (w.style.display === 'none' ? '' : 'none');
+  if (next !== 'none') {
+    const sel = document.getElementById('bank-ch-sel');
+    if (!sel || !sel.value) { alert('Pilih channel dulu.'); return; }
+  }
+  w.style.display = next;
+}
+async function uploadBankAudio() {
+  const sel = document.getElementById('bank-ch-sel');
+  const yt = sel ? sel.value : '';
+  const fileEl = document.getElementById('bank-up-file');
+  const titleEl = document.getElementById('bank-up-title');
+  const styleEl = document.getElementById('bank-up-style');
+  const instEl = document.getElementById('bank-up-inst');
+  const st = document.getElementById('bank-up-status');
+  const btn = document.getElementById('bank-up-btn');
+  if (!yt) { alert('Pilih channel dulu.'); return; }
+  if (!fileEl || !fileEl.files || !fileEl.files.length) { alert('Pilih file MP3/WAV dulu.'); return; }
+  const title = titleEl ? titleEl.value.trim() : '';
+  if (!title) { alert('Isi judul lagu dulu.'); return; }
+  const fd = new FormData();
+  fd.append('yt_id', yt);
+  fd.append('file', fileEl.files[0]);
+  fd.append('title', title);
+  fd.append('style', styleEl ? styleEl.value.trim() : '');
+  fd.append('instrumental', (instEl && instEl.checked) ? '1' : '0');
+  if (st) st.textContent = 'Mengunggah…';
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/zumo_bank/upload', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (d.status === 'success') {
+      if (st) st.textContent = '✅ "' + (d.track ? d.track.title : title) + '" masuk bank.';
+      if (fileEl) fileEl.value = '';
+      if (titleEl) titleEl.value = '';
+      fetchBank();
+    } else {
+      if (st) st.textContent = '❌ ' + (d.message || 'Gagal mengunggah.');
+    }
+  } catch (e) {
+    if (st) st.textContent = '❌ Gagal mengunggah.';
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 let _histData = [];
 function fetchHistory() {

@@ -1540,6 +1540,7 @@ ZUMO_ASSETS_DIR = os.path.join(BASE_UPLOAD, 'zumo_assets')
 # file mentah hasil download + bank_index.json (metadata). Sudah di
 # bawah uploads/ -> ikut ter-backup otomatis (backup mencakup uploads/).
 ZUMO_BANK_DIR = os.path.join(BASE_UPLOAD, 'zumo_bank')
+BANK_AUDIO_MAX_BYTES = 100 * 1024 * 1024  # upload manual audio ke bank (v1.4.9): maks 100 MB/file
 PLAYLIST_MAX_CLIPS = 15               # klip footage Pixabay per video
 PLAYLIST_MIN_CLIPS = 5                # minimal klip agar render jalan
 PLAYLIST_RESEARCH_CACHE_SEC = 3600    # cache riset 1 jam (hemat kuota)
@@ -8417,6 +8418,70 @@ def delete_zumo_bank_track():
     if not ok:
         return jsonify({'status': 'error', 'message': err or 'Gagal menghapus lagu.'}), 404
     return jsonify({'status': 'success', 'message': 'Lagu dihapus dari bank.'})
+
+
+@app.route('/api/zumo_bank/upload', methods=['POST'])
+def upload_zumo_bank_track():
+    """Upload manual 1 lagu (MP3/WAV) ke bank (v1.4.9, permintaan user
+    22 Nov 2026 — audio sendiri, bukan hasil generate Zumo). Form:
+    yt_id, file, title (wajib), style (opsional), instrumental (1/0).
+    Durasi dibaca via ffprobe; 0 kredit; model 'Manual'; job_id 'manual'.
+    Lagu langsung bisa dipakai rakit video harian (assemble, acak)."""
+    yt_id = str(request.form.get('yt_id') or '').strip()
+    title = str(request.form.get('title') or '').strip()
+    style = str(request.form.get('style') or '').strip()
+    instr = str(request.form.get('instrumental') or '1').strip().lower()
+    instrumental = instr in ('1', 'true', 'yes', 'on')
+    if not yt_id or not _valid_yt_id(yt_id):
+        return jsonify({'status': 'error', 'message': 'Channel tidak valid.'}), 400
+    target = next((c for c in (database_channel or []) if c.get('yt_id') == yt_id), None)
+    if target is None:
+        return jsonify({'status': 'error', 'message': 'Channel tidak ditemukan.'}), 404
+    if not title:
+        return jsonify({'status': 'error', 'message': 'Judul lagu wajib diisi.'}), 400
+    f = request.files.get('file') or (list(request.files.values())[0] if request.files else None)
+    if not f or not f.filename:
+        return jsonify({'status': 'error', 'message': 'Pilih file audio dulu (MP3/WAV).'}), 400
+    safe_name = os.path.basename(f.filename)
+    ext = os.path.splitext(safe_name)[1].lower()
+    if ext not in ('.mp3', '.wav'):
+        return jsonify({'status': 'error', 'message': 'Hanya MP3 atau WAV yang diterima.'}), 400
+    if f.content_length and f.content_length > BANK_AUDIO_MAX_BYTES:
+        return jsonify({'status': 'error', 'message': 'File lebih dari 100 MB.'}), 400
+    head = f.stream.read(12)
+    try:
+        f.stream.seek(0)
+    except Exception:
+        pass
+    if not _magic_ok(head, ext):
+        return jsonify({'status': 'error', 'message': 'Isi file tidak cocok dengan ekstensi ' + ext}), 400
+    tmp = os.path.join('/tmp', 'bank_up_%d_%04d%s' % (int(time.time() * 1000), random.randint(0, 9999), ext))
+    try:
+        f.save(tmp)
+        if os.path.getsize(tmp) > BANK_AUDIO_MAX_BYTES:
+            return jsonify({'status': 'error', 'message': 'File lebih dari 100 MB.'}), 400
+        try:
+            probe = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', tmp], capture_output=True, text=True, timeout=120)
+            dur = float((probe.stdout or '').strip())
+        except Exception:
+            dur = 0.0
+        if not dur or dur <= 0:
+            return jsonify({'status': 'error', 'message': 'File audio tidak bisa dibaca (durasi tidak terbaca).'}), 400
+        meta = {'title': title, 'style': style, 'bpm': None, 'duration': dur,
+                'credits': 0, 'job_id': 'manual', 'instrumental': instrumental,
+                'model': 'Manual'}
+        with db_lock:
+            entry = _zumo_bank_save_track(yt_id, target.get('name') or '', tmp, meta)
+        if not entry:
+            return jsonify({'status': 'error', 'message': 'Gagal menyimpan lagu ke bank.'}), 500
+        return jsonify({'status': 'success', 'message': 'Lagu masuk bank.',
+                        'track': {'id': entry.get('id'), 'title': entry.get('title'),
+                                  'duration': entry.get('duration')}})
+    finally:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
 
 
 def _clean_history_status(status):

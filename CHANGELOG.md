@@ -1,4 +1,4 @@
-## 1.3.102
+## 1.4.0
 - DETAIL CHANNEL: kolom GROUP kini hanya menampilkan nama group + tombol "…" untuk ganti group (permintaan user 22 Nov 2026 — dropdown di tiap baris boros tempat). Klik "…" -> select pemilih muncul di sel itu (groupSelectHtml yang sudah ada); pilih -> simpan lewat onGroupSelect -> sel menutup jadi teks lagi; klik di luar tanpa memilih -> kembali ke teks (blur + timeout 150 mdtk, change jalan dulu). Guard render ulang poll 5 menit diperluas ke '.grp-picker' supaya pemilih yang sedang dibuka tidak terhapus; sesudah simpan sukses pemilih ditutup eksplisit di saveChannelGroup (tanpa ini guard menahan render ulang sehingga select tidak pernah kembali ke teks); batal dari input group baru yang dibuka lewat pemilih kembali ke teks (cancelEditGroup). Tabel Dashboard dan popup Kelola Group tetap pakai dropdown.
 - DETAIL CHANNEL: kolom VIEW 28D dihapus (permintaan user 22 Nov 2026 — semua baris "—" karena snapshot harian baru jalan sejak 18 Nov, butuh 28 hari riwayat; kolom baru terisi ~16 Des). Header + sel baris + colspan (12 -> 11) dihapus; perhitungan snapshot di backend dibiarkan (bisa dihidupkan lagi bila diminta).
 

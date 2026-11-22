@@ -3236,7 +3236,7 @@ function groupSelectHtml(c, handler) {
     + `<option value=""${cur ? '' : ' selected'}>— Tanpa Group —</option>` + opts
     + `<option value="__new__">＋ Buat group baru…</option></select>`;
 }
-// 🔥 v1.3.102: sel GROUP di DETAIL CHANNEL jadi nama saja + tombol "…"
+// 🔥 v1.4.0: sel GROUP di DETAIL CHANNEL jadi nama saja + tombol "…"
 // (dropdown di tiap baris boros tempat — permintaan user 22 Nov 2026).
 // Klik "…" -> select pemilih muncul di sel itu (groupSelectHtml yang
 // sudah ada); pilih -> simpan lewat onGroupSelect -> sel menutup jadi
@@ -3283,7 +3283,7 @@ function onGroupSelect(sel, ytId) {
 }
 function cancelEditGroup(el) {
   const td = el.closest('td'); if (!td) return;
-  // 🔥 v1.3.102: bila input group baru dibuka dari pemilih "..." di
+  // 🔥 v1.4.0: bila input group baru dibuka dari pemilih "..." di
   // DETAIL CHANNEL (dataset.grp terisi), batal -> kembali ke teks nama
   // group, bukan ke select.
   if (td.dataset.grp !== undefined) {
@@ -3306,7 +3306,7 @@ async function saveChannelGroup(ytId, group, el) {
   const d = await res.json().catch(() => ({}));
   if (res.ok && d.status === 'success') {
     toast(group ? `Group tersimpan → ${group}.` : 'Channel keluar dari group.', 'ok');
-    // 🔥 v1.3.102: tutup pemilih "..." di DETAIL CHANNEL sesudah simpan
+    // 🔥 v1.4.0: tutup pemilih "..." di DETAIL CHANNEL sesudah simpan
     // (tanpa ini guard '.grp-picker' di renderChannelTable menahan
     // render ulang berikutnya sehingga select tidak pernah kembali
     // ke teks). No-op untuk tabel Dashboard / popup (tidak ada picker).
@@ -7033,7 +7033,7 @@ function renderChannelTable() {
   // 🔥 v1.3.69: jangan render ulang saat input group baru sedang dibuka
   // (poll 5 menit akan menghapus inputnya — pola sama seperti .em-input
   // di renderTaskChannels/renderDashboardChannels).
-  // 🔥 v1.3.102: sama untuk pemilih group ("...") yang sedang dibuka.
+  // 🔥 v1.4.0: sama untuk pemilih group ("...") yang sedang dibuka.
   if (tb.querySelector('.grp-input') || tb.querySelector('.grp-picker')) return;
   let rows = analyticsData || [];
   // 🔥 v1.3.68: tabel ikut filter GROUP dari dropdown atas (sama seperti

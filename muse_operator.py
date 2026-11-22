@@ -6014,7 +6014,7 @@ def _zumo_parse_particle(text):
 
 
 def _make_zumo_summary(d):
-    """Ringkasan konfirmasi Zumo (teks biasa, tanpa emoji/ikon). Bila
+    """Ringkasan konfirmasi Zumo (label info penting ditebalkan, v1.3.98). Bila
     song_count > jumlah titles tempel, disebut eksplisit: judul sisanya
     dibuatkan otomatis oleh server."""
     n = d.get('song_count') or 3
@@ -6025,24 +6025,24 @@ def _make_zumo_summary(d):
     mode_label = 'Instrumental (tanpa lirik)' if instrumental else 'Vokal'
     lines = [
         "Cek dulu ya Bos, ini playlist Zumo yang mau dibuat:",
-        f"Channel: {_tg_escape(d.get('channel_name') or _ZUMO_CHANNEL_NAME)}",
-        f"Tema: {_tg_escape(d.get('theme', ''))}",
-        f"Mode: {mode_label}",
-        f"Style: {_tg_escape(d.get('style') or 'ikut profil channel')}",
-        f"Jumlah judul: {n} (jadi {n * 2} varian lagu)",
-        f"Model: {d.get('model') or _ZUMO_DEFAULT_MODEL}",
-        f"Partikel: {_ZUMO_PARTICLE_LABEL.get(d.get('particle') or 'snow', 'salju')} | Spectrum: {_ZUMO_SPECTRUM_LABEL.get(d.get('spectrum_color') or 'white', 'putih')}",
-        f"Jadwal: {_tg_escape(_zumo_schedule_text(d))}",
+        f"*Channel:* {_tg_escape(d.get('channel_name') or _ZUMO_CHANNEL_NAME)}",
+        f"*Tema:* {_tg_escape(d.get('theme', ''))}",
+        f"*Mode:* {mode_label}",
+        f"*Style:* {_tg_escape(d.get('style') or 'ikut profil channel')}",
+        f"*Jumlah judul:* {n} (jadi {n * 2} varian lagu)",
+        f"*Model:* {d.get('model') or _ZUMO_DEFAULT_MODEL}",
+        f"*Partikel:* {_ZUMO_PARTICLE_LABEL.get(d.get('particle') or 'snow', 'salju')} | *Spectrum:* {_ZUMO_SPECTRUM_LABEL.get(d.get('spectrum_color') or 'white', 'putih')}",
+        f"*Jadwal:* {_tg_escape(_zumo_schedule_text(d))}",
     ]
     if instrumental:
-        lines.append(f"Biaya musik kira-kira: {n * 12} kredit ({n} generate x 12 kredit; tanpa biaya lirik).")
+        lines.append(f"*Biaya musik kira-kira:* {n * 12} kredit ({n} generate x 12 kredit; tanpa biaya lirik).")
     else:
-        lines.append(f"Biaya musik kira-kira: {n * 12} kredit ({n} generate x 12 kredit; biaya lirik ikut tagihan Kie).")
+        lines.append(f"*Biaya musik kira-kira:* {n * 12} kredit ({n} generate x 12 kredit; biaya lirik ikut tagihan Kie).")
     if instrumental:
         lines.append("Lirik: tanpa lirik (instrumental).")
     elif d.get('lyrics_mode') == 'pasted' and titles:
         t0 = titles[0]
-        lines.append(f"Lirik: tempel 1 judul ({_tg_escape((t0.get('title') or '')[:60])}) — dikirim utuh apa adanya.")
+        lines.append(f"*Lirik:* tempel 1 judul ({_tg_escape((t0.get('title') or '')[:60])}) — dikirim utuh apa adanya.")
         if n > len(titles):
             lines.append(f"Judul lain ({n - len(titles)}) dibuatkan otomatis oleh server (judul + lirik).")
     else:
@@ -6050,12 +6050,12 @@ def _make_zumo_summary(d):
     if instrumental:
         pass  # bahasa & vokal tidak dipakai (instrumental)
     elif lang_label or vocal_label:
-        prof = "Bahasa lirik: " + (lang_label or "ikut profil")
-        prof += " | Vokal: " + (vocal_label or "ikut profil")
+        prof = "*Bahasa lirik:* " + (lang_label or "ikut profil")
+        prof += " | *Vokal:* " + (vocal_label or "ikut profil")
         lines.append(prof)
         lines.append("Bahasa & vokal ini disimpan sebagai profil channel ini.")
     else:
-        lines.append("Bahasa & vokal lirik: ikut profil channel.")
+        lines.append("*Bahasa & vokal lirik:* ikut profil channel.")
     lines += [
         "",
         "Kalau sudah oke, pencet Buat. Kalau mau ubah, pencet Batal lalu mulai lagi dari /zumo ya Bos!",
@@ -6064,7 +6064,7 @@ def _make_zumo_summary(d):
 
 
 def _make_zumo_bank_summary(d):
-    """Ringkasan konfirmasi /zumobank (teks biasa, tanpa emoji/ikon).
+    """Ringkasan konfirmasi /zumobank (label info penting ditebalkan, v1.3.98).
     Biaya lirik disebut apa adanya bila vokal — tanpa angka pasti
     (biaya lirik ikut tagihan Kie)."""
     n = d.get('bank_count') or 10
@@ -6072,17 +6072,17 @@ def _make_zumo_bank_summary(d):
     mode_label = 'Instrumental (tanpa lirik)' if instrumental else 'Vokal'
     lines = [
         "Cek dulu ya Bos, ini order Bank Audio Zumo yang mau dibuat:",
-        f"Channel: {_tg_escape(d.get('channel_name') or _ZUMO_CHANNEL_NAME)}",
-        f"Tema: {_tg_escape(d.get('theme', ''))}",
-        f"Mode: {mode_label}",
-        f"Style: {_tg_escape(d.get('style') or 'ikut profil channel')}",
-        f"Jumlah lagu: {n} (disimpan di bank audio, tanpa upload)",
-        f"Model: {d.get('model') or _ZUMO_DEFAULT_MODEL}",
+        f"*Channel:* {_tg_escape(d.get('channel_name') or _ZUMO_CHANNEL_NAME)}",
+        f"*Tema:* {_tg_escape(d.get('theme', ''))}",
+        f"*Mode:* {mode_label}",
+        f"*Style:* {_tg_escape(d.get('style') or 'ikut profil channel')}",
+        f"*Jumlah lagu:* {n} (disimpan di bank audio, tanpa upload)",
+        f"*Model:* {d.get('model') or _ZUMO_DEFAULT_MODEL}",
     ]
     if instrumental:
-        lines.append(f"Biaya musik kira-kira: {n * 12} kredit ({n} generate x 12 kredit; tanpa biaya lirik).")
+        lines.append(f"*Biaya musik kira-kira:* {n * 12} kredit ({n} generate x 12 kredit; tanpa biaya lirik).")
     else:
-        lines.append(f"Biaya musik kira-kira: {n * 12} kredit ({n} generate x 12 kredit; biaya lirik ikut tagihan Kie).")
+        lines.append(f"*Biaya musik kira-kira:* {n * 12} kredit ({n} generate x 12 kredit; biaya lirik ikut tagihan Kie).")
     lines += [
         "",
         "Kalau sudah oke, pencet Buat. Kalau mau ubah, pencet Batal lalu mulai lagi dari /zumobank ya Bos!",
@@ -6091,13 +6091,13 @@ def _make_zumo_bank_summary(d):
 
 
 def _make_zumo_assemble_summary(d):
-    """Ringkasan konfirmasi /zumorakit (teks biasa, tanpa emoji/ikon)."""
+    """Ringkasan konfirmasi /zumorakit (label info penting ditebalkan, v1.3.98)."""
     n = d.get('bank_count') or 8
     lines = [
         "Cek dulu ya Bos, ini video rakitan dari Bank Audio yang mau dibuat:",
-        f"Channel: {_tg_escape(d.get('channel_name') or _ZUMO_CHANNEL_NAME)}",
-        f"Jumlah lagu: {n} (dipilih acak dari bank audio channel ini)",
-        f"Jadwal: {_tg_escape(_zumo_schedule_text(d))}",
+        f"*Channel:* {_tg_escape(d.get('channel_name') or _ZUMO_CHANNEL_NAME)}",
+        f"*Jumlah lagu:* {n} (dipilih acak dari bank audio channel ini)",
+        f"*Jadwal:* {_tg_escape(_zumo_schedule_text(d))}",
         "",
         "Kalau sudah oke, pencet Buat. Kalau mau ubah, pencet Batal lalu mulai lagi dari /zumorakit ya Bos!",
     ]
@@ -6328,17 +6328,17 @@ def _send_zumo_created_message(token, chat_id, d, resp):
     n = d.get('song_count') or 3
     titles = d.get('titles') or []
     lines = [
-        "Sip Bos, playlist Zumo-nya udah saya buatkan!",
-        f"Tema: {_tg_escape(d.get('theme', ''))}",
-        f"Channel: {_tg_escape(d.get('channel_name') or _ZUMO_CHANNEL_NAME)}",
-        f"Jumlah judul: {n} (jadi {n * 2} varian lagu)",
-        f"Mode: {'Instrumental (tanpa lirik)' if d.get('mode') == 'instrumental' else 'Vokal'}",
-        f"Jadwal: {_tg_escape(_zumo_schedule_text(d))}",
+        "✅ *Sip Bos, playlist Zumo-nya udah saya buatkan!* 🎵",
+        f"*Tema:* {_tg_escape(d.get('theme', ''))}",
+        f"*Channel:* {_tg_escape(d.get('channel_name') or _ZUMO_CHANNEL_NAME)}",
+        f"*Jumlah judul:* {n} (jadi {n * 2} varian lagu)",
+        f"*Mode:* {'Instrumental (tanpa lirik)' if d.get('mode') == 'instrumental' else 'Vokal'}",
+        f"*Jadwal:* {_tg_escape(_zumo_schedule_text(d))}",
     ]
     if d.get('mode') == 'instrumental':
         lines.append("Lirik: tanpa lirik (instrumental).")
     elif d.get('lyrics_mode') == 'pasted' and titles:
-        lines.append(f"Lirik: tempel 1 judul ({_tg_escape((titles[0].get('title') or '')[:60])}) — dikirim utuh apa adanya.")
+        lines.append(f"*Lirik:* tempel 1 judul ({_tg_escape((titles[0].get('title') or '')[:60])}) — dikirim utuh apa adanya.")
         if n > len(titles):
             lines.append(f"Judul lain ({n - len(titles)}) dibuatkan otomatis oleh server (judul + lirik).")
     else:
@@ -6359,16 +6359,16 @@ def _send_zumo_bank_created_message(token, chat_id, d, resp):
     n = d.get('bank_count') or 10
     instrumental = d.get('mode') == 'instrumental'
     lines = [
-        "Sip Bos, order Bank Audio Zumo-nya udah saya buatkan!",
-        f"Tema: {_tg_escape(d.get('theme', ''))}",
-        f"Channel: {_tg_escape(d.get('channel_name') or _ZUMO_CHANNEL_NAME)}",
-        f"Jumlah lagu: {n}",
-        f"Mode: {'Instrumental (tanpa lirik)' if instrumental else 'Vokal'}",
+        "✅ *Sip Bos, order Bank Audio Zumo-nya udah saya buatkan!* 🎵",
+        f"*Tema:* {_tg_escape(d.get('theme', ''))}",
+        f"*Channel:* {_tg_escape(d.get('channel_name') or _ZUMO_CHANNEL_NAME)}",
+        f"*Jumlah lagu:* {n}",
+        f"*Mode:* {'Instrumental (tanpa lirik)' if instrumental else 'Vokal'}",
     ]
     if instrumental:
-        lines.append(f"Biaya musik kira-kira: {n * 12} kredit ({n} generate x 12 kredit; tanpa biaya lirik).")
+        lines.append(f"*Biaya musik kira-kira:* {n * 12} kredit ({n} generate x 12 kredit; tanpa biaya lirik).")
     else:
-        lines.append(f"Biaya musik kira-kira: {n * 12} kredit ({n} generate x 12 kredit; biaya lirik ikut tagihan Kie).")
+        lines.append(f"*Biaya musik kira-kira:* {n * 12} kredit ({n} generate x 12 kredit; biaya lirik ikut tagihan Kie).")
     lines += [
         "",
         "Lagu sedang di-generate (Kie.ai) lalu disimpan di bank audio channel ini, tanpa upload.",
@@ -6385,14 +6385,14 @@ def _send_zumo_assemble_created_message(token, chat_id, d, resp):
     resp = resp or {}
     title = (resp.get('new_title') or resp.get('title') or '')[:80]
     lines = [
-        "Sip Bos, video rakitan dari Bank Audio-nya udah saya buatkan!",
-        f"Channel: {_tg_escape(d.get('channel_name') or _ZUMO_CHANNEL_NAME)}",
-        f"Jumlah lagu: {n} (dipilih acak dari bank audio channel ini)",
+        "✅ *Sip Bos, video rakitan dari Bank Audio-nya udah saya buatkan!* 🎵",
+        f"*Channel:* {_tg_escape(d.get('channel_name') or _ZUMO_CHANNEL_NAME)}",
+        f"*Jumlah lagu:* {n} (dipilih acak dari bank audio channel ini)",
     ]
     if title:
-        lines.append(f"Judul video: {_tg_escape(title)}")
+        lines.append(f"*Judul video:* {_tg_escape(title)}")
     lines += [
-        f"Jadwal: {_tg_escape(_zumo_schedule_text(d))}",
+        f"*Jadwal:* {_tg_escape(_zumo_schedule_text(d))}",
         "",
         "Video sedang dirakit lalu masuk antrean. "
         "Setelah render selesai, preview-nya masuk ke chat ini untuk persetujuan Bos.",

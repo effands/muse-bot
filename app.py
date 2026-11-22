@@ -13047,28 +13047,112 @@ def _zumo_make_thumbnail(image_path, new_title, channel_name, out_path,
 
 
 
+_AGAMA_THEME_WORDS = ('agama', 'islam', 'islami', 'dzikir', 'zikir', 'dzikr',
+                      'sholawat', 'shalawat', 'murottal', 'murotal',
+                      'lailahaillallah', 'adzan', 'azan', 'nasheed', 'nasyid')
+
+
+def _zumo_is_agama_theme(theme):
+    """Tema agama (dzikir/sholawat/Islam): audiensnya Indonesia — metadata
+    tetap Bahasa Indonesia (cabang lama). Tema lain (musik): audiens luar
+    negeri — metadata Inggris SEO (keputusan user 21-22 Nov 2026)."""
+    th = (theme or '').lower()
+    return any(w in th for w in _AGAMA_THEME_WORDS)
+
+
+def _zumo_seo_tail(theme):
+    """Ekor kata kunci SEO (Inggris) untuk judul video musik, dari kata
+    kunci riset tiap tema (riset-smooth-jazz-90s.md, konsep-jazz-coffee.md):
+    [mood] + [instrumen] + [for] + [kegunaan]."""
+    th = (theme or '').lower()
+    if 'jazz' in th or 'sax' in th:
+        return 'Relaxing Saxophone & Soulful R&B for a Quiet Evening'
+    if 'piano' in th:
+        return 'Relaxing Piano Music for Sleep, Study & Focus'
+    if 'lofi' in th or 'lo-fi' in th:
+        return 'Relaxing Lofi Music for Study & Chill'
+    if 'sleep' in th or 'tidur' in th:
+        return 'Relaxing Music for Deep Sleep'
+    if 'rain' in th or 'hujan' in th:
+        return 'Relaxing Music for a Rainy Evening'
+    return 'Relaxing Music for a Peaceful Evening'
+
+
+def _zumo_hashtags(theme, channel_name):
+    """12 hashtag Inggris untuk deskripsi video musik (dari kata kunci
+    riset tiap tema + nama channel). Tanpa '#' ganda, tanpa duplikat."""
+    th = (theme or '').lower()
+    if 'jazz' in th or 'sax' in th:
+        tags = ['#SmoothJazz', '#90sJazz', '#RelaxingJazz', '#SaxophoneMusic',
+                '#SoulfulRnB', '#LateNightJazz', '#CozyJazz', '#InstrumentalJazz',
+                '#BackgroundMusic', '#RainyNightJazz', '#JazzCafe']
+    elif 'piano' in th:
+        tags = ['#RelaxingPiano', '#PianoMusic', '#CalmPiano', '#PeacefulPiano',
+                '#InstrumentalMusic', '#BackgroundMusic', '#StudyMusic',
+                '#SleepMusic', '#FocusMusic', '#CozyPiano', '#SoftPiano']
+    elif 'lofi' in th or 'lo-fi' in th:
+        tags = ['#LofiMusic', '#LofiBeats', '#ChillMusic', '#StudyMusic',
+                '#RelaxingMusic', '#BackgroundMusic', '#FocusMusic',
+                '#CozyMusic', '#InstrumentalMusic', '#LofiHipHop', '#CalmMusic']
+    else:
+        tags = ['#RelaxingMusic', '#InstrumentalMusic', '#BackgroundMusic',
+                '#CalmMusic', '#StudyMusic', '#SleepMusic', '#CozyMusic',
+                '#ChillMusic', '#PeacefulMusic', '#SoftMusic', '#FocusMusic']
+    if channel_name:
+        ch = ''.join(w.capitalize() for w in channel_name.replace('-', ' ').split())
+        if ch:
+            tags.append('#' + ch)
+    return tags[:12]
+
+
 def _zumo_rewrite_title(track_titles, theme, channel_name):
     """Judul video dari judul lagu hasil generate + tema. Nama channel
     TIDAK ditempel ke judul (v1.2.23 — _strip_channel_title_suffix juga
-    berjaga di _clean_upload_text). Maks 100 karakter, bersih emoji."""
+    berjaga di _clean_upload_text). Maks 100 karakter, bersih emoji.
+    🔥 v1.3.101: tema MUSIK -> judul Inggris SEO (lead track + tema + ekor
+    kata kunci: mood + instrumen + kegunaan — permintaan user 21 Nov 2026
+    "judul masih kurang seo, deskripsi juga market eropa masih pakai bahasa
+    indonesia", diulang 22 Nov 2026 atas video Midnight Rain yang tayang
+    berbahasa Indonesia karena generator ini masih hardcode Indonesia;
+    perbaikan video lama saja (fix_metadata.py) tidak cukup). Tema AGAMA ->
+    perilaku lama (judul apa adanya, audiens Indonesia)."""
     first = (track_titles or [''])[0].strip() if track_titles else ''
     th = (theme or '').strip()
-    # 🔥 v1.3.82: jangan ulang tema bila kata-katanya sudah ada di judul
-    # lagu (dulu: 'Cozy European Morning Coffee Jazz — Cozy European
-    # Morning Coffee (2 Lagu)'). Suffix '(N Lagu)' juga dibuang — bukan
-    # gaya judul YouTube; jumlah lagu sudah ada di deskripsi (tracklist).
+    if _zumo_is_agama_theme(th):
+        # 🔥 v1.3.82: jangan ulang tema bila kata-katanya sudah ada di judul
+        # lagu (dulu: 'Cozy European Morning Coffee Jazz — Cozy European
+        # Morning Coffee (2 Lagu)'). Suffix '(N Lagu)' juga dibuang — bukan
+        # gaya judul YouTube; jumlah lagu sudah ada di deskripsi (tracklist).
+        th_words = set(th.lower().split())
+        first_words = set(first.lower().split())
+        if first and th and th_words and th_words <= first_words:
+            raw = first
+        elif first and th and first.lower() not in th.lower():
+            raw = f"{first} — {th}"
+        elif first:
+            raw = first
+        elif th:
+            raw = th
+        else:
+            raw = 'Lagu Zumo'
+        return _clean_upload_text(raw, max_len=100, fallback='Lagu Zumo',
+                                  strip_channel=channel_name)
+    # Musik (audiens luar negeri): lead + tema + ekor SEO Inggris.
+    # Pemisah "-" (bukan "|": _clean_upload_text membuang "|" sebagai
+    # simbol dekoratif — terbukti di tes: judul kehilangan "|").
+    tail = _zumo_seo_tail(th)
     th_words = set(th.lower().split())
     first_words = set(first.lower().split())
     if first and th and th_words and th_words <= first_words:
-        raw = first
+        raw = f"{first} - {tail}"
     elif first and th and first.lower() not in th.lower():
-        raw = f"{first} — {th}"
+        raw = f"{first} — {th} - {tail}"
     elif first:
-        raw = first
+        raw = f"{first} - {tail}"
     elif th:
-        raw = th
+        raw = f"{th} - {tail}"
     else:
-        raw = 'Lagu Zumo'
+        raw = tail
     return _clean_upload_text(raw, max_len=100, fallback='Lagu Zumo',
                               strip_channel=channel_name)
 
@@ -13076,47 +13160,77 @@ def _zumo_rewrite_title(track_titles, theme, channel_name):
 def _zumo_build_description(theme, tracks, channel_name, title):
     """Deskripsi SEO: pembuka + daftar lagu + timestamp (dari offset
     gabungan, SETELAH crossfade) + ajakan subscribe + nama channel.
-    tracks = [{title, duration, offset}]."""
+    tracks = [{title, duration, offset}].
+    🔥 v1.3.101: tema MUSIK -> deskripsi Inggris (pembuka + Tracklist +
+    CTA subscribe + 12 hashtag Inggris — permintaan user 21-22 Nov 2026);
+    tema AGAMA -> template Indonesia lama (audiens Indonesia)."""
+    th = (theme or '').strip()
+    if _zumo_is_agama_theme(th):
+        lines = []
+        lines.append(f"{title}")
+        lines.append('')
+        if th:
+            lines.append(f"Nikmati {th} — lagu orisinal yang dibuat khusus untuk menemani harimu.")
+        lines.append('')
+        lines.append('Daftar lagu:')
+        for tr in tracks:
+            off = float(tr.get('offset') or 0)
+            mm, ss = int(off // 60), int(off % 60)
+            lines.append(f"{mm:02d}:{ss:02d} {tr.get('title') or 'Lagu'}")
+        lines.append('')
+        lines.append('Jangan lupa subscribe dan nyalakan loncengnya supaya tidak ketinggalan lagu baru.')
+        if channel_name:
+            lines.append(f"Channel: {channel_name}")
+        return _clean_upload_text('\n'.join(lines), max_len=5000, fallback=title)
     lines = []
     lines.append(f"{title}")
     lines.append('')
-    th = (theme or '').strip()
     if th:
-        lines.append(f"Nikmati {th} — lagu orisinal yang dibuat khusus untuk menemani harimu.")
+        lines.append(f"Settle in for {th} — original music made for relaxing evenings, focused work and quiet moments.")
     lines.append('')
-    lines.append('Daftar lagu:')
+    lines.append('Tracklist:')
     for tr in tracks:
         off = float(tr.get('offset') or 0)
         mm, ss = int(off // 60), int(off % 60)
-        lines.append(f"{mm:02d}:{ss:02d} {tr.get('title') or 'Lagu'}")
+        lines.append(f"{mm:02d}:{ss:02d} {tr.get('title') or 'Song'}")
     lines.append('')
-    lines.append('Jangan lupa subscribe dan nyalakan loncengnya supaya tidak ketinggalan lagu baru.')
+    lines.append('If you enjoy this music, subscribe and tap the bell so you never miss a new session. Tell us in the comments which track is your favourite.')
     if channel_name:
+        lines.append('')
         lines.append(f"Channel: {channel_name}")
+    lines.append('')
+    lines.append(' '.join(_zumo_hashtags(th, channel_name)))
     return _clean_upload_text('\n'.join(lines), max_len=5000, fallback=title)
 
 
 def _zumo_build_tags(style, track_titles, channel_name):
     """Tag dari style/genre + judul lagu + kata kunci kanal. Total
-    <=400 karakter, tanpa '#', tanpa duplikat (pola playlist)."""
-    words = []
-    for part in ((style or '').replace(',', ' ').split()):
-        words.append(part)
+    <=400 karakter, tanpa '#', tanpa duplikat (pola playlist).
+    🔥 v1.3.101: style dipotong per KOMA jadi frasa utuh ("smooth jazz",
+    "late night") — dulu style dipecah per kata sehingga tag jadi sampah
+    kata tunggal ('City', 'Dancing', 'in', 'the' — terlihat di video
+    Midnight Rain 3IdP-DUmkyE). Judul lagu juga dipakai utuh sebagai
+    frasa. Bahasa mengikuti tema: frasa Inggris untuk musik."""
+    phrases = []
+    for part in (style or '').split(','):
+        p = part.strip().lower()
+        if p and len(p) <= 30:
+            phrases.append(p)
     for t in (track_titles or []):
-        for w in (t or '').replace(',', ' ').split():
-            words.append(w)
-    for w in ('musik santai', 'relaxing', 'cozy'):
-        words.append(w)
+        p = (t or '').strip().lower()
+        if p and len(p) <= 30:
+            phrases.append(p)
+    for w in ('relaxing music', 'background music'):
+        phrases.append(w)
     if channel_name:
-        words.append(channel_name)
+        phrases.append(channel_name.strip().lower())
     seen, tags = set(), []
-    for w in words:
-        lw = w.lower().strip()
-        if len(lw) < 2 or lw in seen:
+    for p in phrases:
+        if p in seen:
             continue
-        seen.add(lw)
-        tags.append(w)
-    return ', '.join(_clean_upload_tags(tags)) or 'musik, playlist'
+        seen.add(p)
+        tags.append(p)
+    return ', '.join(_clean_upload_tags(tags)) or 'relaxing music, playlist'
 
 
 def _zumo_render(task_id, task, yt_id):

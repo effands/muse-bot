@@ -34,34 +34,39 @@
 
 ---
 
-## 🚀 Panduan Deploy ke VPS (Ubuntu / Debian 24/7)
+## 🚀 Pasang ke Server Baru (1 perintah)
 
 > 📖 **Panduan ekosistem lengkap** (cara dapat JSON TV, install VPS, Telegram, dan cara kerja sama dengan Muse — sekaligus briefing yang bisa di-paste ke Muse mana pun): **[PANDUAN_EKOSISTEM.md](PANDUAN_EKOSISTEM.md)**.
 
-1. **Login ke VPS via SSH**:
-   ```bash
-   ssh root@ip-vps-anda
-   ```
+```bash
+git clone https://github.com/effands/muse-bot.git && cd muse-bot && sudo bash install.sh
+```
 
-2. **Clone repositori**:
-   ```bash
-   git clone https://github.com/effands/muse-bot.git
-   cd muse-bot
-   ```
+Installer otomatis mengurus semuanya: FFMPEG, Python venv + semua dependencies, folder data, firewall (port 8000 & SSH), service `systemd` `ziqva-muse-bot` (Port 8000) dan `ziqva-muse-operator` (@ziqmusebot) yang jalan 24/7.
 
-3. **Jalankan Installer Otomatis**:
-   ```bash
-   sudo bash install.sh
-   ```
-   Script installer akan otomatis:
-   * Menginstall FFMPEG, Python venv, dan seluruh dependencies.
-   * Mendaftarkan service `systemd` `ziqva-muse-bot` (Port 8000) dan `ziqva-muse-operator` (@ziqmusebot).
-   * Menjalankan kedua service secara 24/7 nonstop di VPS.
+**Yang perlu diedit cuma 1 baris** di paling atas `install.sh` (kalau perlu saja):
 
-4. **Buka di Browser**:
-   ```
-   http://IP_VPS_ANDA:8000
-   ```
+```bash
+PORT="8000"          # port panel (ganti kalau bentrok)
+```
+
+Sisanya otomatis — IP server dideteksi sendiri, folder aplikasi ikut lokasi script.
+
+### 🔑 Hubungkan ke Muse
+
+Tidak perlu setting apa-apa. Installer memasang kunci SSH publik Muse (`muse-ssh.pub` dari repo) ke `~/.ssh/authorized_keys` saat instalasi, dan `app.py` memasangnya lagi tiap kali nyala (cadangan). Setelah instalasi selesai, Muse langsung bisa masuk ke server ini.
+
+Cek dari Muse:
+
+```bash
+ssh -o BatchMode=yes -o IdentitiesOnly=yes -i ~/.ssh/id_ed25519 root@IP_SERVER 'echo OK'
+```
+
+### ✅ Setelah Instalasi
+
+1. Buka panel di browser: `http://IP_SERVER:8000` — buat PIN saat pertama kali.
+2. Di Settings panel, isi **Token Bot Telegram** dan **API key Kie** (untuk Zumo).
+3. Tambah channel YouTube lewat panel (login browser) atau device login.
 
 ---
 

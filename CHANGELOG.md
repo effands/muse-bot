@@ -1,3 +1,6 @@
+## 1.4.7
+- README: panduan pasang server baru ditulis ulang (permintaan user 22 Nov 2026) — 1 perintah clone+install, blok edit cuma 1 baris (PORT), cara hubungkan ke Muse (kunci SSH dipasang installer + app.py tiap start, tanpa setting), perintah cek SSH dari Muse, dan langkah setelah instalasi (buat PIN, isi Token Bot + API key Kie di Settings).
+
 ## 1.4.6
 - install.sh disederhanakan (168 → 96 baris, permintaan user 22 Nov 2026): blok edit cuma 1 baris (PORT) di atas, sisanya otomatis (IP dideteksi sendiri, folder dari lokasi script). Service systemd dibuat lewat loop (bot + operator), shortcut ziqva.sh dipadatkan. Cara hubungkan ke Muse: installer kini memasang kunci SSH Muse (muse-ssh.pub dari repo) ke ~/.ssh/authorized_keys saat instalasi (idempotent, chmod 600) + mencetak perintah cek SSH-nya — app.py tetap memasangnya tiap start sebagai cadangan. Cara pakai server baru: `git clone https://github.com/effands/muse-bot.git && cd muse-bot && sudo bash install.sh`, lalu buka panel dan isi Token Bot + API key Kie di Settings.
 - Tes: bash -n OK; cuplikan pasang kunci (2x jalan = 1 baris kunci, mode 600) + unit systemd (bot/operator) terverifikasi.

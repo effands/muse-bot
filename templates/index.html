@@ -1593,9 +1593,9 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
 
     <div id="panel-history" class="panel">
       <div class="sh" style="margin-bottom:14px">
-        <div><div class="sh-sub">Riwayat upload lewat pabrik per channel (90 hari terakhir) — judul, tanggal/jam, jenis konten, durasi, status, views.</div></div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <span style="font-family:var(--font-m);font-size:11px;color:var(--muted)">Channel:</span><select id="hist-ch-sel" onchange="fetchHistory()" style="width:200px"><option value="">Semua channel</option></select>
+        <div><div class="sh-sub">Riwayat upload lewat pabrik per channel (90 hari terakhir).</div></div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:nowrap">
+          <span style="font-family:var(--font-m);font-size:11px;color:var(--muted)">Channel:</span><select id="hist-ch-sel" onchange="fetchHistory()" style="width:180px"><option value="">Semua channel</option></select>
           <span class="pill p-cyan" id="hist-count">0 video</span>
           <button class="btn btn-g btn-sm" onclick="fetchHistory()">🔄 Refresh</button>
         </div>
@@ -1612,9 +1612,9 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
 
     <div id="panel-bank" class="panel">
       <div class="sh" style="margin-bottom:14px">
-        <div><div class="sh-sub">Stok lagu mentah Zumo per channel — dipakai video harian (rakit acak, 0 kredit). File tersimpan di server: uploads/zumo_bank/…</div></div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <span style="font-family:var(--font-m);font-size:11px;color:var(--muted)">Channel:</span><select id="bank-ch-sel" onchange="renderBank()" style="width:200px"><option value="">-- Pilih Channel --</option></select>
+        <div><div class="sh-sub">Stok lagu mentah Zumo per channel — dipakai video harian (rakit acak, 0 kredit).</div></div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:nowrap">
+          <span style="font-family:var(--font-m);font-size:11px;color:var(--muted)">Channel:</span><select id="bank-ch-sel" onchange="renderBank()" style="width:180px"><option value="">-- Pilih Channel --</option></select>
           <span class="pill p-cyan" id="bank-count">0 lagu</span>
           <span class="pill" id="bank-dur">—</span>
           <button class="btn btn-g btn-sm" onclick="fetchBank()">🔄 Refresh</button>
@@ -6786,15 +6786,15 @@ function renderVideoStats() {
       noteEl.textContent = 'ℹ️ Belum ada video yang di-upload pabrik, jadi angka di sini 0. Views ' + chTotal.toLocaleString() + ' pada kartu TOTAL VIEWS di atas adalah total semua video channel (termasuk video lama yang di-upload sebelum pabrik jalan) dan tidak terlacak di tabel ini.';
     } else noteEl.textContent = '';
   }
-  // 🔥 v1.3.57: redesain — dulu satu paragraf panjang per channel (judul
-  // utuh menumpuk, berantakan); kini tabel rapi, judul dipendekkan dari
-  // tengah (shortTitle, seperti tabel lain) + judul lengkap di tooltip.
+  // 🔥 v1.4.3: judul tampil utuh (dulu dipendekkan dari tengah via shortTitle
+  // sehingga susah dibaca — "Pilihan: LAGU MALAYSIA...Menyentuh Hati");
+  // sel membungkus normal, judul lengkap tetap di tooltip.
   const bw = s.best_worst || {};
   const bwKeys = Object.keys(bw).filter(k => fv === 'ALL' || k === fv);
   const bwEl = document.getElementById('vs-bestworst');
   if (!bwKeys.length) { bwEl.innerHTML = ''; }
   else {
-    const bwCell = t => '<span title="' + escapeHtml(t || '') + '">' + escapeHtml(shortTitle(t || '—')) + '</span>';
+    const bwCell = t => '<span title="' + escapeHtml(t || '') + '">' + escapeHtml(t || '—') + '</span>';
     bwEl.innerHTML = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="text-align:left;color:var(--muted);font-family:var(--font-m);font-size:10px;border-bottom:1px solid var(--border)">'
       + '<th style="padding:6px 8px">CHANNEL</th><th style="padding:6px 8px">🏆 TERBAIK</th><th style="padding:6px 8px;text-align:right">VIEWS</th><th style="padding:6px 8px">📉 TERENDAH</th><th style="padding:6px 8px;text-align:right">VIEWS</th></tr></thead><tbody>'
       + bwKeys.map(k => {
@@ -6943,6 +6943,9 @@ function fetchFormulaAnalytics() {
     if (box) box.textContent = 'Gagal memuat lingkaran analitik.';
   });
 }
+// 🔥 v1.4.3: desain ulang — tiap channel jadi kartu terpisah (pembatas jelas),
+// judul tampil utuh (bukan terpotong tengah), riwayat penyesuaian jadi tabel
+// (tanggal | judul | bobot) bukan satu baris panjang.
 function renderFormulaAnalytics() {
   const box = document.getElementById('fa-body'); if (!box) return;
   const d = formulaData;
@@ -6951,40 +6954,43 @@ function renderFormulaAnalytics() {
   const chans = (d.channels || []).filter(c => fv === 'ALL' || c.yt_id === fv);
   if (!chans.length) { box.innerHTML = 'Belum ada channel terhubung — lingkaran analitik muncul setelah channel pertama ditautkan.'; return; }
   box.innerHTML = chans.map(c => {
-    let h = '<div style="margin-bottom:14px"><div style="font-weight:700;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border)">📺 ' + escapeHtml(c.name) + '</div>';
+    let h = '<div class="card" style="margin-bottom:16px">';
+    h += '<div class="card-head" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">'
+      + '<div><div class="card-title">📺 ' + escapeHtml(c.name) + '</div>'
+      + '<div class="card-sub">' + (c.sufficient ? (c.videos_scored || 0) + ' video ternilai' : 'Data belum cukup (' + (c.videos_scored || 0) + '/' + (d.min_videos || 3) + ' video ternilai)') + ' · Terakhir disesuaikan: ' + escapeHtml(c.tuned_at || 'belum pernah') + '</div></div>'
+      + '<span class="pill p-muted">Bobot ' + (d.weight_min || 0.3) + ' – ' + (d.weight_max || 2.0) + '</span></div>';
+    h += '<div class="card-body" style="padding:12px 16px">';
     if (!c.sufficient) {
-      h += '<span style="color:var(--muted)">Data belum cukup (' + (c.videos_scored || 0) + '/' + (d.min_videos || 3) + ' video ternilai; video yang tayang hari ini belum dihitung). Bobot masih 1,0 untuk semua judul.</span></div>';
-      return h;
+      h += '<span style="color:var(--muted)">Video yang tayang hari ini belum dihitung. Bobot masih 1,0 untuk semua judul.</span>';
+      return h + '</div></div>';
     }
     const rows = (c.formulas || []).slice();
-    // 🔥 v1.3.59: redesain pro — Terbaik/Terendah jadi tabel ringkas
-    // (label | judul | views/hari | bobot) supaya angka sejajar dan mudah
-    // dibaca; judul dipendekkan dari tengah + judul lengkap di tooltip.
-    const bwCell = t => '<span title="' + escapeHtml(t || '') + '">' + escapeHtml(shortTitle(t || '—')) + '</span>';
-    const bwRow = (icon, lbl, b) => '<tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 8px;white-space:nowrap">' + icon + ' ' + lbl + '</td>'
-      + '<td style="padding:6px 8px">' + bwCell(b.title) + '</td>'
-      + '<td style="padding:6px 8px;text-align:right">' + (b.avg_views_per_day || 0).toLocaleString() + ' views/hari</td>'
-      + '<td style="padding:6px 8px;text-align:right">bobot <b>' + b.weight + ' → ' + b.target_weight + '</b></td></tr>';
-    h += '<div style="overflow-x:auto;margin-bottom:6px"><table style="width:100%;border-collapse:collapse;font-size:12px"><tbody>'
-      + bwRow('🏆', 'TERBAIK', c.best)
-      + bwRow('📉', 'TERENDAH', c.worst)
+    const bwRow = (icon, lbl, b, cls) => '<tr style="border-bottom:1px solid var(--border)"><td style="padding:8px;white-space:nowrap"><span class="pill ' + cls + '">' + icon + ' ' + lbl + '</span></td>'
+      + '<td style="padding:8px">' + escapeHtml(b.title || '—') + '</td>'
+      + '<td style="padding:8px;text-align:right;white-space:nowrap">' + (b.avg_views_per_day || 0).toLocaleString() + ' views/hari</td>'
+      + '<td style="padding:8px;text-align:right;white-space:nowrap">bobot <b>' + b.weight + ' → ' + b.target_weight + '</b></td></tr>';
+    h += '<div style="overflow-x:auto;margin-bottom:10px"><table style="width:100%;border-collapse:collapse;font-size:12px"><tbody>'
+      + bwRow('🏆', 'TERBAIK', c.best, 'p-green')
+      + bwRow('📉', 'TERENDAH', c.worst, 'p-red')
       + '</tbody></table></div>';
+    const bestTitle = c.best && c.best.title;
     h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="text-align:left;color:var(--muted);font-family:var(--font-m);font-size:10px;border-bottom:1px solid var(--border)">'
       + '<th style="padding:6px 8px">JUDUL (FORMULA)</th><th style="padding:6px 8px;text-align:right">VIDEO</th><th style="padding:6px 8px;text-align:right">VIEWS/HARI</th><th style="padding:6px 8px;text-align:right">SKOR</th><th style="padding:6px 8px;text-align:right">BOBOT</th></tr></thead><tbody>'
-      + rows.map(f => '<tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 8px">' + bwCell(f.title) + '</td>'
+      + rows.map(f => '<tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 8px">' + (bestTitle && f.title === bestTitle ? '🏆 ' : '') + escapeHtml(f.title) + '</td>'
         + '<td style="padding:6px 8px;text-align:right">' + f.videos + '</td>'
         + '<td style="padding:6px 8px;text-align:right">' + (f.avg_views_per_day || 0).toLocaleString() + '</td>'
         + '<td style="padding:6px 8px;text-align:right">' + (f.avg_score || 0).toLocaleString() + '</td>'
         + '<td style="padding:6px 8px;text-align:right"><b>' + f.weight + '</b>' + (f.target_weight !== f.weight ? ' → ' + f.target_weight : '') + '</td></tr>').join('')
       + '</tbody></table></div>';
     if ((c.duration_buckets || []).length) {
-      h += '<div style="font-size:11px;color:var(--muted);margin-top:6px">⏱ Durasi target: ' + c.duration_buckets.map(b => escapeHtml(b.bucket) + ' — ' + (b.avg_views_per_day || 0).toLocaleString() + ' views/hari (' + b.videos + ' video)').join(' · ') + ' <span style="color:var(--muted)">(wawasan saja, durasi tidak diubah otomatis)</span></div>';
+      h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">' + c.duration_buckets.map(b => '<span class="pill p-muted">⏱ ' + escapeHtml(b.bucket) + ' · ' + (b.avg_views_per_day || 0).toLocaleString() + ' views/hari · ' + b.videos + ' video</span>').join('') + '<span style="font-size:11px;color:var(--muted);align-self:center">(wawasan saja, durasi tidak diubah otomatis)</span></div>';
     }
-    h += '<div style="font-size:11px;color:var(--muted);margin-top:6px">Terakhir disesuaikan: ' + escapeHtml(c.tuned_at || 'belum pernah') + ' · Bobot min ' + (d.weight_min || 0.3) + ' – maks ' + (d.weight_max || 2.0) + '.</div>';
     if ((c.log || []).length) {
-      h += '<div style="font-size:11px;color:var(--muted);margin-top:4px">Riwayat penyesuaian: ' + c.log.map(l => escapeHtml(l.date || '') + ' ' + escapeHtml(l.title) + ' ' + l.old + ' → ' + l.new).join(' · ') + '</div>';
+      h += '<div style="margin-top:12px"><div style="font-size:11px;font-weight:700;margin-bottom:6px">Riwayat penyesuaian</div><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px"><thead><tr style="text-align:left;color:var(--muted);font-family:var(--font-m);font-size:10px;border-bottom:1px solid var(--border)"><th style="padding:5px 8px">TANGGAL</th><th style="padding:5px 8px">JUDUL</th><th style="padding:5px 8px;text-align:right">BOBOT</th></tr></thead><tbody>'
+        + c.log.map(l => '<tr style="border-bottom:1px solid var(--border)"><td style="padding:5px 8px;white-space:nowrap">' + escapeHtml(l.date || '') + '</td><td style="padding:5px 8px">' + escapeHtml(l.title) + '</td><td style="padding:5px 8px;text-align:right;white-space:nowrap"><span style="color:var(--muted)">' + l.old + '</span> → <b>' + l.new + '</b></td></tr>').join('')
+        + '</tbody></table></div></div>';
     }
-    return h + '</div>';
+    return h + '</div></div>';
   }).join('');
 }
 function runFormulaTune() {

@@ -8412,6 +8412,13 @@ def delete_zumo_bank_track():
     return jsonify({'status': 'success', 'message': 'Lagu dihapus dari bank.'})
 
 
+def _clean_history_status(status):
+    """Status history kadang berisi HTML (Shorts: 'Tayang! ✅ <a ...>[Lihat]</a>').
+    Buang anchor + tag apa pun — judul sudah jadi link sendiri di Riwayat."""
+    st = re.sub(r'<a\b[^>]*>.*?</a>', '', str(status or ''), flags=re.S)
+    return re.sub(r'<[^>]+>', '', st).strip()
+
+
 @app.route('/api/channel_history', methods=['GET'])
 def get_channel_history():
     """Riwayat upload pabrik per channel (halaman Riwayat Channel v1.4.2):
@@ -8443,7 +8450,7 @@ def get_channel_history():
             'finished_date': t.get('finished_date') or '',
             'type': t.get('type') or t.get('kind') or '',
             'kind': t.get('kind') or '',
-            'status': t.get('status') or '',
+            'status': _clean_history_status(t.get('status')),
             'video_id': vid,
             'video_url': t.get('video_url') or (('https://youtu.be/' + vid) if vid else ''),
             'duration_sec': dur_sec,

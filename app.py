@@ -8484,6 +8484,29 @@ def upload_zumo_bank_track():
             pass
 
 
+@app.route('/api/zumo_bank/rename', methods=['POST'])
+def rename_zumo_bank_track():
+    """Ubah judul 1 lagu di bank (v1.4.10, permintaan user 22 Nov 2026 —
+    judul lagu bank bisa diedit manual dari panel). Body: {yt_id, id, title}.
+    Hanya indeks yang berubah, file audio tidak disentuh."""
+    data = request.get_json(silent=True) or {}
+    yt_id = str(data.get('yt_id') or '').strip()
+    tid = str(data.get('id') or '').strip()
+    title = str(data.get('title') or '').strip()
+    if not yt_id or not tid:
+        return jsonify({'status': 'error', 'message': 'Channel / lagu tidak lengkap.'}), 400
+    if not title:
+        return jsonify({'status': 'error', 'message': 'Judul tidak boleh kosong.'}), 400
+    target = next((c for c in (database_channel or []) if c.get('yt_id') == yt_id), None)
+    if target is None:
+        return jsonify({'status': 'error', 'message': 'Channel tidak ditemukan.'}), 404
+    with db_lock:
+        ok, err = _zumo_core.zumo_bank_rename(ZUMO_BANK_DIR, target.get('name') or '', tid, title)
+    if not ok:
+        return jsonify({'status': 'error', 'message': err or 'Gagal mengubah judul.'}), 404
+    return jsonify({'status': 'success', 'message': 'Judul diubah.'})
+
+
 def _clean_history_status(status):
     """Status history kadang berisi HTML (Shorts: 'Tayang! ✅ <a ...>[Lihat]</a>').
     Buang anchor + tag apa pun — judul sudah jadi link sendiri di Riwayat."""

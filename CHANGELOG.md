@@ -1,3 +1,7 @@
+## 1.4.10
+- Edit judul lagu bank MANUAL (permintaan user 22 Nov 2026 — 4 lagu Anto Panie judulnya sama semua, mau dibedakan): tombol ✏️ di kolom AKSI tabel Bank Lagu — klik, judul jadi kolom input (pola edit inline yang sama seperti edit email channel), Enter/✓ simpan, Esc/✕ batal. Backend POST /api/zumo_bank/rename {yt_id, id, title} + helper baru zumo_bank_rename (hanya indeks yang berubah, file audio tidak disentuh; judul kosong ditolak, maks 120 karakter). Judul baru langsung dipakai di deskripsi/timestamp video harian berikutnya.
+- Tes lokal 21/21 lolos (rename 2 lagu berjudul sama, file tak tersentuh, judul kosong/id tak ada ditolak, potong 120 karakter, sintaks JS via node --check, marker endpoint + UI).
+
 ## 1.4.9
 - Upload audio MANUAL ke Bank Lagu (permintaan user 22 Nov 2026 — audio sendiri, bukan cuma hasil generate Zumo): tombol "➕ Upload Audio" di halaman Bank Lagu (form: pilih file MP3/WAV maks 100 MB + judul wajib + style opsional + ☑ Instrumental). Backend POST /api/zumo_bank/upload: validasi channel + ekstensi + magic-byte (HTML berkedok .mp3 ditolak, pola sama seperti galeri) + durasi dibaca via ffprobe (file tak terbaca ditolak); lagu tersimpan lewat zumo_bank_add dengan 0 kredit, job_id 'manual', model 'Manual' — langsung bisa dipakai rakit video harian (assemble acak, 0 kredit). File temp dibersihkan sesudah simpan.
 - Tes lokal 32/32 lolos (alur simpan manual MP3 asli 2 detik + meta manual, lagu manual dipilih zumo_bank_pick, magic-byte MP3/WAV, sintaks JS via node --check, marker endpoint + UI).

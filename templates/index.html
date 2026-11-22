@@ -3981,7 +3981,7 @@ function renderBank() {
     + '<td style="padding:6px 8px;white-space:nowrap;text-align:center">' + escapeHtml(t.created_at || '—') + '</td>'
     + '<td style="padding:6px 8px;text-align:center">' + (t.credits == null ? '—' : t.credits) + '</td>'
     + '<td style="padding:6px 8px;white-space:nowrap;text-align:center"><button class="btn btn-sm" title="Dengar lagu" onclick="playBank(\'' + t.id + '\')">▶️</button></td>'
-    + '<td style="padding:6px 8px;white-space:nowrap;text-align:center"><button class="btn btn-sm" title="Hapus dari bank" onclick="deleteBankTrack(\'' + t.id + '\')">🗑️</button></td>'
+    + '<td style="padding:6px 8px;white-space:nowrap;text-align:center"><button class="btn btn-sm" title="Ubah judul" onclick="editBankTitle(\'' + t.id + '\', this)">✏️</button> <button class="btn btn-sm" title="Hapus dari bank" onclick="deleteBankTrack(\'' + t.id + '\')">🗑️</button></td>'
     + '</tr>').join('');
 }
 function playBank(id) {
@@ -4053,6 +4053,44 @@ async function uploadBankAudio() {
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+function editBankTitle(id, el) {
+  const tr = el.closest('tr'); if (!tr) return;
+  const td = tr.querySelector('td');
+  const b = td ? td.querySelector('b') : null;
+  if (!td || !b) return;
+  const cur = b.textContent || '';
+  td.dataset.orig = td.innerHTML;
+  td.innerHTML = '<span style="display:flex;gap:4px;align-items:center"><input class="bank-title-input" type="text" value="' + escapeHtml(cur) + '" maxlength="120" style="width:100%;min-width:180px;padding:3px 6px;border:1px solid var(--accent);border-radius:6px;background:var(--bg);color:var(--text);font-size:12px"><button class="btn btn-p btn-sm" onclick="saveBankTitle(this, \'' + id + '\')">✓</button><button class="btn btn-sm" onclick="cancelEditBankTitle(this)">✕</button></span>';
+  const inp = td.querySelector('input');
+  if (inp) {
+    inp.focus(); inp.select();
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') saveBankTitle(inp, id);
+      if (e.key === 'Escape') cancelEditBankTitle(inp);
+    });
+  }
+}
+async function saveBankTitle(el, id) {
+  const td = el.closest('td'); if (!td) return;
+  const inp = td.querySelector('input');
+  const title = inp ? inp.value.trim() : '';
+  if (!title) { alert('Judul tidak boleh kosong.'); return; }
+  const sel = document.getElementById('bank-ch-sel');
+  const yt = sel ? sel.value : '';
+  try {
+    const r = await fetch('/api/zumo_bank/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ yt_id: yt, id: id, title: title }) });
+    const d = await r.json();
+    if (d.status === 'success') fetchBank();
+    else { alert(d.message || 'Gagal mengubah judul.'); if (td.dataset.orig) td.innerHTML = td.dataset.orig; }
+  } catch (e) {
+    alert('Gagal mengubah judul.');
+    if (td.dataset.orig) td.innerHTML = td.dataset.orig;
+  }
+}
+function cancelEditBankTitle(el) {
+  const td = el.closest('td'); if (!td) return;
+  if (td.dataset.orig) td.innerHTML = td.dataset.orig;
 }
 let _histData = [];
 function fetchHistory() {

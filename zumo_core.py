@@ -894,6 +894,36 @@ def zumo_bank_remove(bank_root, channel_name, track_id):
         return False, str(e)
 
 
+def zumo_bank_rename(bank_root, channel_name, track_id, new_title):
+    """Ubah judul 1 lagu di bank (hanya indeks, file tidak disentuh).
+    Kembalikan (True, '') bila berhasil, (False, pesan) bila tidak ketemu
+    atau judul kosong. Dipakai halaman Bank Lagu (v1.4.10)."""
+    title = (new_title or '').strip()
+    if not title:
+        return False, 'Judul tidak boleh kosong.'
+    try:
+        path = zumo_bank_index_path(bank_root, channel_name)
+        with open(path, 'r', encoding='utf-8') as fh:
+            idx = json.load(fh)
+        tracks = idx.get('tracks') or []
+        found = False
+        for t in tracks:
+            if isinstance(t, dict) and str(t.get('id')) == str(track_id):
+                t['title'] = title[:120]
+                found = True
+                break
+        if not found:
+            return False, 'Lagu tidak ditemukan di bank.'
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            json.dump({'channel': idx.get('channel', channel_name),
+                       'tracks': tracks}, fh, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)
+        return True, ''
+    except Exception as e:
+        return False, str(e)
+
+
 def zumo_bank_pick(bank_root, channel_name, n, rng=None):
     """Pilih acak n entri dari bank (tanpa judul sama berdampingan bila
     memungkinkan — reuse shuffle_zumo_tracks). n dibatasi isi bank.

@@ -1149,6 +1149,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
     <button class="nav-item active" onclick="go('dashboard',this)" id="nb-dashboard" title="Dashboard"><svg class="nav-ic"><use href="#ic-dash"/></svg><span class="nav-label">Dashboard</span></button>
     <button class="nav-item" onclick="go('tasks',this)" id="nb-tasks" title="Task Monitor"><svg class="nav-ic"><use href="#ic-tasks"/></svg><span class="nav-label">Task Monitor</span><span class="nav-badge" id="task-badge" style="display:none">0</span></button>
     <button class="nav-item" onclick="go('calendar',this)" id="nb-calendar" title="Kalender Jadwal"><svg class="nav-ic"><use href="#ic-cal"/></svg><span class="nav-label">Kalender Jadwal</span></button>
+    <button class="nav-item" onclick="go('schedules',this)" id="nb-schedules" title="Jadwal Rutin"><svg class="nav-ic"><use href="#ic-cal"/></svg><span class="nav-label">Jadwal Rutin</span></button>
     <div class="nav-section">STUDIO</div>
     <button class="nav-item" onclick="go('gallery',this)" id="nb-gallery" title="Asset Gallery"><svg class="nav-ic"><use href="#ic-gallery"/></svg><span class="nav-label">Asset Gallery</span></button>
     <button class="nav-item" onclick="go('titles',this)" id="nb-titles" title="Title Generator"><svg class="nav-ic"><use href="#ic-title"/></svg><span class="nav-label">Title Generator</span></button>
@@ -1566,6 +1567,26 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
       <div id="cal-summary" style="margin-bottom:14px;font-family:var(--font-m);font-size:11px;color:var(--muted)"></div>
 
       <div id="cal-days"></div>
+    </div>
+
+    <div id="panel-schedules" class="panel">
+      <div class="sh" style="margin-bottom:14px">
+        <div><div class="sh-sub">Aturan jadwal berulang per channel — jam, tema, sampai kapan, aktif/tidak. Ubah di sini, jadwal berikutnya langsung ikut yang baru.</div></div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span class="pill p-cyan" id="sched-count">0 jadwal</span>
+          <button class="btn btn-g btn-sm" onclick="fetchSchedules()">🔄 Refresh</button>
+          <button class="btn btn-p btn-sm" onclick="openSchedModal()">➕ Tambah Jadwal</button>
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap">
+          <thead><tr style="text-align:left;color:var(--muted);font-family:var(--font-m);font-size:10px;border-bottom:1px solid var(--border)">
+            <th style="padding:6px 8px">CHANNEL</th><th style="padding:6px 8px">JENIS</th><th style="padding:6px 8px">JAM</th><th style="padding:6px 8px">TEMA</th><th style="padding:6px 8px">SAMPAI</th><th style="padding:6px 8px">STATUS</th><th style="padding:6px 8px">AKSI</th>
+          </tr></thead>
+          <tbody id="sched-tbody"><tr><td colspan="7" style="padding:10px 8px;color:var(--muted)">Memuat jadwal…</td></tr></tbody>
+        </table>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5">Playlist &amp; Bank Zumo dibaca eksekutor tiap 15 menit (04:00–23:00 WIB) — jam yang diubah berlaku paling lambat 15 menit kemudian. Shorts otomatis jalan dari pengaturan channel (jam buat + jam tayang).</div>
     </div>
 
     <div id="panel-gallery" class="panel">
@@ -2525,6 +2546,13 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
 
 <!-- 👥 MODAL KELOLA GROUP (v1.3.72) — buat group baru + pindahkan channel
      antar group, dari tombol "Buat Group" di header DETAIL CHANNEL. -->
+<div id="sched-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closeSchedModal()">
+  <div style="background:var(--bg);border:1px solid var(--border);border-radius:12px;max-width:480px;width:100%;padding:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><b id="sched-modal-title">Tambah Jadwal</b><button class="btn btn-sm" onclick="closeSchedModal()">✕</button></div>
+    <div id="sched-modal-body"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px"><button class="btn btn-sm" onclick="closeSchedModal()">Batal</button><button class="btn btn-p btn-sm" onclick="saveSchedModal()">💾 Simpan</button></div>
+  </div>
+</div>
 <div id="grp-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closeGroupManager()">
   <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);max-width:560px;width:100%;max-height:85vh;overflow:auto;padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.35)">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
@@ -2804,6 +2832,7 @@ const PAGE_META = {
   dashboard: { t: 'Dashboard',       s: 'Overview sistem & analytics' },
   tasks:     { t: 'Task Monitor',    s: 'Real-time render & upload queue' },
   calendar:  { t: 'Kalender Jadwal', s: 'Jadwal publish 30 hari & jeda channel' },
+  schedules: { t: 'Jadwal Rutin',   s: 'Aturan jadwal berulang per channel — jam, tema, sampai kapan' },
   gallery:   { t: 'Gallery',          s: 'Kelola audio, background & thumbnail' },
   titles:    { t: 'Title Generator', s: 'Upload bank & generate judul baru' },
   batch:     { t: 'Batch Creator',   s: 'Buat banyak video sekaligus' },
@@ -2837,6 +2866,7 @@ function go(id, el) {
   if (id === 'settings') { loadTgConfig(); checkApiStatus(); loadAppVersion(); loadPixabayKeys(); loadKieKeys(); loadBackupStatus(); loadOperatorStatus(); }
   if (id === 'dashboard') fetchAnalytics();
   if (id === 'calendar') loadCalendar();
+  if (id === 'schedules') fetchSchedules();
   if (id === 'batch') {
     refreshBatchDropdowns();
     setTimeout(initCanvas, 50);
@@ -3768,6 +3798,140 @@ async function toggleChannelMonetized(yt_id, val) {
       if (d.status === 'success') { loadChannels(); fetchAnalytics(); }
     })
     .catch(() => toast('Gagal menyimpan status monetisasi', 'error'));
+}
+
+// ────────────────────────────────────────────────────────
+//  📅 JADWAL RUTIN (v1.4.1) — daftar aturan jadwal berulang
+//  per channel + CRUD (tambah/ubah/hapus/jeda).
+// ────────────────────────────────────────────────────────
+let _schedRows = [];
+function schedKindLabel(k) {
+  return { playlist: 'Playlist Harian', zumo_bank: 'Bank Zumo Harian', shorts: 'Shorts Otomatis' }[k] || k;
+}
+function fetchSchedules() {
+  const tb = document.getElementById('sched-tbody'); if (!tb) return;
+  fetch('/api/schedules').then(r => r.json()).then(d => {
+    if (d.status !== 'success') { tb.innerHTML = '<tr><td colspan="7" style="padding:10px 8px;color:var(--muted)">Gagal memuat jadwal.</td></tr>'; return; }
+    _schedRows = d.schedules || [];
+    renderSchedules();
+  }).catch(() => { tb.innerHTML = '<tr><td colspan="7" style="padding:10px 8px;color:var(--muted)">Gagal memuat jadwal.</td></tr>'; });
+}
+function renderSchedules() {
+  const tb = document.getElementById('sched-tbody'); if (!tb) return;
+  const cnt = document.getElementById('sched-count');
+  if (cnt) cnt.textContent = _schedRows.length + ' jadwal';
+  if (!_schedRows.length) {
+    tb.innerHTML = '<tr><td colspan="7" style="padding:10px 8px;color:var(--muted)">Belum ada jadwal rutin — tambah lewat tombol "➕ Tambah Jadwal" di atas.</td></tr>';
+    return;
+  }
+  const pill = s => s === 'Aktif' ? 'p-green' : (s === 'Selesai' ? 'p-yellow' : 'p-muted');
+  tb.innerHTML = _schedRows.map(s => {
+    const themeTxt = s.kind === 'shorts'
+      ? ((AUTO_SHORTS_THEMES.find(t => t[0] === s.theme) || [s.theme, s.theme])[1])
+      : escapeHtml(s.theme || '—');
+    return '<tr style="border-bottom:1px solid var(--border)">'
+      + '<td style="padding:6px 8px"><b>' + escapeHtml(s.channel_name || '—') + '</b></td>'
+      + '<td style="padding:6px 8px">' + schedKindLabel(s.kind) + '</td>'
+      + '<td style="padding:6px 8px;white-space:nowrap">' + escapeHtml(s.time || '—') + '</td>'
+      + '<td style="padding:6px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px" title="' + escapeHtml(s.theme || '') + '">' + themeTxt + '</td>'
+      + '<td style="padding:6px 8px">' + escapeHtml(s.end_date || '—') + '</td>'
+      + '<td style="padding:6px 8px"><span class="pill ' + pill(s.status) + '">' + s.status + '</span></td>'
+      + '<td style="padding:6px 8px;white-space:nowrap">'
+      + '<button class="btn btn-sm" title="Ubah jadwal" onclick="openSchedModal(\'' + s.id + '\')">✏️ Ubah</button> '
+      + (s.enabled
+          ? '<button class="btn btn-sm" title="Jeda jadwal (aturan tetap tersimpan)" onclick="toggleSched(\'' + s.id + '\', false)">⏸️ Jeda</button> '
+          : '<button class="btn btn-p btn-sm" title="Aktifkan lagi" onclick="toggleSched(\'' + s.id + '\', true)">▶️ Aktif</button> ')
+      + '<button class="btn btn-sm" title="Hapus jadwal" onclick="deleteSched(\'' + s.id + '\')">🗑️</button>'
+      + '</td></tr>';
+  }).join('');
+}
+function schedKindChanged() {
+  const kind = (document.getElementById('sc-kind') || {}).value || 'playlist';
+  const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
+  show('sc-row-theme-text', kind !== 'shorts');
+  show('sc-row-theme-sel', kind === 'shorts');
+  show('sc-row-end', kind !== 'shorts');
+  show('sc-row-bank', kind === 'zumo_bank');
+  show('sc-row-shorts', kind === 'shorts');
+}
+function openSchedModal(id) {
+  const m = document.getElementById('sched-modal'); if (!m) return;
+  const row = id ? _schedRows.find(s => s.id === id) : null;
+  document.getElementById('sched-modal-title').textContent = row ? 'Ubah Jadwal' : 'Tambah Jadwal';
+  const chOpts = (channels || []).map(c => `<option value="${escapeHtml(c.yt_id)}">${escapeHtml(c.name)}</option>`).join('');
+  const themeOpts = AUTO_SHORTS_THEMES.map(t => `<option value="${t[0]}">${t[1]}</option>`).join('');
+  const inp = 'width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:12px';
+  const lbl = 'display:block;font-size:11px;color:var(--muted);margin-bottom:4px';
+  document.getElementById('sched-modal-body').innerHTML =
+    `<input type="hidden" id="sc-id" value="${row ? escapeHtml(row.id) : ''}">`
+    + `<label style="${lbl}">Channel</label><select id="sc-channel" style="${inp};margin-bottom:10px">${chOpts}</select>`
+    + `<label style="${lbl}">Jenis</label><select id="sc-kind" onchange="schedKindChanged()" style="${inp};margin-bottom:10px"><option value="playlist">Playlist Harian</option><option value="shorts">Shorts Otomatis</option><option value="zumo_bank">Bank Zumo Harian</option></select>`
+    + `<div id="sc-row-time"><label style="${lbl}">Jam (WIB)</label><input type="time" id="sc-time" value="05:00" style="${inp};margin-bottom:10px"></div>`
+    + `<div id="sc-row-theme-text"><label style="${lbl}">Tema</label><input type="text" id="sc-theme-text" maxlength="80" placeholder="mis. lagu malaysia" style="${inp};margin-bottom:10px"></div>`
+    + `<div id="sc-row-theme-sel" style="display:none"><label style="${lbl}">Tema</label><select id="sc-theme-sel" style="${inp};margin-bottom:10px">${themeOpts}</select></div>`
+    + `<div id="sc-row-end"><label style="${lbl}">Sampai tanggal (kosong = tanpa batas)</label><input type="date" id="sc-end" style="${inp};margin-bottom:10px"></div>`
+    + `<div id="sc-row-bank" style="display:none"><label style="${lbl}">Lagu per hari (dari bank)</label><input type="number" id="sc-bank" min="1" max="30" value="7" style="${inp};margin-bottom:10px"></div>`
+    + `<div id="sc-row-shorts" style="display:none"><label style="${lbl}">Jam tayang Shorts</label><input type="time" id="sc-publish" value="19:00" style="${inp};margin-bottom:10px"><label style="${lbl}">Durasi Shorts (detik)</label><select id="sc-dur" style="${inp};margin-bottom:10px"><option value="15">15</option><option value="30" selected>30</option><option value="60">60</option></select></div>`
+    + `<label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="sc-enabled" checked> Aktif</label>`;
+  if (row) {
+    document.getElementById('sc-channel').value = row.yt_id;
+    document.getElementById('sc-kind').value = row.kind;
+    document.getElementById('sc-channel').disabled = true;
+    document.getElementById('sc-kind').disabled = true;
+    document.getElementById('sc-time').value = row.time || '05:00';
+    document.getElementById('sc-theme-text').value = row.theme || '';
+    document.getElementById('sc-theme-sel').value = row.theme || 'sleep';
+    document.getElementById('sc-end').value = row.end_date || '';
+    document.getElementById('sc-bank').value = row.bank_count || 7;
+    document.getElementById('sc-publish').value = row.publish_time || '19:00';
+    document.getElementById('sc-dur').value = String(row.duration_sec || 30);
+    document.getElementById('sc-enabled').checked = !!row.enabled;
+  }
+  schedKindChanged();
+  m.style.display = 'flex';
+}
+function closeSchedModal() {
+  const m = document.getElementById('sched-modal'); if (m) m.style.display = 'none';
+}
+async function saveSchedModal() {
+  const kind = (document.getElementById('sc-kind') || {}).value || 'playlist';
+  const body = {
+    id: (document.getElementById('sc-id') || {}).value || '',
+    kind: kind,
+    yt_id: (document.getElementById('sc-channel') || {}).value || '',
+    time: (document.getElementById('sc-time') || {}).value || '',
+    theme: kind === 'shorts' ? ((document.getElementById('sc-theme-sel') || {}).value || '') : ((document.getElementById('sc-theme-text') || {}).value || ''),
+    end_date: (document.getElementById('sc-end') || {}).value || '',
+    enabled: !!((document.getElementById('sc-enabled') || {}).checked),
+    bank_count: parseInt(((document.getElementById('sc-bank') || {}).value || '7'), 10),
+    publish_time: (document.getElementById('sc-publish') || {}).value || '',
+    duration_sec: parseInt(((document.getElementById('sc-dur') || {}).value || '30'), 10),
+  };
+  const res = await fetch('/api/schedules/save', { method: 'POST', body: JSON.stringify(body) });
+  const d = await res.json().catch(() => ({}));
+  if (res.ok && d.status === 'success') {
+    toast(d.message || 'Jadwal disimpan.', 'ok');
+    closeSchedModal();
+    fetchSchedules();
+  } else {
+    toast(d.message || 'Gagal menyimpan jadwal.', 'err');
+  }
+}
+async function deleteSched(id) {
+  const row = _schedRows.find(s => s.id === id);
+  const label = row ? `${row.channel_name} — ${schedKindLabel(row.kind)}` : id;
+  const what = row && row.kind === 'shorts' ? 'dinonaktifkan (pengaturan tersimpan)' : 'dihapus';
+  if (!(await themedConfirm(`Hapus jadwal "${label}"?\nJadwal ini akan ${what}.`, { danger: true, okLabel: 'Ya, Hapus' }))) return;
+  const res = await fetch('/api/schedules/delete', { method: 'POST', body: JSON.stringify({ id }) });
+  const d = await res.json().catch(() => ({}));
+  if (res.ok && d.status === 'success') { toast(d.message || 'Jadwal dihapus.', 'ok'); fetchSchedules(); }
+  else toast(d.message || 'Gagal menghapus jadwal.', 'err');
+}
+async function toggleSched(id, enabled) {
+  const res = await fetch('/api/schedules/toggle', { method: 'POST', body: JSON.stringify({ id, enabled }) });
+  const d = await res.json().catch(() => ({}));
+  if (res.ok && d.status === 'success') { toast(d.message || 'Jadwal diubah.', 'ok'); fetchSchedules(); }
+  else toast(d.message || 'Gagal mengubah jadwal.', 'err');
 }
 
 // ────────────────────────────────────────────────────────

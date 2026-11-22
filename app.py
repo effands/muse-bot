@@ -8169,6 +8169,286 @@ def set_channel_monetized():
     return jsonify({"status": "success", "monetized": False,
                     "message": f"Tanda monetisasi channel {name} dihapus. Channel kembali masuk penilaian kesiapan."})
 
+# ════════════════════════════════════════════════════════════
+# 📅 JADWAL RUTIN (v1.4.1) — satu daftar aturan jadwal berulang
+# per channel (jam, tema, sampai kapan, aktif/tidak) + CRUD panel.
+# ════════════════════════════════════════════════════════════
+# JENIS jadwal:
+#   'playlist'  — Playlist harian (order Malaysia): 1 video/hari.
+#   'zumo_bank' — Rakit harian dari bank Zumo (0 kredit Kie).
+#   'shorts'    — Shorts otomatis: TIDAK disimpan di sini, melainkan
+#                 di konfigurasi auto_shorts channel (channels_db.json)
+#                 supaya Settings + worker lama tetap satu sumber.
+# Baris 'playlist'/'zumo_bank' tinggal di schedules_db.json; baris
+# 'shorts' diturunkan dari channels_db.json saat GET.
+# Eksekutor (cron tiap 15 menit) membaca file ini dan menjalankan
+# baris yang jamnya sudah tiba + belum jalan hari ini (guard
+# 1-video/hari sudah ada di sisi eksekutor).
+SCHEDULES_FILE = os.path.join(BASE_DIR, 'schedules_db.json')
+_SCHEDULE_KINDS = ('playlist', 'zumo_bank', 'shorts')
+_SCHEDULE_TIME_RE = re.compile(r'^([01]\d|2[0-3]):[0-5]\d$')
+_SCHEDULE_DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+_SCHEDULE_KIND_LABEL = {'playlist': 'Playlist Harian', 'zumo_bank': 'Bank Zumo Harian', 'shorts': 'Shorts Otomatis'}
+
+def _schedules_load():
+    """Isi schedules_db.json (list) — [] bila file belum ada/rusak."""
+    try:
+        with open(SCHEDULES_FILE, 'r', encoding='utf-8') as f:
+            d = json.load(f)
+        rows = d.get('schedules') if isinstance(d, dict) else None
+        return [r for r in (rows or []) if isinstance(r, dict)]
+    except Exception:
+        return []
+
+def _schedules_save(rows):
+    tmp = SCHEDULES_FILE + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump({'schedules': rows}, f, ensure_ascii=False, indent=2)
+    try:
+        os.chmod(tmp, 0o600)
+    except Exception:
+        pass
+    os.replace(tmp, SCHEDULES_FILE)
+
+def _schedules_seed_if_empty():
+    """Seed SEKALI saat file belum ada: playlist harian Malaysia dari
+    keadaan live (semua channel daily_playlist=true) — 05:00 WIB,
+    tema 'lagu malaysia', sampai 26 Nov 2026. File yang sudah ada
+    (walau kosong karena user menghapus semua) TIDAK di-seed ulang."""
+    if os.path.exists(SCHEDULES_FILE):
+        return _schedules_load()
+    rows = []
+    for c in (database_channel or []):
+        if not c.get('daily_playlist'):
+            continue
+        rows.append({
+            'id': 'sch_seed_' + str(c.get('yt_id', '')),
+            'kind': 'playlist', 'yt_id': c.get('yt_id', ''),
+            'time': '05:00', 'theme': 'lagu malaysia',
+            'end_date': '2026-11-26', 'enabled': True,
+            'created_at': datetime.now(ZoneInfo('Asia/Jakarta')).strftime('%Y-%m-%d %H:%M'),
+        })
+    _schedules_save(rows)
+    return rows
+
+def _schedule_status(row, today_wib):
+    """Status tampil: 'Selesai' (lewat end_date) / 'Aktif' / 'Nonaktif'."""
+    if not row.get('enabled'):
+        return 'Nonaktif'
+    end = (row.get('end_date') or '').strip()
+    if end:
+        try:
+            if datetime.strptime(end, '%Y-%m-%d').date() < today_wib:
+                return 'Selesai'
+        except Exception:
+            pass
+    return 'Aktif'
+
+def _sync_daily_playlist(yt_id):
+    """Samakan flag channel daily_playlist dengan baris playlist yang
+    aktif di store (cron lama membaca flag ini sampai diganti
+    eksekutor baru). Dipanggil sesudah tiap mutasi store."""
+    target = next((c for c in (database_channel or []) if c.get('yt_id') == yt_id), None)
+    if target is None:
+        return
+    rows = _schedules_load()
+    target['daily_playlist'] = any(
+        r.get('kind') == 'playlist' and r.get('yt_id') == yt_id and r.get('enabled')
+        for r in rows)
+    try:
+        save_channels(database_channel)
+    except Exception as e:
+        print(f"Gagal sync daily_playlist {yt_id}: {e}", flush=True)
+
+def _set_shorts_enabled(yt_id, enabled):
+    """Nyalakan/matikan Shorts otomatis satu channel. Kembalikan
+    (ok, error). Dipakai delete + toggle untuk baris 'shorts'."""
+    target = next((c for c in (database_channel or []) if c.get('yt_id') == yt_id), None)
+    if target is None:
+        return False, 'Channel tidak ditemukan.'
+    cfg = dict(_auto_shorts_cfg(target))
+    cfg['enabled'] = bool(enabled)
+    target['auto_shorts'] = cfg
+    try:
+        save_channels(database_channel)
+    except Exception as e:
+        print(f"Gagal simpan auto_shorts {yt_id}: {e}", flush=True)
+        return False, 'Gagal menyimpan perubahan.'
+    return True, None
+
+def _validate_store_row(data):
+    """Validasi baris playlist/zumo_bank. Kembalikan (clean, error)."""
+    kind = str(data.get('kind') or '').strip()
+    if kind not in ('playlist', 'zumo_bank'):
+        return None, "Jenis harus 'playlist' atau 'zumo_bank'."
+    yt_id = str(data.get('yt_id') or '').strip()
+    if not yt_id or not any(c.get('yt_id') == yt_id for c in (database_channel or [])):
+        return None, "Channel tidak ditemukan."
+    t = str(data.get('time') or '').strip()
+    if not _SCHEDULE_TIME_RE.match(t):
+        return None, "Jam tidak valid — pakai format HH:MM (00:00–23:59)."
+    theme = str(data.get('theme') or '').strip()
+    if not theme or len(theme) > 80:
+        return None, "Tema wajib diisi (maks 80 karakter)."
+    end = str(data.get('end_date') or '').strip()
+    if end:
+        if not _SCHEDULE_DATE_RE.match(end):
+            return None, "Tanggal 'sampai' harus format YYYY-MM-DD."
+        try:
+            datetime.strptime(end, '%Y-%m-%d')
+        except Exception:
+            return None, "Tanggal 'sampai' tidak valid."
+    try:
+        bank_count = int(data.get('bank_count') or 7)
+    except Exception:
+        return None, "Jumlah lagu harus angka."
+    if kind == 'zumo_bank' and not (1 <= bank_count <= 30):
+        return None, "Jumlah lagu bank harus 1–30."
+    return {
+        'kind': kind, 'yt_id': yt_id, 'time': t, 'theme': theme,
+        'end_date': end, 'enabled': bool(data.get('enabled', True)),
+        'bank_count': bank_count if kind == 'zumo_bank' else 7,
+    }, None
+
+@app.route('/api/schedules', methods=['GET'])
+def get_schedules():
+    """Daftar jadwal rutin: baris store (playlist/zumo_bank) + baris
+    shorts yang diturunkan dari konfigurasi auto_shorts tiap channel."""
+    with db_lock:
+        rows = _schedules_seed_if_empty()
+        ch_map = {c.get('yt_id'): c for c in (database_channel or [])}
+    today = datetime.now(ZoneInfo('Asia/Jakarta')).date()
+    out = []
+    for r in rows:
+        c = ch_map.get(r.get('yt_id') or '')
+        out.append({
+            'id': r.get('id'), 'kind': r.get('kind'), 'yt_id': r.get('yt_id'),
+            'channel_name': (c or {}).get('name') or r.get('yt_id'),
+            'time': r.get('time'), 'theme': r.get('theme'),
+            'end_date': r.get('end_date') or '',
+            'bank_count': r.get('bank_count', 7),
+            'enabled': bool(r.get('enabled')),
+            'status': _schedule_status(r, today), 'source': 'store',
+        })
+    for c in (database_channel or []):
+        cfg = _auto_shorts_cfg(c)
+        out.append({
+            'id': 'shorts:' + str(c.get('yt_id')),
+            'kind': 'shorts', 'yt_id': c.get('yt_id'),
+            'channel_name': c.get('name') or c.get('yt_id'),
+            'time': cfg['create_time'], 'theme': cfg['theme'],
+            'end_date': '', 'bank_count': 0,
+            'enabled': bool(cfg['enabled']),
+            'status': 'Aktif' if cfg['enabled'] else 'Nonaktif',
+            'source': 'channel',
+            'publish_time': cfg['publish_time'],
+            'duration_sec': cfg['duration_sec'],
+        })
+    _kind_order = {'playlist': 0, 'shorts': 1, 'zumo_bank': 2}
+    out.sort(key=lambda x: (x['channel_name'] or '', _kind_order.get(x['kind'], 3)))
+    return jsonify({'status': 'success', 'schedules': out})
+
+@app.route('/api/schedules/save', methods=['POST'])
+def save_schedule():
+    """Buat/ubah satu jadwal. kind 'shorts' -> tulis ke konfigurasi
+    auto_shorts channel (validasi penuh via _validate_auto_shorts_cfg);
+    'playlist'/'zumo_bank' -> upsert ke schedules_db.json + sync flag
+    daily_playlist channel."""
+    data = request.get_json(silent=True) or {}
+    kind = str(data.get('kind') or '').strip()
+    yt_id = str(data.get('yt_id') or '').strip()
+    if kind not in _SCHEDULE_KINDS:
+        return jsonify({'status': 'error', 'message': "Jenis tidak dikenal."}), 400
+    with db_lock:
+        target = next((c for c in (database_channel or []) if c.get('yt_id') == yt_id), None)
+        if target is None:
+            return jsonify({'status': 'error', 'message': 'Channel tidak ditemukan.'}), 404
+        if kind == 'shorts':
+            merged = dict(_auto_shorts_cfg(target))
+            merged['enabled'] = bool(data.get('enabled', merged['enabled']))
+            if data.get('theme') is not None:
+                merged['theme'] = data.get('theme')
+            if data.get('time') is not None:
+                merged['create_time'] = data.get('time')
+            if data.get('publish_time') is not None:
+                merged['publish_time'] = data.get('publish_time')
+            if data.get('duration_sec') is not None:
+                merged['duration_sec'] = data.get('duration_sec')
+            cfg, err = _validate_auto_shorts_cfg(merged)
+            if err:
+                return jsonify({'status': 'error', 'message': err}), 400
+            target['auto_shorts'] = cfg
+            try:
+                save_channels(database_channel)
+            except Exception as e:
+                print(f"Gagal simpan auto_shorts {yt_id}: {e}", flush=True)
+                return jsonify({'status': 'error', 'message': 'Gagal menyimpan perubahan.'}), 500
+            return jsonify({'status': 'success', 'message': f"Jadwal Shorts {target.get('name')} disimpan." + (" Aktif — 1 Short dibuat otomatis tiap hari." if cfg['enabled'] else " Nonaktif.")})
+        clean, err = _validate_store_row(data)
+        if err:
+            return jsonify({'status': 'error', 'message': err}), 400
+        rows = _schedules_load()
+        rid = str(data.get('id') or '').strip()
+        now_wib = datetime.now(ZoneInfo('Asia/Jakarta')).strftime('%Y-%m-%d %H:%M')
+        if rid:
+            row = next((r for r in rows if r.get('id') == rid), None)
+            if row is None:
+                return jsonify({'status': 'error', 'message': 'Jadwal tidak ditemukan.'}), 404
+            row.update(clean)
+        else:
+            rid = 'sch_' + str(int(time.time() * 1000))
+            rows.append(dict({'id': rid, 'created_at': now_wib}, **clean))
+        _schedules_save(rows)
+        _sync_daily_playlist(yt_id)
+    return jsonify({'status': 'success', 'message': 'Jadwal disimpan.'})
+
+@app.route('/api/schedules/delete', methods=['POST'])
+def delete_schedule():
+    """Hapus jadwal store; baris 'shorts' hanya dinonaktifkan
+    (konfigurasinya tetap tersimpan di channel)."""
+    data = request.get_json(silent=True) or {}
+    sid = str(data.get('id') or '').strip()
+    if not sid:
+        return jsonify({'status': 'error', 'message': 'id wajib diisi.'}), 400
+    with db_lock:
+        if sid.startswith('shorts:'):
+            ok, err = _set_shorts_enabled(sid[len('shorts:'):], False)
+            if not ok:
+                return jsonify({'status': 'error', 'message': err}), 404
+            return jsonify({'status': 'success', 'message': 'Jadwal Shorts dinonaktifkan.'})
+        rows = _schedules_load()
+        row = next((r for r in rows if r.get('id') == sid), None)
+        if row is None:
+            return jsonify({'status': 'error', 'message': 'Jadwal tidak ditemukan.'}), 404
+        yt_id = row.get('yt_id')
+        rows = [r for r in rows if r.get('id') != sid]
+        _schedules_save(rows)
+        _sync_daily_playlist(yt_id)
+    return jsonify({'status': 'success', 'message': 'Jadwal dihapus.'})
+
+@app.route('/api/schedules/toggle', methods=['POST'])
+def toggle_schedule():
+    """Nyalakan/matikan satu jadwal (tanpa menghapus aturannya)."""
+    data = request.get_json(silent=True) or {}
+    sid = str(data.get('id') or '').strip()
+    if not sid or 'enabled' not in data:
+        return jsonify({'status': 'error', 'message': 'id + enabled wajib diisi.'}), 400
+    enabled = bool(data.get('enabled'))
+    with db_lock:
+        if sid.startswith('shorts:'):
+            ok, err = _set_shorts_enabled(sid[len('shorts:'):], enabled)
+            if not ok:
+                return jsonify({'status': 'error', 'message': err}), 404
+            return jsonify({'status': 'success', 'message': 'Jadwal Shorts ' + ('diaktifkan.' if enabled else 'dinonaktifkan.')})
+        rows = _schedules_load()
+        row = next((r for r in rows if r.get('id') == sid), None)
+        if row is None:
+            return jsonify({'status': 'error', 'message': 'Jadwal tidak ditemukan.'}), 404
+        row['enabled'] = enabled
+        _schedules_save(rows)
+        _sync_daily_playlist(row.get('yt_id'))
+    return jsonify({'status': 'success', 'message': 'Jadwal ' + ('diaktifkan.' if enabled else 'dinonaktifkan.')})
+
 @app.route('/api/set_channel_auto_shorts', methods=['POST'])
 def set_channel_auto_shorts():
     """⏰ JADWAL OTOMATIS SHORT: simpan konfigurasi per channel (butuh login

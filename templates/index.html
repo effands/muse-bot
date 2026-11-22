@@ -1150,12 +1150,14 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
     <button class="nav-item" onclick="go('tasks',this)" id="nb-tasks" title="Task Monitor"><svg class="nav-ic"><use href="#ic-tasks"/></svg><span class="nav-label">Task Monitor</span><span class="nav-badge" id="task-badge" style="display:none">0</span></button>
     <button class="nav-item" onclick="go('calendar',this)" id="nb-calendar" title="Kalender Jadwal"><svg class="nav-ic"><use href="#ic-cal"/></svg><span class="nav-label">Kalender Jadwal</span></button>
     <button class="nav-item" onclick="go('schedules',this)" id="nb-schedules" title="Jadwal Rutin"><svg class="nav-ic"><use href="#ic-cal"/></svg><span class="nav-label">Jadwal Rutin</span></button>
+    <button class="nav-item" onclick="go('history',this)" id="nb-history" title="Riwayat Channel"><svg class="nav-ic"><use href="#ic-clock"/></svg><span class="nav-label">Riwayat Channel</span></button>
     <div class="nav-section">STUDIO</div>
     <button class="nav-item" onclick="go('gallery',this)" id="nb-gallery" title="Asset Gallery"><svg class="nav-ic"><use href="#ic-gallery"/></svg><span class="nav-label">Asset Gallery</span></button>
     <button class="nav-item" onclick="go('titles',this)" id="nb-titles" title="Title Generator"><svg class="nav-ic"><use href="#ic-title"/></svg><span class="nav-label">Title Generator</span></button>
     <button class="nav-item" onclick="go('batch',this)" id="nb-batch" title="Batch Creator"><svg class="nav-ic"><use href="#ic-batch"/></svg><span class="nav-label">Batch Creator</span></button>
     <button class="nav-item" onclick="go('shorts',this)" id="nb-shorts" title="Shorts Muse"><svg class="nav-ic"><use href="#ic-shorts"/></svg><span class="nav-label">Shorts Muse</span></button>
     <button class="nav-item" onclick="go('playlist',this)" id="nb-playlist" title="Musik Playlist"><svg class="nav-ic"><use href="#ic-music"/></svg><span class="nav-label">Musik Playlist</span></button>
+    <button class="nav-item" onclick="go('bank',this)" id="nb-bank" title="Bank Lagu"><svg class="nav-ic"><use href="#ic-list"/></svg><span class="nav-label">Bank Lagu</span></button>
     <div class="nav-section">SYSTEM</div>
     <button class="nav-item" onclick="go('settings',this)" id="nb-settings" title="Settings"><svg class="nav-ic"><use href="#ic-settings"/></svg><span class="nav-label">Settings</span></button>
   </nav>
@@ -1587,6 +1589,50 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
         </table>
       </div>
       <div style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5">Playlist &amp; Bank Zumo dibaca eksekutor tiap 15 menit (04:00–23:00 WIB) — jam yang diubah berlaku paling lambat 15 menit kemudian. Shorts otomatis jalan dari pengaturan channel (jam buat + jam tayang).</div>
+    </div>
+
+    <div id="panel-history" class="panel">
+      <div class="sh" style="margin-bottom:14px">
+        <div><div class="sh-sub">Riwayat upload lewat pabrik per channel (90 hari terakhir) — judul, tanggal/jam, jenis konten, durasi, status, views.</div></div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span style="font-family:var(--font-m);font-size:11px;color:var(--muted)">Channel:</span><select id="hist-ch-sel" onchange="fetchHistory()" style="width:200px"><option value="">Semua channel</option></select>
+          <span class="pill p-cyan" id="hist-count">0 video</span>
+          <button class="btn btn-g btn-sm" onclick="fetchHistory()">🔄 Refresh</button>
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="text-align:left;color:var(--muted);font-family:var(--font-m);font-size:10px;border-bottom:1px solid var(--border)">
+            <th style="padding:6px 8px">TANGGAL / JAM</th><th style="padding:6px 8px">JUDUL</th><th style="padding:6px 8px">KONTEN</th><th style="padding:6px 8px">DURASI</th><th style="padding:6px 8px">STATUS</th><th style="padding:6px 8px;text-align:right">VIEWS</th>
+          </tr></thead>
+          <tbody id="hist-tbody"><tr><td colspan="6" style="padding:10px 8px;color:var(--muted)">Memuat riwayat…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="panel-bank" class="panel">
+      <div class="sh" style="margin-bottom:14px">
+        <div><div class="sh-sub">Stok lagu mentah Zumo per channel — dipakai video harian (rakit acak, 0 kredit). File tersimpan di server: uploads/zumo_bank/…</div></div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span style="font-family:var(--font-m);font-size:11px;color:var(--muted)">Channel:</span><select id="bank-ch-sel" onchange="renderBank()" style="width:200px"><option value="">-- Pilih Channel --</option></select>
+          <span class="pill p-cyan" id="bank-count">0 lagu</span>
+          <span class="pill" id="bank-dur">—</span>
+          <button class="btn btn-g btn-sm" onclick="fetchBank()">🔄 Refresh</button>
+        </div>
+      </div>
+      <div id="bank-player" style="display:none;margin-bottom:12px;padding:10px 12px;border:1px solid var(--border);border-radius:10px">
+        <div style="font-size:12px;font-weight:700;margin-bottom:6px">▶️ <span id="bank-now">—</span></div>
+        <audio id="bank-audio" controls preload="none" style="width:100%"></audio>
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap">
+          <thead><tr style="text-align:left;color:var(--muted);font-family:var(--font-m);font-size:10px;border-bottom:1px solid var(--border)">
+            <th style="padding:6px 8px">JUDUL</th><th style="padding:6px 8px">VARIAN</th><th style="padding:6px 8px">DURASI</th><th style="padding:6px 8px">DIBUAT</th><th style="padding:6px 8px">KREDIT</th><th style="padding:6px 8px">PUTAR</th><th style="padding:6px 8px">AKSI</th>
+          </tr></thead>
+          <tbody id="bank-tbody"><tr><td colspan="7" style="padding:10px 8px;color:var(--muted)">Memuat bank…</td></tr></tbody>
+        </table>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5">Lagu dirakit acak tiap video harian — hapus lagu di sini bila tidak mau dipakai lagi. Menghapus tidak bisa dibatalkan.</div>
     </div>
 
     <div id="panel-gallery" class="panel">
@@ -2833,11 +2879,13 @@ const PAGE_META = {
   tasks:     { t: 'Task Monitor',    s: 'Real-time render & upload queue' },
   calendar:  { t: 'Kalender Jadwal', s: 'Jadwal publish 30 hari & jeda channel' },
   schedules: { t: 'Jadwal Rutin',   s: 'Aturan jadwal berulang per channel — jam, tema, sampai kapan' },
+  history:   { t: 'Riwayat Channel', s: 'Riwayat upload pabrik per channel — judul, tanggal, konten, views' },
   gallery:   { t: 'Gallery',          s: 'Kelola audio, background & thumbnail' },
   titles:    { t: 'Title Generator', s: 'Upload bank & generate judul baru' },
   batch:     { t: 'Batch Creator',   s: 'Buat banyak video sekaligus' },
   shorts:    { t: 'Shorts Muse',     s: 'Short dari naskah + CTA, render vertikal' },
   playlist:  { t: 'Musik Playlist',  s: 'Riset playlist trending, render kompilasi & upload' },
+  bank:      { t: 'Bank Lagu',       s: 'Stok lagu Zumo per channel — dengar & kelola' },
   settings:  { t: 'Settings',        s: 'API Google, channel & konfigurasi' }
 };
 
@@ -2873,6 +2921,8 @@ function go(id, el) {
   }
   if (id === 'shorts') { refreshShortsDropdowns(); fetchShortsMuse(); }
   if (id === 'playlist') { refreshPlaylistDropdowns(); fetchPlaylistJobs(); }
+  if (id === 'bank') fetchBank();
+  if (id === 'history') fetchHistory();
   if (id === 'tasks') loadLogs();
 }
 
@@ -3843,6 +3893,124 @@ function renderSchedules() {
           : '<button class="btn btn-p btn-sm" title="Aktifkan lagi" onclick="toggleSched(\'' + s.id + '\', true)">▶️ Aktif</button> ')
       + '<button class="btn btn-sm" title="Hapus jadwal" onclick="deleteSched(\'' + s.id + '\')">🗑️</button>'
       + '</td></tr>';
+  }).join('');
+}
+// ────────────────────────────────────────────────────────
+//  BANK LAGU + RIWAYAT CHANNEL (v1.4.2)
+// ────────────────────────────────────────────────────────
+function _fmtDurSec(sec) {
+  sec = Math.round(+sec || 0);
+  if (sec <= 0) return '—';
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  const mm = String(m).padStart(2, '0'), ss = String(s).padStart(2, '0');
+  return h ? h + ':' + mm + ':' + ss : m + ':' + ss;
+}
+let _bankData = [];
+function fetchBank() {
+  const tb = document.getElementById('bank-tbody'); if (!tb) return;
+  const sel = document.getElementById('bank-ch-sel');
+  fetch('/api/zumo_bank').then(r => r.json()).then(d => {
+    if (d.status !== 'success') { tb.innerHTML = '<tr><td colspan="7" style="padding:10px 8px;color:var(--muted)">Gagal memuat bank.</td></tr>'; return; }
+    _bankData = d.channels || [];
+    if (sel) {
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">-- Pilih Channel --</option>' + _bankData.map(c => '<option value="' + escapeHtml(c.yt_id) + '"' + (c.yt_id === cur ? ' selected' : '') + '>' + escapeHtml(c.name) + ' (' + c.count + ')</option>').join('');
+      if (!cur) {
+        const first = _bankData.find(c => c.count > 0);
+        if (first) sel.value = first.yt_id;
+      }
+    }
+    renderBank();
+  }).catch(() => { tb.innerHTML = '<tr><td colspan="7" style="padding:10px 8px;color:var(--muted)">Gagal memuat bank.</td></tr>'; });
+}
+function renderBank() {
+  const tb = document.getElementById('bank-tbody'); if (!tb) return;
+  const sel = document.getElementById('bank-ch-sel');
+  const cnt = document.getElementById('bank-count');
+  const dur = document.getElementById('bank-dur');
+  const yt = sel ? sel.value : '';
+  const ch = _bankData.find(c => c.yt_id === yt);
+  if (!ch) {
+    if (cnt) cnt.textContent = '0 lagu';
+    if (dur) dur.textContent = '—';
+    tb.innerHTML = '<tr><td colspan="7" style="padding:10px 8px;color:var(--muted)">Pilih channel dulu untuk melihat bank lagunya.</td></tr>';
+    return;
+  }
+  if (cnt) cnt.textContent = ch.count + ' lagu';
+  if (dur) dur.textContent = _fmtDurSec(ch.total_duration) + ' • ' + ch.total_credits + ' kredit';
+  if (!ch.tracks.length) {
+    tb.innerHTML = '<tr><td colspan="7" style="padding:10px 8px;color:var(--muted)">Bank channel ini masih kosong.</td></tr>';
+    return;
+  }
+  tb.innerHTML = ch.tracks.map(t => '<tr style="border-bottom:1px solid var(--border)">'
+    + '<td style="padding:6px 8px"><b>' + escapeHtml(t.title) + '</b></td>'
+    + '<td style="padding:6px 8px">' + escapeHtml(t.variant) + '</td>'
+    + '<td style="padding:6px 8px;white-space:nowrap">' + _fmtDurSec(t.duration) + '</td>'
+    + '<td style="padding:6px 8px;white-space:nowrap">' + escapeHtml(t.created_at || '—') + '</td>'
+    + '<td style="padding:6px 8px">' + (t.credits == null ? '—' : t.credits) + '</td>'
+    + '<td style="padding:6px 8px;white-space:nowrap"><button class="btn btn-sm" title="Dengar lagu" onclick="playBank(\'' + t.id + '\')">▶️</button></td>'
+    + '<td style="padding:6px 8px;white-space:nowrap"><button class="btn btn-sm" title="Hapus dari bank" onclick="deleteBankTrack(\'' + t.id + '\')">🗑️</button></td>'
+    + '</tr>').join('');
+}
+function playBank(id) {
+  const sel = document.getElementById('bank-ch-sel');
+  const ch = _bankData.find(c => c.yt_id === (sel ? sel.value : ''));
+  const t = ch && ch.tracks.find(x => x.id === id);
+  if (!t || !t.url) return;
+  const wrap = document.getElementById('bank-player');
+  const au = document.getElementById('bank-audio');
+  const now = document.getElementById('bank-now');
+  if (now) now.textContent = t.title + ' (' + t.variant + ')';
+  if (wrap) wrap.style.display = '';
+  if (au) { au.src = t.url; au.play().catch(function(){}); }
+}
+async function deleteBankTrack(id) {
+  const sel = document.getElementById('bank-ch-sel');
+  const yt = sel ? sel.value : '';
+  const ch = _bankData.find(c => c.yt_id === yt);
+  const t = ch && ch.tracks.find(x => x.id === id);
+  if (!(await themedConfirm('Hapus lagu "' + (t ? t.title : '') + '" dari bank?\nFile dihapus dan tidak bisa dikembalikan.', { title: 'Hapus Lagu dari Bank', okLabel: 'Ya, Hapus' }))) return;
+  fetch('/api/zumo_bank/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ yt_id: yt, id: id }) })
+    .then(r => r.json()).then(d => { if (d.status === 'success') fetchBank(); else alert(d.message || 'Gagal menghapus lagu.'); })
+    .catch(() => alert('Gagal menghapus lagu.'));
+}
+let _histData = [];
+function fetchHistory() {
+  const tb = document.getElementById('hist-tbody'); if (!tb) return;
+  const sel = document.getElementById('hist-ch-sel');
+  if (sel && sel.options.length <= 1 && (channels || []).length) {
+    sel.innerHTML = '<option value="">Semua channel</option>' + channels.map(c => '<option value="' + escapeHtml(c.yt_id) + '">' + escapeHtml(c.name) + '</option>').join('');
+  }
+  const yt = sel ? sel.value : '';
+  fetch('/api/channel_history' + (yt ? '?yt_id=' + encodeURIComponent(yt) : '')).then(r => r.json()).then(d => {
+    if (d.status !== 'success') { tb.innerHTML = '<tr><td colspan="6" style="padding:10px 8px;color:var(--muted)">Gagal memuat riwayat.</td></tr>'; return; }
+    _histData = d.history || [];
+    renderHistory();
+  }).catch(() => { tb.innerHTML = '<tr><td colspan="6" style="padding:10px 8px;color:var(--muted)">Gagal memuat riwayat.</td></tr>'; });
+}
+function renderHistory() {
+  const tb = document.getElementById('hist-tbody'); if (!tb) return;
+  const cnt = document.getElementById('hist-count');
+  if (cnt) cnt.textContent = _histData.length + ' video';
+  if (!_histData.length) {
+    tb.innerHTML = '<tr><td colspan="6" style="padding:10px 8px;color:var(--muted)">Belum ada riwayat upload untuk pilihan ini.</td></tr>';
+    return;
+  }
+  tb.innerHTML = _histData.map(h => {
+    const st = h.status || '';
+    const pill = st.includes('Tayang') ? 'p-green' : (st.includes('Gagal') ? 'p-red' : 'p-muted');
+    const views = (h.views == null) ? '—' : Number(h.views).toLocaleString('id-ID');
+    const titleHtml = h.video_url
+      ? '<a href="' + escapeHtml(h.video_url) + '" target="_blank" style="color:var(--accent)">' + escapeHtml(h.title) + '</a>'
+      : escapeHtml(h.title);
+    return '<tr style="border-bottom:1px solid var(--border)">'
+      + '<td style="padding:6px 8px;white-space:nowrap">' + escapeHtml(h.time || h.finished_date || '—') + '</td>'
+      + '<td style="padding:6px 8px;min-width:220px">' + titleHtml + '</td>'
+      + '<td style="padding:6px 8px;white-space:nowrap">' + escapeHtml(h.type || h.kind || '—') + '</td>'
+      + '<td style="padding:6px 8px;white-space:nowrap">' + _fmtDurSec(h.duration_sec) + '</td>'
+      + '<td style="padding:6px 8px"><span class="pill ' + pill + '">' + escapeHtml(st || '—') + '</span></td>'
+      + '<td style="padding:6px 8px;text-align:right">' + views + '</td>'
+      + '</tr>';
   }).join('');
 }
 function schedKindChanged() {

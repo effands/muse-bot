@@ -859,6 +859,41 @@ def zumo_bank_add(bank_root, channel_name, src_path, meta):
         return None
 
 
+def zumo_bank_remove(bank_root, channel_name, track_id):
+    """Hapus 1 lagu dari bank (file + entri indeks) berdasarkan id entri.
+    Kembalikan (True, '') bila terhapus, (False, pesan) bila tidak ketemu
+    atau gagal. Dipakai halaman Bank Lagu (v1.4.2)."""
+    try:
+        path = zumo_bank_index_path(bank_root, channel_name)
+        with open(path, 'r', encoding='utf-8') as fh:
+            idx = json.load(fh)
+        tracks = idx.get('tracks') or []
+        keep = []
+        removed = None
+        for t in tracks:
+            if isinstance(t, dict) and str(t.get('id')) == str(track_id):
+                removed = t
+            else:
+                keep.append(t)
+        if removed is None:
+            return False, 'Lagu tidak ditemukan di bank.'
+        folder = os.path.dirname(path)
+        fn = removed.get('filename') or ''
+        if fn:
+            try:
+                os.remove(os.path.join(folder, fn))
+            except FileNotFoundError:
+                pass
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            json.dump({'channel': idx.get('channel', channel_name),
+                       'tracks': keep}, fh, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)
+        return True, ''
+    except Exception as e:
+        return False, str(e)
+
+
 def zumo_bank_pick(bank_root, channel_name, n, rng=None):
     """Pilih acak n entri dari bank (tanpa judul sama berdampingan bila
     memungkinkan — reuse shuffle_zumo_tracks). n dibatasi isi bank.

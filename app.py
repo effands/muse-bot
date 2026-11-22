@@ -8348,6 +8348,112 @@ def get_schedules():
     out.sort(key=lambda x: (x['channel_name'] or '', _kind_order.get(x['kind'], 3)))
     return jsonify({'status': 'success', 'schedules': out})
 
+def _bank_variant(filename):
+    """Varian lagu dari nama file bank (…_t1_v1.mp3 -> 'v1')."""
+    m = re.search(r'_v(\d+)\.', str(filename or ''))
+    return 'v' + m.group(1) if m else '—'
+
+
+@app.route('/api/zumo_bank', methods=['GET'])
+def get_zumo_bank():
+    """Bank lagu Zumo per channel (halaman Bank Lagu v1.4.2): daftar
+    channel + trek mentah tiap channel (judul, varian, durasi, kredit,
+    URL putar /uploads/...)."""
+    out = []
+    for c in (database_channel or []):
+        name = c.get('name') or ''
+        tracks = _zumo_core.zumo_bank_list(ZUMO_BANK_DIR, name) if name else []
+        folder = _zumo_core.zumo_bank_dirname(name) if name else ''
+        items = []
+        total_dur = 0.0
+        total_cred = 0
+        for t in tracks:
+            try:
+                dur = float(t.get('duration') or 0)
+            except Exception:
+                dur = 0.0
+            total_dur += dur
+            try:
+                total_cred += int(t.get('credits') or 0)
+            except Exception:
+                pass
+            fn = t.get('filename') or ''
+            items.append({
+                'id': t.get('id'), 'title': t.get('title') or 'Tanpa Judul',
+                'filename': fn, 'variant': _bank_variant(fn),
+                'duration': dur, 'created_at': t.get('created_at') or '',
+                'credits': t.get('credits'), 'job_id': t.get('job_id') or '',
+                'url': ('/uploads/zumo_bank/%s/%s' % (folder, fn)) if fn else '',
+            })
+        out.append({
+            'yt_id': c.get('yt_id'), 'name': name,
+            'count': len(items), 'total_duration': total_dur,
+            'total_credits': total_cred, 'tracks': items,
+        })
+    out.sort(key=lambda x: (x['name'] or '').lower())
+    return jsonify({'status': 'success', 'channels': out})
+
+
+@app.route('/api/zumo_bank/delete', methods=['POST'])
+def delete_zumo_bank_track():
+    """Hapus 1 lagu dari bank (file + indeks). Body: {yt_id, id}."""
+    data = request.get_json(silent=True) or {}
+    yt_id = str(data.get('yt_id') or '').strip()
+    tid = str(data.get('id') or '').strip()
+    if not yt_id or not tid:
+        return jsonify({'status': 'error', 'message': 'Channel / lagu tidak lengkap.'}), 400
+    with db_lock:
+        target = next((c for c in (database_channel or []) if c.get('yt_id') == yt_id), None)
+        if target is None:
+            return jsonify({'status': 'error', 'message': 'Channel tidak ditemukan.'}), 404
+        ok, err = _zumo_core.zumo_bank_remove(ZUMO_BANK_DIR, target.get('name') or '', tid)
+    if not ok:
+        return jsonify({'status': 'error', 'message': err or 'Gagal menghapus lagu.'}), 404
+    return jsonify({'status': 'success', 'message': 'Lagu dihapus dari bank.'})
+
+
+@app.route('/api/channel_history', methods=['GET'])
+def get_channel_history():
+    """Riwayat upload pabrik per channel (halaman Riwayat Channel v1.4.2):
+    judul, tanggal/jam, jenis konten, durasi, status, views. Sumber:
+    history_tasks (90 hari terakhir) + video_stats_cache.json.
+    Param ?yt_id=... (kosong = semua channel)."""
+    yt_id = str(request.args.get('yt_id') or '').strip()
+    try:
+        cache = _load_video_stats_cache() or {}
+        vids = cache.get('videos') or {}
+    except Exception:
+        vids = {}
+    out = []
+    for t in (history_tasks or []):
+        if yt_id and str(t.get('yt_id')) != yt_id:
+            continue
+        vid = str(t.get('video_id') or '')
+        v = vids.get(vid) or {}
+        bp = t.get('blueprint') or {}
+        dur_h = bp.get('target_duration_hours')
+        try:
+            dur_sec = float(dur_h) * 3600 if dur_h is not None else None
+        except Exception:
+            dur_sec = None
+        out.append({
+            'id': t.get('id'), 'yt_id': t.get('yt_id'),
+            'title': t.get('title') or 'Tanpa Judul',
+            'time': t.get('time') or '',
+            'finished_date': t.get('finished_date') or '',
+            'type': t.get('type') or t.get('kind') or '',
+            'kind': t.get('kind') or '',
+            'status': t.get('status') or '',
+            'video_id': vid,
+            'video_url': t.get('video_url') or (('https://youtu.be/' + vid) if vid else ''),
+            'duration_sec': dur_sec,
+            'views': v.get('views'),
+            'likes': v.get('likes'),
+        })
+    out.sort(key=lambda x: (x['time'] or ''), reverse=True)
+    return jsonify({'status': 'success', 'history': out[:200], 'total': len(out)})
+
+
 @app.route('/api/schedules/save', methods=['POST'])
 def save_schedule():
     """Buat/ubah satu jadwal. kind 'shorts' -> tulis ke konfigurasi

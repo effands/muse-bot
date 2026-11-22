@@ -1541,6 +1541,11 @@ ZUMO_ASSETS_DIR = os.path.join(BASE_UPLOAD, 'zumo_assets')
 # bawah uploads/ -> ikut ter-backup otomatis (backup mencakup uploads/).
 ZUMO_BANK_DIR = os.path.join(BASE_UPLOAD, 'zumo_bank')
 BANK_AUDIO_MAX_BYTES = 100 * 1024 * 1024  # upload manual audio ke bank (v1.4.9): maks 100 MB/file
+# vidIQ (v1.4.13, user 22 Nov 2026 ~21:20 WIB): pelengkap riset trending, SEMENTARA,
+# paket Free. Toggle + status dibaca cron trending-research tiap run; logout/ganti
+# akun diminta lewat panel -> vidiq_action.json -> diproses cron run berikutnya.
+VIDIQ_SETTINGS_FILE = os.path.join(BASE_DIR, 'vidiq_settings.json')
+VIDIQ_ACTION_FILE = os.path.join(BASE_DIR, 'vidiq_action.json')
 PLAYLIST_MAX_CLIPS = 15               # klip footage Pixabay per video
 PLAYLIST_MIN_CLIPS = 5                # minimal klip agar render jalan
 PLAYLIST_RESEARCH_CACHE_SEC = 3600    # cache riset 1 jam (hemat kuota)
@@ -15407,6 +15412,80 @@ def zumo_kie_key_del():
     ok, masked, msg = _kie_delete_key(str(data.get('ident') or '').strip())
     return jsonify({"status": "success" if ok else "error",
                     "message": msg, "masked": masked}), (200 if ok else 400)
+
+
+# ---- vidIQ (v1.4.13) ----
+def _vidiq_settings_default():
+    return {"enabled": True, "connected": True, "plan": "Free",
+            "credits": 145, "credits_max": 150,
+            "credits_reset": "2026-12-22", "updated": None}
+
+
+def _vidiq_settings_load():
+    try:
+        with open(VIDIQ_SETTINGS_FILE, 'r', encoding='utf-8') as f:
+            d = json.load(f)
+        out = _vidiq_settings_default()
+        if isinstance(d, dict):
+            out.update({k: v for k, v in d.items() if k in out})
+        return out
+    except Exception:
+        return _vidiq_settings_default()
+
+
+def _vidiq_settings_save(d):
+    tmp = VIDIQ_SETTINGS_FILE + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(d, f, ensure_ascii=False)
+    os.replace(tmp, VIDIQ_SETTINGS_FILE)
+    try:
+        os.chmod(VIDIQ_SETTINGS_FILE, 0o600)
+    except Exception:
+        pass
+
+
+@app.route('/api/vidiq_status')
+def vidiq_status():
+    return jsonify({"status": "success", **_vidiq_settings_load()})
+
+
+@app.route('/api/vidiq_settings', methods=['POST'])
+def vidiq_settings():
+    data = request.get_json(silent=True) or {}
+    if 'enabled' not in data:
+        return jsonify({"status": "error",
+                        "message": "Field 'enabled' wajib (true/false)."}), 400
+    d = _vidiq_settings_load()
+    d['enabled'] = bool(data.get('enabled'))
+    d['updated'] = datetime.now(WIB).strftime('%Y-%m-%dT%H:%M:%S+07:00')
+    _vidiq_settings_save(d)
+    return jsonify({"status": "success", **d})
+
+
+@app.route('/api/vidiq_action', methods=['POST'])
+def vidiq_action():
+    data = request.get_json(silent=True) or {}
+    action = str(data.get('action') or '').strip()
+    if action not in ('logout', 'switch'):
+        return jsonify({"status": "error",
+                        "message": "Aksi tidak dikenal (logout/switch)."}), 400
+    # Panel tidak bisa memutus konektor Muse langsung — permintaan dicatat,
+    # diproses cron riset-trending di run berikutnya (maks 2 jam), konfirmasi
+    # + link login baru (bila ganti akun) dikirim lewat Telegram.
+    tmp = VIDIQ_ACTION_FILE + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump({"action": action,
+                   "requested_at": datetime.now(WIB).strftime('%Y-%m-%dT%H:%M:%S+07:00')},
+                  f, ensure_ascii=False)
+    os.replace(tmp, VIDIQ_ACTION_FILE)
+    if action == 'logout':
+        d = _vidiq_settings_load()
+        d['enabled'] = False
+        _vidiq_settings_save(d)
+    msg = ("Permintaan logout dicatat — Muse akan memprosesnya di run riset berikutnya (maks 2 jam) dan mengonfirmasi lewat Telegram. Riset trending sementara pakai jalur gratis YouTube."
+           if action == 'logout' else
+           "Permintaan ganti akun dicatat — Muse akan logout akun lama di run riset berikutnya (maks 2 jam) dan mengirim link login akun baru lewat Telegram. Riset trending sementara pakai jalur gratis YouTube.")
+    return jsonify({"status": "success", "message": msg})
 
 
 @app.route('/api/zumo_status')

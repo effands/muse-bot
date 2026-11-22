@@ -1,3 +1,6 @@
+## 1.4.13
+- vidIQ di Riset Trending — SEMENTARA (permintaan user 22 Nov 2026 ~21:20 WIB, "walau gratisan"): cron trending-research v4 kini memakai vidIQ sebagai PELENGKAP (maks 1 panggilan/hari = 5 kredit, guard kredit <10 = lewati, 145 kredit ≈ 29 hari); jalur gratis (browser.search + yt-dlp) tetap jadi dasar dan selalu jalan; kandidat vidIQ tetap kena filter official + 30 hari. Panel Settings kini punya kartu vidIQ: toggle on/off, status (paket/krédit/reset), tombol Logout + Ganti Akun (permintaan dicatat di vidiq_action.json, diproses Muse di run riset berikutnya maks 2 jam, link login baru dikirim lewat Telegram). Backend: GET /api/vidiq_status, POST /api/vidiq_settings, POST /api/vidiq_action + file vidiq_settings.json (chmod 600).
+
 ## 1.4.12
 - Kartu statistik Task Monitor kini bisa diklik (permintaan user 22 Nov 2026 — "buat ini nge link bisa gak sih?"): CHANNELS → Dashboard (tabel channel), ACTIVE → scroll ke antrean RENDER & UPLOAD QUEUE, DONE → Riwayat Channel, DIJADWALKAN → Jadwal Rutin. Class baru `.stat-link` (cursor pointer + hover: border accent + glow + naik sedikit) + tooltip "Lihat …" di tiap kartu; kartu antrean diberi id `queue-card` sebagai target scroll.
 

@@ -1,3 +1,8 @@
+## 1.4.8
+- Thumbnail Zumo SENADA dengan video (aturan user 22 Nov 2026): `_zumo_finish_video` kini mengambil thumbnail dari FRAME loop video channel (`_zumo_loop_frame`, baru — ekstrak frame t=2s dari `backgrounds/zumo_loop.mp4`), bukan lagi dari bg statis channel yang sama tiap hari; fallback ke bg statis bila loop tidak ada / ekstraksi gagal. Penyebab thumbnail "Slow Moonlight Drive" kemarin sama persis dengan "Midnight Rain": thumbnail memakai bg statis malam yang sama, padahal loop videonya sudah baru.
+- Loop 20 detik + seamless (aturan user 22 Nov 2026): loop JANGAN 10 detik lagi — 20 detik, dari video/gambar yang sama, dibuat seamless sekalian di Muse (crossfade 2 detik akhir ke 2 detik awal, gerakan tetap maju, tanpa ping-pong). Skrip baru `~/workspace/zumo/make_seamless_loop.py` (zoom pelan + xfade + verifikasi seam diff); executor cron step 5 diperbarui (10 → 20 detik + seamless). Thumbnail video hari ini (pyCJxjWEJBk) sudah diperbaiki dari frame loop baru (hash maxres berubah, tampil beda dan senada).
+- Tes: loop 20 detik seamless LOLOS (seam diff 5,26 < 8, gerak tengah 17,74; 1920x1080 24fps); tes thumbnail di VPS (lihat verify_v148).
+
 ## 1.4.7
 - README: panduan pasang server baru ditulis ulang (permintaan user 22 Nov 2026) — 1 perintah clone+install, blok edit cuma 1 baris (PORT), cara hubungkan ke Muse (kunci SSH dipasang installer + app.py tiap start, tanpa setting), perintah cek SSH dari Muse, dan langkah setelah instalasi (buat PIN, isi Token Bot + API key Kie di Settings).
 

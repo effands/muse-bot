@@ -13311,6 +13311,27 @@ def _zumo_background_video_path(yt_id):
     return None
 
 
+def _zumo_loop_frame(yt_id, job_dir):
+    """Frame dari loop video channel (backgrounds/zumo_loop.mp4) untuk
+    thumbnail — supaya thumbnail SENADA dengan isi video (aturan user
+    22 Nov 2026: thumbnail ambil referensi dari image video). Kembalikan
+    path jpg frame, atau None bila loop tidak ada / ekstraksi gagal
+    (pemanggil pakai bg statis sebagai fallback)."""
+    loop = _zumo_visual_loop_path(yt_id)
+    if not loop:
+        return None
+    out = os.path.join(job_dir, 'loop_frame.jpg')
+    try:
+        subprocess.run([get_ffmpeg_path(), '-y', '-v', 'error',
+                        '-ss', '2', '-i', loop, '-frames:v', '1', out],
+                       check=True, timeout=60)
+        if os.path.isfile(out) and os.path.getsize(out) > 0:
+            return out
+    except Exception as e:
+        print(f"[zumo] thumbnail: frame loop gagal ({e}) — pakai bg statis.", flush=True)
+    return None
+
+
 def _zumo_visual_loop_path(yt_id):
     """Visual loop channel (v1.3.99): video 10 detik 1920x1080 seamless —
     adegan STATIS + gerakan lembut sesuai genre (asap kopi, daun, air
@@ -14239,10 +14260,13 @@ def _zumo_finish_video(job_id, job, job_dir, kept, profile, total_credits,
     new_tags = _zumo_build_tags(style, track_titles, ch_name)
     _title_cleaned = (new_title != _raw_title)
     bg = _zumo_background_path(yt_id)
+    # 🔥 v1.4.8: thumbnail SENADA dengan video — ambil dari frame loop
+    # video channel (bukan bg statis yang sama tiap hari).
+    thumb_src = _zumo_loop_frame(yt_id, job_dir) or bg
     thumb_path = ''
     try:
         thumb_path = _zumo_make_thumbnail(
-            bg, new_title, ch_name, os.path.join(job_dir, 'thumb.jpg'),
+            thumb_src, new_title, ch_name, os.path.join(job_dir, 'thumb.jpg'),
             badge='ZUMO')
     except Exception as e:
         raise RuntimeError(f'Thumbnail Zumo gagal dibuat: {e}')

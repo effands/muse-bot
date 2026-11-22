@@ -439,7 +439,7 @@ def clipper_worker_loop():
                     # 🔥 FASE 6 (audit C7): error SEMENTARA (download/timeout/
                     # jaringan) dicoba lagi otomatis maks 2x (backoff 10 → 20
                     # dtk). Kalau sudah habis percobaan / error permanen →
-                    # status error + notifikasi Telegram ke Bos.
+                    # status error + notifikasi Telegram ke Pak Effand.
                     attempts = int(job_to_run.get('attempts', 0)) + 1
                     if attempts < CLIP_JOB_MAX_ATTEMPTS and _is_transient_error(e):
                         wait = 10 * attempts
@@ -452,7 +452,7 @@ def clipper_worker_loop():
                         update_job(job_id, status='error', stage=f'Error: {str(e)}',
                                    extra={"attempts": attempts})
                         _clipper_notify("❌", f"Klip Shorts #{batch_idx} gagal 😅",
-                                        f"URL: {str(job_to_run.get('url', ''))[:80]}\nPenyebab: {str(e)[:120]}\nSaya udah coba {attempts}x, Bos — cek panel ya 👀")
+                                        f"URL: {str(job_to_run.get('url', ''))[:80]}\nPenyebab: {str(e)[:120]}\nSaya udah coba {attempts}x, Pak Effand — cek panel ya 👀")
 
                 finally:
                     for tf in temp_files:

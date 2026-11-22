@@ -1259,7 +1259,7 @@ def startup_sanitizer():
     except Exception:
         pass
     if notifs:
-        send_tg_message("🧹 *Bos, saya udah beres-beres pas start nih* 😎\n" + "\n".join(notifs) + "\n\n✅ Aplikasi siap, antrean saya lanjutkan otomatis 💪")
+        send_tg_message("🧹 *Pak Effand, saya udah beres-beres pas start nih* 😎\n" + "\n".join(notifs) + "\n\n✅ Aplikasi siap, antrean saya lanjutkan otomatis 💪")
 
 def queue_watchdog_worker():
     """🔥 BARU: Watchdog antrean — task stuck 'Rendering...' > 30 menit otomatis digagalkan
@@ -1301,7 +1301,7 @@ def queue_watchdog_worker():
                     if d['id'] == sid:
                         move_to_history(sid, f"Gagal ❌ (Stuck >1 jam, otomatis dilanjutkan)")
                         break
-            send_tg_message(f"⚠️ *Bos, ada task yang macet nih* 😅\nTask #{sid} stuck lebih dari 1 jam, nggak ada kemajuan. Saya gagalkan saja ya biar antrean jalan terus 💪")
+            send_tg_message(f"⚠️ *Pak Effand, ada task yang macet nih* 😅\nTask #{sid} stuck lebih dari 1 jam, nggak ada kemajuan. Saya gagalkan saja ya biar antrean jalan terus 💪")
 
 threading.Thread(target=queue_watchdog_worker, daemon=True).start()
 
@@ -2307,7 +2307,7 @@ class VisualEngine:
         self.bar_h = None
         self.particles = []
         
-        # Generator Gradien Kustom Asli Bos K
+        # Generator Gradien Kustom Asli Pak Effand
         self.grad = np.zeros((1000, 1, 3), dtype=np.uint8)
         for c in range(3): 
             self.grad[:, 0, c] = np.linspace(self.col_top[c], self.col_bot[c], 1000)
@@ -4671,7 +4671,7 @@ def _background_worker_loop():
                 except Exception:
                     pass
                 move_to_history(task_id, "Render Selesai ✅")
-                notify_event("✅", task['title'], f"Render beres, Bos! Saya upload ke YouTube {ch_name} ya 😎")
+                notify_event("✅", task['title'], f"Render beres, Pak Effand! Saya upload ke YouTube {ch_name} ya 😎")
                 # 🔥 FASE 5: render sukses juga mereset hitungan gagal beruntun.
                 _record_channel_success(yt_id)
 
@@ -4705,13 +4705,13 @@ def _background_worker_loop():
                     # lagi) — retry otomatis ganti judul baru (lihat
                     # operator_retry_task), dan pesan ini mengatakannya.
                     if 'judul sudah tayang' in reason:
-                        qc_msg = (f"Bos, video ini saya TAHAN dulu ya 😅\n"
+                        qc_msg = (f"Pak Effand, video ini saya TAHAN dulu ya 😅\n"
                                   f"Alasan: {reason[:120]}\n"
                                   f"Judulnya sudah pernah tayang di channel ini — "
                                   f"kalau di-upload lagi, YouTube bisa menganggapnya duplikat.\n"
                                   f"Pencet 🔁 Coba Lagi — saya render ulang dengan judul baru yang belum dipakai.")
                     else:
-                        qc_msg = (f"Bos, video ini nggak lolos pemeriksaan kualitas (QC) — "
+                        qc_msg = (f"Pak Effand, video ini nggak lolos pemeriksaan kualitas (QC) — "
                                   f"jadi saya TAHAN, tidak di-upload 😅\n"
                                   f"Alasan: {reason[:120]}\n"
                                   f"Pencet 🔁 Coba Lagi kalau mau saya render ulang.")
@@ -4769,7 +4769,7 @@ def _background_worker_loop():
                             {"text": "🔁 Coba Lagi", "callback_data": f"retry:{task_id}"}
                         ]]}
                         notify_event("❌", task['title'],
-                                     f"Bos, ada yang gagal nih 😅 Video ini gagal di channel {ch_name} — penyebab: {err_msg[:120]}. Tenang, saya pantau terus — tinggal pencet Coba Lagi ya 💪",
+                                     f"Pak Effand, ada yang gagal nih 😅 Video ini gagal di channel {ch_name} — penyebab: {err_msg[:120]}. Tenang, saya pantau terus — tinggal pencet Coba Lagi ya 💪",
                                      reply_markup=retry_markup)
         finally:
             # Lepas antrean agar Clipper bisa jalan
@@ -6051,9 +6051,9 @@ def _tune_all_formulas(notify=True):
                 best = max(sig, key=lambda x: x['new'])
                 ch_name = c.get('name', yt_id)
                 # 🔥 v1.3.75: tiap notif WAJIB bawa tombol saran (prinsip
-                # 20 Nov 2026) — Bos tinggal tap, tidak cuma baca.
+                # 20 Nov 2026) — Pak Effand tinggal tap, tidak cuma baca.
                 notify_event("🔁", f"Lingkaran Analitik — {ch_name}",
-                    f"Bos, lingkaran analitik udah jalan nih 😎 Judul '{best['title'][:60]}' lagi naik daun — bobotnya saya naikin ke {best['new']} biar makin sering kepilih 💪 Yang sepi saya turunin dikit, tapi tetap saya kasih kesempatan kok. Total {len(r['changes'])} judul disesuaikan hari ini.",
+                    f"Pak Effand, lingkaran analitik udah jalan nih 😎 Judul '{best['title'][:60]}' lagi naik daun — bobotnya saya naikin ke {best['new']} biar makin sering kepilih 💪 Yang sepi saya turunin dikit, tapi tetap saya kasih kesempatan kok. Total {len(r['changes'])} judul disesuaikan hari ini.",
                     reply_markup={"inline_keyboard": [
                         [{"text": "🎵 Buat Playlist", "callback_data": f"stok:buat:{yt_id}"},
                          {"text": "📊 Statistik", "callback_data": "rep:statistik"}]]})
@@ -6511,7 +6511,7 @@ def recover_failed_tasks():
                                    f"{len(queued)} task dipulihkan, {len(failed)} task dikembalikan ke riwayat.",
                         "recovered": len(queued), "titles": recovered}), 429
     if recovered:
-        send_tg_message("🔄 *Bos, saya pulihkan task yang sempat macet nih* 💪\n" + "\n".join("• " + _tg_escape(r) for r in recovered[:10]) +
+        send_tg_message("🔄 *Pak Effand, saya pulihkan task yang sempat macet nih* 💪\n" + "\n".join("• " + _tg_escape(r) for r in recovered[:10]) +
                         ("\n…dst" if len(recovered) > 10 else "") + "\nUdah masuk antrean render lagi, saya lanjutkan.")
     return jsonify({"status": "success", "recovered": len(recovered),
                     "titles": recovered})
@@ -6768,7 +6768,7 @@ def _failure_combined_message(title, ch_name, reason, streak, just_paused):
     → perbaiki → Lanjutkan → baru Coba Lagi."""
     cause, fix = _explain_failure_reason(reason, title)
     lines = [
-        "❌ *Video gagal, Bos — dan channel saya jeda dulu* 😅",
+        "❌ *Video gagal, Pak Effand — dan channel saya jeda dulu* 😅",
         "",
         f"*Video:* {_tg_escape(str(title)[:70])}",
         f"*Channel:* {_tg_escape(ch_name)}",
@@ -6972,7 +6972,7 @@ def _ensure_disk_for_render(task):
             f"{_shorts_muse_dur_label(target_hours)}. "
             f"Saya udah bersih-bersih {cleaned_n} file ({cleaned_b / 1024 ** 2:.0f} MB) "
             f"tapi masih kurang {(need - free) / 1024 ** 3:.1f} GB 😅 "
-            f"Hapus file lama / tambah disk dulu ya Bos, terus pencet Retry 💪")
+            f"Hapus file lama / tambah disk dulu ya Pak Effand, terus pencet Retry 💪")
 
 
 def _shorts_muse_dur_label(target_hours):
@@ -7203,7 +7203,7 @@ def _operator_approval_endpoint(decision):
     if not ok:
         return jsonify({"status": "error", "message": msg}), 400
     word = "disetujui" if decision == 'approved' else "ditolak"
-    send_tg_message(f"{'✅' if decision == 'approved' else '❌'} *Sip Bos, task {word}* 😎\n`{_tg_escape(title)}`\n_{_tg_escape(msg)}_")
+    send_tg_message(f"{'✅' if decision == 'approved' else '❌'} *Sip Pak Effand, task {word}* 😎\n`{_tg_escape(title)}`\n_{_tg_escape(msg)}_")
     return jsonify({"status": "success", "message": msg, "title": title})
 
 @app.route('/api/operator/approve_task', methods=['POST'])
@@ -7242,7 +7242,7 @@ def operator_approve_batch():
         count, titles = _apply_approve_batch(batch_id)
         if count == 0:
             return jsonify({"status": "error", "message": "Tidak ada task pending di batch ini (mungkin sudah diputuskan)."}), 400
-        send_tg_message(f"✅ *Sip Bos, {count} task udah saya setujui semua!* 💪\nUdah masuk antrean render, saya kerjakan satu-satu.\n_" + "; ".join(_tg_escape(t) for t in titles[:5]) + ("…" if len(titles) > 5 else "") + "_")
+        send_tg_message(f"✅ *Sip Pak Effand, {count} task udah saya setujui semua!* 💪\nUdah masuk antrean render, saya kerjakan satu-satu.\n_" + "; ".join(_tg_escape(t) for t in titles[:5]) + ("…" if len(titles) > 5 else "") + "_")
         return jsonify({"status": "success", "message": f"{count} task disetujui dan masuk antrean.", "count": count})
     except _QueueFullError as e:
         return jsonify({"status": "error", "message": str(e)}), 429
@@ -7352,7 +7352,7 @@ def operator_retry_task():
         title = target.get('title', '?')[:60]
         # 🔥 v1.2.17: app.py TIDAK lagi mengirim pesan retry — operator yang
         # mengirim SATU pesan konfirmasi dari info JSON ini. Dulu ada dua
-        # pesan ("Siap Bos, retry jalan!" dari sini + "Berhasil Bos, retry
+        # pesan ("Siap Pak Effand, retry jalan!" dari sini + "Berhasil Pak Effand, retry
         # jalan!" dari operator).
         return jsonify({"status": "success",
                         "message": (f"Task kembali ke antrean render dengan judul baru: {renamed_title[:60]}."
@@ -8101,11 +8101,11 @@ def set_channel_paused():
             print(f"Gagal simpan paused {yt_id}: {e}", flush=True)
             return jsonify({"status": "error", "message": "Gagal menyimpan perubahan."}), 500
     if paused:
-        send_tg_message(f"⏸️ *Siap Bos, channel {_tg_escape(name)} saya jeda dulu.* 😌\nTask-nya saya tahan semua, nggak ada yang jalan sampai Bos lanjutkan lagi.")
+        send_tg_message(f"⏸️ *Siap Pak Effand, channel {_tg_escape(name)} saya jeda dulu.* 😌\nTask-nya saya tahan semua, nggak ada yang jalan sampai Pak Effand lanjutkan lagi.")
         return jsonify({"status": "success", "paused": True, "resumed_count": 0,
                         "message": f"Channel {name} dijeda. Task terjadwal ditahan."})
     resumed = _resume_channel_tasks(yt_id)
-    send_tg_message(f"▶️ *Siap Bos, channel {_tg_escape(name)} jalan lagi!* 💪\n{resumed} task udah masuk antrean render.")
+    send_tg_message(f"▶️ *Siap Pak Effand, channel {_tg_escape(name)} jalan lagi!* 💪\n{resumed} task udah masuk antrean render.")
     return jsonify({"status": "success", "paused": False, "resumed_count": resumed,
                     "message": f"Channel {name} dilanjutkan. {resumed} task masuk antrean."})
 
@@ -8135,10 +8135,10 @@ def set_channel_autopilot():
             print(f"Gagal simpan autopilot {yt_id}: {e}", flush=True)
             return jsonify({"status": "error", "message": "Gagal menyimpan perubahan."}), 500
     if mode == 'auto':
-        send_tg_message(f"🤖 *Siap Bos, channel {_tg_escape(name)} saya set Full-Auto!* 😎\nBatch baru langsung jalan tanpa approval — saya yang urus sampai tayang 💪")
+        send_tg_message(f"🤖 *Siap Pak Effand, channel {_tg_escape(name)} saya set Full-Auto!* 😎\nBatch baru langsung jalan tanpa approval — saya yang urus sampai tayang 💪")
         return jsonify({"status": "success", "autopilot": "auto",
                         "message": f"Channel {name} mode Full-Auto. Batch baru langsung masuk antrean."})
-    send_tg_message(f"👀 *Siap Bos, channel {_tg_escape(name)} balik ke mode Approval.* 😌\nBatch baru tetap saya kirim preview dulu buat Bos cek.")
+    send_tg_message(f"👀 *Siap Pak Effand, channel {_tg_escape(name)} balik ke mode Approval.* 😌\nBatch baru tetap saya kirim preview dulu buat Pak Effand cek.")
     return jsonify({"status": "success", "autopilot": "approval",
                     "message": f"Channel {name} mode Approval. Batch baru menunggu persetujuan."})
 
@@ -9183,9 +9183,9 @@ def _backup_create_thread():
     """Backup manual di latar (panel / Telegram) + notifikasi hasilnya."""
     meta, err = _do_backup_now('manual')
     if meta and not meta.get('skipped'):
-        send_tg_message(f"💾 *Backup selesai, Bos* 😎\n\n`{meta['filename']}` ({meta['size_human']}, {meta['files_count']} file, {'terenkripsi ✅' if meta['encrypted'] else '⚠️ TANPA enkripsi'})\nIsi: DB + config + galeri{' (video di-skip: galeri >2 GB)' if meta.get('media_skipped') else ''}.")
+        send_tg_message(f"💾 *Backup selesai, Pak Effand* 😎\n\n`{meta['filename']}` ({meta['size_human']}, {meta['files_count']} file, {'terenkripsi ✅' if meta['encrypted'] else '⚠️ TANPA enkripsi'})\nIsi: DB + config + galeri{' (video di-skip: galeri >2 GB)' if meta.get('media_skipped') else ''}.")
     elif err:
-        send_tg_message(f"❌ *Backup GAGAL, Bos* 😅\n\nAlasan: {err}")
+        send_tg_message(f"❌ *Backup GAGAL, Pak Effand* 😅\n\nAlasan: {err}")
 
 
 def _backup_daily_loop():
@@ -9208,9 +9208,9 @@ def _backup_daily_loop():
                 continue
             meta, err = _do_backup_now('daily')
             if meta and not meta.get('skipped'):
-                send_tg_message(f"💾 *Backup harian selesai, Bos* 😎\n\n`{meta['filename']}` ({meta['size_human']}, {meta['files_count']} file, {'terenkripsi ✅' if meta['encrypted'] else '⚠️ TANPA enkripsi'})\nIsi: DB + config + galeri{' (video di-skip: galeri >2 GB)' if meta.get('media_skipped') else ''}.")
+                send_tg_message(f"💾 *Backup harian selesai, Pak Effand* 😎\n\n`{meta['filename']}` ({meta['size_human']}, {meta['files_count']} file, {'terenkripsi ✅' if meta['encrypted'] else '⚠️ TANPA enkripsi'})\nIsi: DB + config + galeri{' (video di-skip: galeri >2 GB)' if meta.get('media_skipped') else ''}.")
             elif err:
-                send_tg_message(f"❌ *Backup harian GAGAL, Bos* 😅\n\nAlasan: {err}\n\nData panel belum tercadangkan hari ini — coba /backup dari Telegram.")
+                send_tg_message(f"❌ *Backup harian GAGAL, Pak Effand* 😅\n\nAlasan: {err}\n\nData panel belum tercadangkan hari ini — coba /backup dari Telegram.")
         except Exception as e:
             print(f"[backup] loop harian gagal: {e}", flush=True)
 
@@ -9290,7 +9290,7 @@ def backup_restore_api():
         return jsonify({"status": "error",
                         "message": f"Restore file berhasil ({len(restored)} file), tapi restart panel GAGAL — jalankan restart manual (bash ziqva.sh restart)."}), 500
     try:
-        send_tg_message(f"♻️ *Restore backup selesai, Bos* 😎\n\n`{name}` — {len(restored)} file dipulihkan. Panel restart dan kembali online sebentar lagi. Login lagi dengan PIN yang ada di backup.")
+        send_tg_message(f"♻️ *Restore backup selesai, Pak Effand* 😎\n\n`{name}` — {len(restored)} file dipulihkan. Panel restart dan kembali online sebentar lagi. Login lagi dengan PIN yang ada di backup.")
     except Exception:
         pass
     return jsonify({"status": "success",
@@ -9506,7 +9506,7 @@ def upload_secret():
 # akan membalas dengan cookie LAMA (tanpa device_code) dan MENIMPA cookie
 # baru di browser. Akibatnya poll ke-1 berhasil, poll ke-2 sudah
 # "Sesi device login tidak ditemukan" (terjadi 22:27:54 WIB 2026-11-21,
-# 6 detik setelah kode dikeluarkan, sebelum Bos sempat memasukkan kode;
+# 6 detik setelah kode dikeluarkan, sebelum Pak Effand sempat memasukkan kode;
 # kejadian sama 02:20 + 10:22 UTC hari itu). Perbaikan: device_code juga
 # dicatat di server (file device_sessions.json, chmod 600, atomic write
 # seperti save_channels) + pending_add ikut disimpan — poll/confirm
@@ -10192,7 +10192,7 @@ def _send_approval_previews(batch_id, channel_name, previews):
         desc_txt = _tg_escape(desc_joined[:300]) + ("…" if len(desc_joined) > 300 else "") if desc_joined else "_tidak ada deskripsi_"
         tags_txt = _tg_escape((pv.get('tags') or '').strip() or '-')
         text = (
-            f"📋 *Bos, batch baru nih, dicek dulu ya* 👀 ({idx + 1}/{total})\n"
+            f"📋 *Pak Effand, batch baru nih, dicek dulu ya* 👀 ({idx + 1}/{total})\n"
             f"📺 Channel: *{_tg_escape(channel_name)}*\n"
             f"🎬 Judul: *{_tg_escape(pv.get('title', '?'))}*\n"
             f"🗓️ Jadwal publish: `{_tg_escape(pv.get('publish_date', '-'))}`\n"
@@ -11153,12 +11153,12 @@ def _playlist_try_creds(channel, fn):
 
 # ============================================================
 # 🔥 v1.3.86: FILTER VIDEO OFFICIAL dari riset playlist (strategi
-# Bos, 21 Nov 2026 — video rilisan official dari penyanyi/artis
+# Pak Effand, 21 Nov 2026 — video rilisan official dari penyanyi/artis
 # TIDAK masuk strategi, jangan jadi referensi; yang dicari cover,
 # DJ remix, dan kompilasi). Diterapkan di _playlist_search_one_tier
 # (SEBELUM tier dinyatakan berhasil) — bila satu tier hanya berisi
 # video official, tier itu dianggap kosong dan riset lanjut ke tier
-# berikutnya yang lebih longgar. Link kiriman Bos (jiplak) TIDAK
+# berikutnya yang lebih longgar. Link kiriman Pak Effand (jiplak) TIDAK
 # lewat sini, jadi tidak ikut tersaring. Logika sama dengan filter
 # riset trending (bodi cron v2): pola judul + artis-vs-channel.
 # Batasan yang sama: hanya segmen artis SESUDAH pemisah yang dicek
@@ -11231,7 +11231,7 @@ def _playlist_search_one_tier(channel, search_q, days, max_results, min_views,
     pemanggil lanjut ke tier berikutnya yang lebih longgar."""
     def _do(youtube):
         # v1.3.13: filter KERAS di API seperti filter YouTube web (tangkapan
-        # layar Bos 08:13 WIB: JENIS Video + DURASI "Lebih dari 20 menit" +
+        # layar Pak Effand 08:13 WIB: JENIS Video + DURASI "Lebih dari 20 menit" +
         # TANGGAL UPLOAD minggu/bulan ini) — videoDuration 'long' = >20 mnt.
         # Tanpa ini API mengembalikan klip 5 menit yang lalu menang views.
         kwargs = {'part': 'snippet', 'q': search_q, 'type': 'video',
@@ -11286,7 +11286,7 @@ def _playlist_search_one_tier(channel, search_q, days, max_results, min_views,
             'tags': list(sn.get('tags') or []),
             'tier': tier_no, 'tier_label': tier_label,
         })
-    # 🔥 v1.3.86: buang rilisan official artis (strategi Bos) — tier yang
+    # 🔥 v1.3.86: buang rilisan official artis (strategi Pak Effand) — tier yang
     # hanya berisi video official dianggap kosong, riset lanjut ke tier
     # berikutnya yang lebih longgar.
     cands = [c for c in cands
@@ -11522,7 +11522,7 @@ def _seo_duration_label(sec, lang):
 
 
 # 🔥 v1.3.73: ANALISA SEO — judul playlist TIDAK lagi menyalin judul
-# referensi (komplain Bos 21 Nov 2026: "kemaren kan sudah dibilangin...
+# referensi (komplain Pak Effand 21 Nov 2026: "kemaren kan sudah dibilangin...
 # kalau harus dianalisa, ditentukan SEO-nya... bukan cuma copy gak ada
 # improve" — janji 20 Nov 2026 belum ditepati v1.3.32 yang cuma menambal
 # tempelan sudut). Referensi diurai jadi komponen (genre, asal, mood,
@@ -14903,7 +14903,7 @@ def _playlist_do_create(job_id, video_id, publish_date='', privacy='public',
 
 def _playlist_from_youtube_url(channel, url):
     """Mode 'jiplak playlist' (v1.3.5): ambil daftar lagu dari link YouTube
-    yang dikirim Bos — TANPA riset dan TANPA filter views/tanggal/durasi.
+    yang dikirim Pak Effand — TANPA riset dan TANPA filter views/tanggal/durasi.
     Link yang dilampirkan = sumbernya. Bila link berisi playlist (list=),
     ambil video-video playlist itu berurutan (maks 50, 2 halaman x 25);
     bila hanya video, ambil video itu saja. Urutan playlist dipertahankan
@@ -15002,7 +15002,7 @@ def _playlist_from_youtube_url(channel, url):
             'thumbnail_url': thumb_url,
             'description': sn.get('description', '') or '',
             'tags': list(sn.get('tags') or []),
-            'tier': 'link', 'tier_label': 'link kiriman Bos',
+            'tier': 'link', 'tier_label': 'link kiriman Pak Effand',
             'playlist_position': _pos,
         })
     if not cands:
@@ -15036,16 +15036,16 @@ def _playlist_do_from_url(yt_id, url):
         'job_id': job_id, 'yt_id': yt_id,
         'channel_name': channel.get('name', ''), 'theme': title,
         'status': 'researched', 'candidates': cands or [],
-        'research_tier': 'link', 'tier_label': 'link kiriman Bos',
+        'research_tier': 'link', 'tier_label': 'link kiriman Pak Effand',
         'source_url': u, 'source_kind': (source_info or {}).get('kind'),
         'source_title': title,
         'created_at': _wib_now().strftime('%Y-%m-%d %H:%M'),
-        'progress': (f"Dari link Bos: {title} — {len(cands or [])} lagu, tanpa filter."),
+        'progress': (f"Dari link Pak Effand: {title} — {len(cands or [])} lagu, tanpa filter."),
     })
     return True, {"status": "success", "job_id": job_id, "candidates": cands or [],
                   "source_kind": (source_info or {}).get('kind'),
                   "source_title": title, "count": len(cands or []),
-                  "research_tier": "link", "tier_label": "link kiriman Bos"}, 200
+                  "research_tier": "link", "tier_label": "link kiriman Pak Effand"}, 200
 
 # --- Endpoint panel: Musik Playlist (butuh login; CSRF via check_security) ---
 @app.route('/api/playlist_research', methods=['POST'])
@@ -16102,10 +16102,10 @@ def operator_set_autopilot():
             print(f"Gagal simpan autopilot {yt_id} (operator): {e}", flush=True)
             return jsonify({"status": "error", "message": "Gagal menyimpan perubahan."}), 500
     if mode == 'auto':
-        send_tg_message(f"🤖 *Siap Bos, channel {_tg_escape(name)} saya set Full-Auto!* 😎\nBatch baru langsung jalan tanpa approval — saya yang urus sampai tayang 💪")
+        send_tg_message(f"🤖 *Siap Pak Effand, channel {_tg_escape(name)} saya set Full-Auto!* 😎\nBatch baru langsung jalan tanpa approval — saya yang urus sampai tayang 💪")
         return jsonify({"status": "success", "autopilot": "auto", "channel_name": name,
                         "message": f"Channel {name} mode Full-Auto. Batch baru langsung masuk antrean."})
-    send_tg_message(f"👀 *Siap Bos, channel {_tg_escape(name)} balik ke mode Approval.* 😌\nBatch baru tetap saya kirim preview dulu buat Bos cek.")
+    send_tg_message(f"👀 *Siap Pak Effand, channel {_tg_escape(name)} balik ke mode Approval.* 😌\nBatch baru tetap saya kirim preview dulu buat Pak Effand cek.")
     return jsonify({"status": "success", "autopilot": "approval", "channel_name": name,
                     "message": f"Channel {name} mode Approval. Batch baru menunggu persetujuan."})
 
@@ -16275,12 +16275,12 @@ def operator_set_paused():
             print(f"Gagal simpan paused {yt_id} (operator): {e}", flush=True)
             return jsonify({"status": "error", "message": "Gagal menyimpan perubahan."}), 500
     if paused:
-        send_tg_message(f"⏸️ *Siap Bos, channel {_tg_escape(name)} saya jeda dulu.* 😌\nTask-nya saya tahan semua, nggak ada yang jalan sampai Bos lanjutkan lagi.")
+        send_tg_message(f"⏸️ *Siap Pak Effand, channel {_tg_escape(name)} saya jeda dulu.* 😌\nTask-nya saya tahan semua, nggak ada yang jalan sampai Pak Effand lanjutkan lagi.")
         return jsonify({"status": "success", "paused": True, "resumed_count": 0,
                         "channel_name": name,
                         "message": f"Channel {name} dijeda. Task terjadwal ditahan."})
     resumed = _resume_channel_tasks(yt_id)
-    send_tg_message(f"▶️ *Siap Bos, channel {_tg_escape(name)} jalan lagi!* 💪\n{resumed} task udah masuk antrean render.")
+    send_tg_message(f"▶️ *Siap Pak Effand, channel {_tg_escape(name)} jalan lagi!* 💪\n{resumed} task udah masuk antrean render.")
     return jsonify({"status": "success", "paused": False, "resumed_count": resumed,
                     "channel_name": name,
                     "message": f"Channel {name} dilanjutkan. {resumed} task masuk antrean."})
@@ -16358,27 +16358,46 @@ def telegram_reminder_worker():
         if not token or not chat_id: 
             continue
             
-        now = datetime.now()
+        now = _wib_now()
         changed = False
-        
+
+        # v1.4.14: channel yang jadwalnya dijamin baris Jadwal Rutin
+        # aktif (schedules_db.json, end_date >= hari ini) TIDAK
+        # diingatkan — eksekutor membuat videonya tiap pagi, jadi
+        # stok jadwal tidak pernah habis sebelum end_date barisnya.
+        try:
+            _today_wib = now.strftime('%Y-%m-%d')
+            _routine_yt = {r.get('yt_id') for r in _schedules_load()
+                           if r.get('enabled')
+                           and (not r.get('end_date')
+                                or r.get('end_date') >= _today_wib)}
+        except Exception:
+            _routine_yt = set()
+
         with db_lock:
             for c in database_channel:
                 last_date_str = c.get('last_scheduled_date')
                 # Lewati jika belum ada jadwal atau pengingat sudah dikirim
                 if not last_date_str or c.get('reminder_sent', False):
                     continue
+                # Lewati channel yang ditanggung Jadwal Rutin.
+                if c.get('yt_id') in _routine_yt:
+                    continue
                     
                 try:
                     last_date = datetime.strptime(last_date_str, '%Y-%m-%d %H:%M')
                     time_diff = last_date - now
                     
-                    # Jika sisa waktu <= 24 Jam (dan belum kelewat jauh)
-                    if timedelta(hours=0) < time_diff <= timedelta(hours=24):
-                        msg = f"Notifikasi Ziqva Muse Bot\n\nChannel: *{_tg_escape(c['name'])}*\nStok jadwal video hampir habis!\nJadwal terakhir: {_tg_escape(last_date_str)}\n\nWaktunya buat video baru, Bos K!"
+                    # Jika sisa waktu <= 24 Jam ATAU jadwal terakhir sudah
+                    # lewat (stok benar-benar habis — tidak ada baris
+                    # Jadwal Rutin yang menanggung channel ini, karena
+                    # channel ber-baris rutin sudah dilewati di atas).
+                    if time_diff <= timedelta(hours=24):
+                        msg = f"Notifikasi Ziqva Muse Bot\n\nChannel: *{_tg_escape(c['name'])}*\nStok jadwal video hampir habis!\nJadwal terakhir: {_tg_escape(last_date_str)}\n\nWaktunya buat video baru, Pak Effand!"
                         try:
                             # Kirim pesan ke Telegram
                             # 🔥 v1.3.75: notif WAJIB bawa tombol saran
-                            # (prinsip 20 Nov 2026) — Bos tinggal tap.
+                            # (prinsip 20 Nov 2026) — Pak Effand tinggal tap.
                             requests.post(
                                 f"https://api.telegram.org/bot{token}/sendMessage",
                                 json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown",
@@ -16429,7 +16448,7 @@ def scheduled_task_activator():
                         pass
         if activated:
             save_tasks_db()
-            msg = "⏳ *Bos, jadwalnya tiba nih!* 😎\n" + "\n".join("• " + _tg_escape(a) for a in activated)
+            msg = "⏳ *Pak Effand, jadwalnya tiba nih!* 😎\n" + "\n".join("• " + _tg_escape(a) for a in activated)
             send_tg_message(msg)
 
 threading.Thread(target=scheduled_task_activator, daemon=True).start()
@@ -16639,7 +16658,7 @@ def _auto_shorts_tick(now_wib=None):
             if res.get('preview'):
                 threading.Thread(target=_send_approval_previews,
                                  args=(res['batch_id'], res['channel_name'], [res['preview']]), daemon=True).start()
-            status_txt = 'menunggu approval Bos di Telegram 👀' if not res.get('auto_mode') else 'sudah masuk antrean render ✅'
+            status_txt = 'menunggu approval Pak Effand di Telegram 👀' if not res.get('auto_mode') else 'sudah masuk antrean render ✅'
             if res.get('bg_auto'):
                 bg_note = ("\n🖼️ Background: gradien otomatis (galeri masih kosong — "
                            "upload gambar sendiri di panel bila mau yang lebih bagus)")
@@ -16857,7 +16876,7 @@ try:
     _prune_old_history()
 except Exception:
     pass
-send_tg_message("🚀 *Bos, saya balik lagi!* 😎\n"
+send_tg_message("🚀 *Pak Effand, saya balik lagi!* 😎\n"
                 f"Antrean: {len(active_tasks)} task | Riwayat: {len(history_tasks)} task — saya lanjutkan semua 💪")
 
 if __name__ == '__main__':

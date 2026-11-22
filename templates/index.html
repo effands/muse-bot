@@ -2340,7 +2340,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
           <span id="vidiq-badge" class="pill p-muted">Mengecek...</span>
         </div>
         <div class="card-body">
-          <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:12px">Pelengkap riset trending otomatis (tiap 2 jam): vidIQ memberi data <b style="color:var(--text)">VPH (views per jam)</b> — mana yang sedang naik SEKARANG, bukan cuma views besar dari dulu. <b style="color:var(--text)">Sementara / trial</b> — paket Free, maks 1 panggilan/hari (5 kredit), jadi 145 kredit cukup ±29 hari. Bila dimatikan atau kredit habis, riset lanjut normal pakai jalur gratis YouTube (pencarian + yt-dlp) — tidak ada yang rusak. Filter Bos (tanpa video official, maks 30 hari) tetap berlaku di atas data vidIQ.</div>
+          <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:12px">Pelengkap riset trending otomatis (tiap 2 jam): vidIQ memberi data <b style="color:var(--text)">VPH (views per jam)</b> — mana yang sedang naik SEKARANG, bukan cuma views besar dari dulu. <b style="color:var(--text)">Sementara / trial</b> — paket Free, maks 1 panggilan/hari (5 kredit), jadi 145 kredit cukup ±29 hari. Bila dimatikan atau kredit habis, riset lanjut normal pakai jalur gratis YouTube (pencarian + yt-dlp) — tidak ada yang rusak. Filter Pak Effand (tanpa video official, maks 30 hari) tetap berlaku di atas data vidIQ.</div>
           <div id="vidiq-status-line" style="font-size:12px;color:var(--muted);margin-bottom:10px">Memuat status vidIQ…</div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
             <label style="display:flex;gap:6px;align-items:center;font-size:12px;cursor:pointer"><input type="checkbox" id="vidiq-enabled" onchange="toggleVidiq()"> Pakai vidIQ di Riset Trending</label>
@@ -7691,7 +7691,7 @@ let _addChTimer = null;
 let _addChPolling = false;
 let _addChCountdown = null;
 
-// 🔥 v1.3.90: TIMER HITUNG MUNDUR kode device (15 menit) — Bos minta
+// 🔥 v1.3.90: TIMER HITUNG MUNDUR kode device (15 menit) — Pak Effand minta
 // timer terlihat supaya tahu sisa waktu memasukkan kode. Dihentikan di
 // semua jalan keluar (sukses/konfirmasi/error/tutup modal/kedaluwarsa).
 function _stopAddChCountdown() {
@@ -7764,7 +7764,7 @@ function copyAddChCode() {
 // TIDAK tersedia di browser (butuh secure context), jadi dulu kode ini
 // langsung menyerah ("Browser ini tidak mendukung salin otomatis").
 // Sekarang pakai fallback textarea + execCommand('copy') seperti copyLogs()
-// — jalan di HTTP. Bila itu pun gagal, URL ditampilkan utuh supaya Bos
+// — jalan di HTTP. Bila itu pun gagal, URL ditampilkan utuh supaya Pak Effand
 // bisa seleksi & salin manual.
 function copyDeviceUrl() {
   const el = document.getElementById('add-ch-url');

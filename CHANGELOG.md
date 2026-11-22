@@ -1,3 +1,7 @@
+## 1.4.5
+- Tiru Style di tombol 🎵 saran trending (permintaan user 22 Nov 2026 — lagu populer rawan strike karena milik perorangan, jadi tiru style-nya saja): tombol 🎵 sekarang menanyakan dulu "🎨 Tiru Style" atau "📋 Jiplak (mp3 referensi)". Tiru Style = generate 3 lagu baru se-style referensi via Zumo (upload, ~20 mnt, 36 kredit) + visual baru dari tema, bukan mp3 referensi. Style prompt + 3 judul lagu diturunkan dari saran itu sendiri (kata kunci tema + komponen judul hasil riset, bukan karangan) via helper baru `_tiru_style_brief`; instrumental otomatis untuk genre instrumental (lofi/jazz/piano/sax), vokal untuk lagu anak/pop/dangdut. Jiplak = alur lama (playlist_from_url → wizard), dipindah utuh ke `_research_playlist_jiplak`. Order Malaysia tidak berubah.
+- Tes lokal 30/30 lolos (brief lofi + anak-anak, payload Zumo, routing tombol rs:pl/rs:tiru/rs:jiplak).
+
 ## 1.4.4
 - Bank Lagu kini menampilkan SIZE + MODEL per lagu (permintaan user 22 Nov 2026): kolom SIZE (ukuran file, "3,2 MB") + kolom MODEL (model generate Zumo, mis. "V5.5") — backend GET /api/zumo_bank kini mengembalikan `size_bytes` per trek (os.path.getsize, file hilang → 0) + `total_size` per channel + `model` dari indeks bank. Footer baru di bawah tabel: "Total: 30 lagu • 2:00:50 • 360 kredit • 245,3 MB (0,24 GB)".
 - Kolom VARIAN / DURASI / SIZE / MODEL / DIBUAT / KREDIT / PUTAR / AKSI di Bank Lagu kini rata tengah (permintaan user 22 Nov 2026 — isi kolom pendek lebih enak dibaca di tengah); JUDUL tetap rata kiri.

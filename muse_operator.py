@@ -3168,6 +3168,164 @@ def _research_render_batch(items, heading, genre):
     return "\n".join(lines), kb
 
 
+# 🔥 v1.4.5: Tiru Style — tiru genre/style saran trending (musik digenerate
+# baru via Zumo, bukan mp3 referensi) supaya aman dari strike. Pilihan user
+# 22 Nov 2026: ditanyakan dulu tiap kali (Tiru Style / Jiplak).
+# Judul lagu disusun dari kata-kata yang ADA di saran itu sendiri +
+# komponen judul hasil riset (bukan karangan bebas) — sesuai aturan
+# default riset-judul.
+_TIRU_MOOD = ['Velvet', 'Amber', 'Golden', 'Soft', 'Quiet', 'Slow',
+              'Warm', 'Blue', 'Cozy', 'Mellow', 'Gentle', 'Easy']
+_TIRU_OBJ = ['Night', 'Evening', 'Midnight', 'Rain', 'Window', 'Coffee',
+             'City', 'Lights', 'Moon', 'Moonlight', 'Hour', 'Glow',
+             'Breeze', 'Avenue', 'Room', 'Drive', 'Serenade']
+_TIRU_STOP = set('the a an and or for of to in on with by at from as is are '
+                'music video song songs playlist mix compilation best top '
+                'official live hd 4k new latest viral trending'.split())
+_TIRU_GENRE_WORDS = set('lofi jazz piano saxophone sax beats instrumental '
+                        'relaxing relaxation chill ambient'.split())
+
+
+def _tiru_style_brief(it, genre=''):
+    """(theme, style, instrumental, titles) untuk Tiru Style dari satu
+    saran trending. Style prompt Kie = genre + kata kunci tema saran.
+    Judul lagu = kata tema saran + komponen judul hasil riset."""
+    title = (it.get('title') or '').strip()
+    blob = ' '.join(x for x in [title, it.get('subtitle') or '',
+                                it.get('reason') or '', genre or ''] if x)
+    words = re.findall(r"[A-Za-zÀ-ÿ]+", blob)
+    seen = set()
+    keys = []
+    for w in words:
+        lw = w.lower()
+        if lw in _TIRU_STOP or len(lw) < 3:
+            continue
+        if lw not in seen:
+            seen.add(lw)
+            keys.append(w if w[0].isupper() else w.capitalize())
+    style_words = keys[:6]
+    style = ', '.join(style_words)
+    if 'instrumental' not in style.lower():
+        style = (style + ', instrumental') if style else 'instrumental'
+    low = blob.lower()
+    instrumental = not any(k in low for k in
+                           ('anak', 'kids', 'vocal', 'nyanyi', 'lirik',
+                            'dangdut', 'pop indonesia', 'sholawat', 'dzikir'))
+    theme_keys = [k for k in keys if k.lower() not in _TIRU_GENRE_WORDS]
+    titles = []
+    used = set()
+    for i in range(3):
+        tk = theme_keys[i % len(theme_keys)] if theme_keys else _TIRU_MOOD[i]
+        obj = _TIRU_OBJ[(i * 5 + 2) % len(_TIRU_OBJ)]
+        cand = f"{tk} {obj}"
+        if cand in used:
+            cand = f"{_TIRU_MOOD[(i + 2) % len(_TIRU_MOOD)]} {obj}"
+        used.add(cand)
+        titles.append({'title': cand[:80], 'lyrics': ''})
+    theme = re.sub(r'\s+', ' ', re.sub(r'[^\w\s\-]', '', title)).strip()[:100] or 'Tiru Style'
+    return theme, style, instrumental, titles
+
+
+def _research_playlist_jiplak(token, chat_id, cq_id, it):
+    """Alur lama tombol 🎵 saran trending: jiplak video referensi
+    (playlist_from_url -> draft wizard). Dipindah utuh dari rs:pl."""
+    yt_id = it.get('yt_id') or ''
+    title = it.get('title') or ''
+    vid, _plid = _extract_youtube_ids_from_url(it.get('url') or '')
+    if yt_id and vid:
+        answer_callback(token, cq_id, "Siap Bos, saya siapkan playlist-nya 🎵")
+        ok, msg, data = _operator_post(
+            '/api/operator/playlist_from_url',
+            {'yt_id': yt_id, 'url': it.get('url')})
+        cands = (data or {}).get('candidates') or [] if ok else []
+        cand = next((c for c in cands if c.get('video_id') == vid), None) or (cands[0] if cands else None)
+        job_id = (data or {}).get('job_id', '') if ok else ''
+        if cand and job_id:
+            dur = cand.get('duration_sec') or 0
+            dur_txt = f" ({round(dur / 60)} mnt)" if dur else ""
+            draft = {"kind": "playlist", "step": "theme",
+                     "data": {"yt_id": yt_id,
+                              "channel_name": it.get('channel') or '',
+                              "theme": title, "video_id": vid,
+                              "ref_title": cand.get('title') or title,
+                              "job_id": job_id,
+                              "candidates": cands,
+                              "duration_min_sec": None,
+                              "duration_max_sec": None,
+                              "duration_note": f"mengikuti video referensi{dur_txt}"}}
+            draft['step'] = _playlist_next_step(draft['data'])
+            _save_make_draft(chat_id, draft)
+            send_message(token, chat_id,
+                         f"🎵 *Siap Bos, kita buat Playlist buat channel {_tg_escape(draft['data']['channel_name'])} ya!* 😎\n"
+                         "Jawab tiap langkah satu per satu — ketik /batal kapan saja untuk berhenti.")
+            _make_ask_step(token, chat_id, draft)
+            return
+        _pending = {'intent': 'buat_playlist',
+                    'slots': {'channels': [yt_id] if yt_id else [],
+                              'playlist_theme': title},
+                    'awaiting': None, 'confirmed': False,
+                    'created_at': time.time()}
+        _save_nlu_pending(chat_id, _pending)
+        send_message(token, chat_id,
+                     f"⚠️ *Link video sarannya gagal dibaca Bos* 😅 ({_tg_escape(msg or 'coba lagi')}) — saya lanjutkan dengan alur biasa ya.")
+        _nlu_advance(token, chat_id, _pending)
+        return
+    answer_callback(token, cq_id, "Siap Bos, saya siapkan playlist-nya 🎵")
+    _pending = {'intent': 'buat_playlist',
+                'slots': {'channels': [yt_id] if yt_id else [],
+                          'playlist_theme': title},
+                'awaiting': None, 'confirmed': False,
+                'created_at': time.time()}
+    _save_nlu_pending(chat_id, _pending)
+    _nlu_advance(token, chat_id, _pending)
+
+
+def _research_playlist_tiru(token, chat_id, cq_id, it, genre=''):
+    """Tiru Style: generate 3 lagu baru se-style referensi via Zumo
+    (upload, ~20 mnt, 36 kredit) + visual baru dari tema. Bukan mp3
+    referensi — aman dari strike."""
+    yt_id = it.get('yt_id') or ''
+    title = it.get('title') or ''
+    theme, style, instrumental, titles = _tiru_style_brief(it, genre)
+    answer_callback(token, cq_id, "Siap Bos, saya tiru style-nya 🎨")
+    d = {
+        'zumo_mode': 'upload',
+        'yt_id': yt_id,
+        'theme': theme,
+        'mode': 'instrumental' if instrumental else 'vocal',
+        'song_count': 3,
+        'style': style,
+        'titles': titles,
+        'channel_name': it.get('channel') or '',
+    }
+    ok, msg, resp = _operator_post('/api/operator/zumo_create',
+                                   _zumo_create_payload(d))
+    if not ok:
+        send_message(token, chat_id,
+                     f"⚠️ *Yah Bos, Tiru Style gagal dibuat* 😅\n{_tg_escape(msg or 'coba lagi')}\n"
+                     "Coba lagi atau pakai Jiplak ya Bos.")
+        return
+    job_id = (resp or {}).get('job_id', '')
+    lines = [
+        "✅ *Sip Bos, Tiru Style-nya udah jalan!* 🎨",
+        f"*Referensi:* {_tg_escape(title[:80])}",
+        f"*Channel:* {_tg_escape(it.get('channel') or '')}",
+        f"*Style yang ditiru:* {_tg_escape(style)}",
+        "*Lagu baru:* 3 judul (jadi 6 varian, dipakai 4–5) • ~20 menit",
+        "*Biaya:* 36 kredit (3 generate x 12 kredit)",
+        f"*Judul lagu:* {_tg_escape(', '.join(t['title'] for t in titles))}",
+        "",
+        "Musik digenerate baru se-style referensi (bukan mp3-nya), visual "
+        "juga dibuat baru. Setelah render selesai, preview-nya masuk ke "
+        "chat ini untuk persetujuan Bos.",
+        "",
+        "Pantau progresnya dengan `/zumo status` ya Bos!",
+    ]
+    if job_id:
+        lines.append(f"Job: `{job_id}`")
+    send_message(token, chat_id, "\n".join(lines))
+
+
 def _handle_research_callback(token, chat_id, cq_id, data):
     """Tombol di pesan riset trending: rs:pl:<id> / rs:sh:<id> / rs:more /
     rs:again / rs:custom."""
@@ -3214,68 +3372,51 @@ def _handle_research_callback(token, chat_id, cq_id, data):
         yt_id = it.get('yt_id') or ''
         title = it.get('title') or ''
         if kind == 'playlist':
-            vid, _plid = _extract_youtube_ids_from_url(it.get('url') or '')
-            if yt_id and vid:
-                # 🔥 v1.3.67: video referensi SUDAH dipilih dari riset —
-                # buat job riset ASLI dari link-nya (mode jiplak,
-                # /api/operator/playlist_from_url) supaya job_id &
-                # kandidat berisi metadata asli (durasi, views, channel)
-                # dan _playlist_do_create bisa memakainya. Durasi
-                # mengikuti video ini — langkah durasi, riset & pilih
-                # kandidat dilewati (tinggal footage → jadwal).
-                answer_callback(token, cq_id, "Siap Bos, saya siapkan playlist-nya 🎵")
-                ok, msg, data = _operator_post(
-                    '/api/operator/playlist_from_url',
-                    {'yt_id': yt_id, 'url': it.get('url')})
-                cands = (data or {}).get('candidates') or [] if ok else []
-                cand = next((c for c in cands if c.get('video_id') == vid), None) or (cands[0] if cands else None)
-                job_id = (data or {}).get('job_id', '') if ok else ''
-                if cand and job_id:
-                    dur = cand.get('duration_sec') or 0
-                    dur_txt = f" ({round(dur / 60)} mnt)" if dur else ""
-                    draft = {"kind": "playlist", "step": "theme",
-                             "data": {"yt_id": yt_id,
-                                      "channel_name": it.get('channel') or '',
-                                      "theme": title, "video_id": vid,
-                                      "ref_title": cand.get('title') or title,
-                                      "job_id": job_id,
-                                      "candidates": cands,
-                                      "duration_min_sec": None,
-                                      "duration_max_sec": None,
-                                      "duration_note": f"mengikuti video referensi{dur_txt}"}}
-                    draft['step'] = _playlist_next_step(draft['data'])
-                    _save_make_draft(chat_id, draft)
-                    send_message(token, chat_id,
-                                 f"🎵 *Siap Bos, kita buat Playlist buat channel {_tg_escape(draft['data']['channel_name'])} ya!* 😎\n"
-                                 "Jawab tiap langkah satu per satu — ketik /batal kapan saja untuk berhenti.")
-                    _make_ask_step(token, chat_id, draft)
-                    return
-                # Link gagal dibaca panel → fallback NLU lama.
-                _pending = {'intent': 'buat_playlist',
-                            'slots': {'channels': [yt_id] if yt_id else [],
-                                      'playlist_theme': title},
-                            'awaiting': None, 'confirmed': False,
-                            'created_at': time.time()}
-                _save_nlu_pending(chat_id, _pending)
-                send_message(token, chat_id,
-                             f"⚠️ *Link video sarannya gagal dibaca Bos* 😅 ({_tg_escape(msg or 'coba lagi')}) — saya lanjutkan dengan alur biasa ya.")
-                _nlu_advance(token, chat_id, _pending)
-            else:
-                # Fallback lama (tanpa channel/video): lewat NLU seperti biasa.
-                answer_callback(token, cq_id, "Siap Bos, saya siapkan playlist-nya 🎵")
-                _pending = {'intent': 'buat_playlist',
-                            'slots': {'channels': [yt_id] if yt_id else [],
-                                      'playlist_theme': title},
-                            'awaiting': None, 'confirmed': False,
-                            'created_at': time.time()}
-                _save_nlu_pending(chat_id, _pending)
-                _nlu_advance(token, chat_id, _pending)
+            # 🔥 v1.4.5: tanya dulu — Tiru Style atau Jiplak (pilihan user
+            # 22 Nov 2026). Tiru Style = musik digenerate baru se-style
+            # (aman dari strike); Jiplak = pakai mp3 referensi (cara lama).
+            answer_callback(token, cq_id, "Mau dibuat gimana Bos? 😎")
+            kb = {"inline_keyboard": [
+                [{"text": "🎨 Tiru Style", "callback_data": f"rs:tiru:{item_id}"},
+                 {"text": "📋 Jiplak (mp3 referensi)", "callback_data": f"rs:jiplak:{item_id}"}],
+            ]}
+            send_message(token, chat_id,
+                         f"🎵 *{_tg_escape(title[:80])}*\n"
+                         f"Buat Playlist buat channel {_tg_escape(it.get('channel') or '')} — mau yang mana Bos?\n\n"
+                         "🎨 *Tiru Style* — musik digenerate baru se-style referensi (bukan mp3-nya, aman dari strike) + visual baru. 3 lagu (~20 mnt), 36 kredit.\n"
+                         "📋 *Jiplak* — pakai mp3 video referensi, cara lama.",
+                         reply_markup=kb)
+            return
         else:
             answer_callback(token, cq_id, "Siap Bos, kita buat Short-nya 🎬")
             draft = {"kind": "short", "step": "theme",
                      "data": {"yt_id": yt_id, "channel_name": it.get('channel') or ''}}
             _save_make_draft(chat_id, draft)
             _make_ask_step(token, chat_id, draft)
+        return
+    if data.startswith('rs:jiplak:'):
+        item_id = data.split(':', 2)[2]
+        sug = _research_load_suggestions()
+        it = _research_find_item(sug, item_id)
+        if not it:
+            answer_callback(token, cq_id, "Saran itu sudah nggak ada 😅")
+            send_message(token, chat_id,
+                         "Saran itu sudah nggak ada Bos 😅 — mungkin dari batch lama. "
+                         "Tunggu batch riset berikutnya ya.")
+            return
+        _research_playlist_jiplak(token, chat_id, cq_id, it)
+        return
+    if data.startswith('rs:tiru:'):
+        item_id = data.split(':', 2)[2]
+        sug = _research_load_suggestions()
+        it = _research_find_item(sug, item_id)
+        if not it:
+            answer_callback(token, cq_id, "Saran itu sudah nggak ada 😅")
+            send_message(token, chat_id,
+                         "Saran itu sudah nggak ada Bos 😅 — mungkin dari batch lama. "
+                         "Tunggu batch riset berikutnya ya.")
+            return
+        _research_playlist_tiru(token, chat_id, cq_id, it, (sug or {}).get('genre') or '')
         return
     answer_callback(token, cq_id, "Tombol ini saya nggak kenal, Bos 😅")
 

@@ -15457,7 +15457,7 @@ def vidiq_settings():
                         "message": "Field 'enabled' wajib (true/false)."}), 400
     d = _vidiq_settings_load()
     d['enabled'] = bool(data.get('enabled'))
-    d['updated'] = datetime.now(WIB).strftime('%Y-%m-%dT%H:%M:%S+07:00')
+    d['updated'] = _wib_now().strftime('%Y-%m-%dT%H:%M:%S+07:00')
     _vidiq_settings_save(d)
     return jsonify({"status": "success", **d})
 
@@ -15475,7 +15475,7 @@ def vidiq_action():
     tmp = VIDIQ_ACTION_FILE + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as f:
         json.dump({"action": action,
-                   "requested_at": datetime.now(WIB).strftime('%Y-%m-%dT%H:%M:%S+07:00')},
+                   "requested_at": _wib_now().strftime('%Y-%m-%dT%H:%M:%S+07:00')},
                   f, ensure_ascii=False)
     os.replace(tmp, VIDIQ_ACTION_FILE)
     if action == 'logout':

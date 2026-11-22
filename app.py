@@ -12911,6 +12911,27 @@ def _zumo_background_video_path(yt_id):
     return None
 
 
+def _zumo_visual_loop_path(yt_id):
+    """Visual loop channel (v1.3.99): video 10 detik 1920x1080 seamless —
+    adegan STATIS + gerakan lembut sesuai genre (asap kopi, daun, air
+    danau, lilin, lampu kafe — dibuat Muse per tema) + partikel +
+    spectrum generik. File eksplisit uploads/<yt_id>/backgrounds/
+    zumo_loop.mp4. Bila ada, _zumo_render memakai jalur cepat LOOP+COPY
+    (concat + stream copy, tanpa FFT spectrum dan tanpa encode 1080p):
+    video 20,5 menit dirakit dalam ~27 detik (terbukti di VPS 22 Nov
+    2026), bukan ~76 menit render penuh. Keputusan user 22 Nov 2026:
+    "yang penting cepet aja, asal ada efek gerak2" + "spectrum gak
+    penting". Bukan 1920x1080 -> None (fallback render penuh)."""
+    try:
+        bg_dir = _safe_join_under(BASE_UPLOAD, yt_id, 'backgrounds')
+    except Exception:
+        return None
+    cand = os.path.join(bg_dir, 'zumo_loop.mp4')
+    if os.path.isfile(cand) and os.path.getsize(cand) > 0:
+        return cand
+    return None
+
+
 def _zumo_bank_save_track(yt_id, channel_name, src_path, meta):
     """Simpan 1 lagu mentah ke bank (uploads/zumo_bank/<nama-channel>/).
     Kegagalan bank TIDAK PERNAH menggagalkan job upload — dicatat ke
@@ -13165,6 +13186,64 @@ def _zumo_render(task_id, task, yt_id):
                     "format=yuva420p,scale=1920:100,pad=1920:140:0:40,colorchannelmixer=aa=0.65"),
     }
     ff = get_ffmpeg_path()
+    # 🔥 v1.3.99 — LOOP+COPY (keputusan user 22 Nov 2026): bila channel
+    # punya visual loop (zumo_loop.mp4, 1920x1080, seamless), rakit video
+    # dengan CONCAT + STREAM COPY — tanpa spectrum FFT dan tanpa encode
+    # 1080p. Terbukti 27 detik untuk video 20,5 menit (vs ~76 menit).
+    # Spectrum generik sudah "ditanam" di dalam loop oleh Muse (bukan
+    # dihitung dari audio) — sesuai keputusan user ("spectrum gak penting,
+    # yang penting cepet, asal ada efek gerak2"). Loop tidak valid atau
+    # rakitan gagal -> jatuh ke render penuh di bawah (bukan gagal task);
+    # "Dibatalkan" tetap langsung naik.
+    _vloop = _zumo_visual_loop_path(yt_id)
+    if _vloop:
+        try:
+            _lp = _probe_video(_vloop)
+            _ldur = float(((_lp or {}).get('format') or {}).get('duration') or 0)
+            _lstreams = (_lp or {}).get('streams') or []
+            _lvid = next((s for s in _lstreams if s.get('codec_type') == 'video'),
+                         _lstreams[0] if _lstreams else {})
+            _lw = int(_lvid.get('width') or 0)
+            _lh = int(_lvid.get('height') or 0)
+            if _ldur > 0 and _lw == 1920 and _lh == 1080:
+                _n = int(math.ceil(audio_dur / _ldur))
+                _list_path = os.path.join(BASE_DIR, f"static/loop_{task_id}.txt")
+                with open(_list_path, 'w') as _lf:
+                    for _i in range(_n):
+                        _lf.write(f"file '{_vloop}'\n")
+                _cmd = [ff, '-y', '-f', 'concat', '-safe', '0', '-i', _list_path,
+                        '-i', audio, '-t', f"{audio_dur:.3f}",
+                        '-map', '0:v:0', '-map', '1:a:0',
+                        '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
+                        '-movflags', '+faststart', final_video]
+                try:
+                    _run_ffmpeg_zoom(task_id, _cmd, "FFmpeg Zumo Loop-Copy Error",
+                                     total_sec=audio_dur, pct_base=0.0, pct_span=100.0)
+                finally:
+                    try:
+                        os.remove(_list_path)
+                    except Exception:
+                        pass
+                if not os.path.exists(final_video) or os.path.getsize(final_video) == 0:
+                    raise Exception('Render Zumo gagal (file final kosong).')
+                task['zumo_render_method'] = 'loop-copy'
+                try:
+                    _zumo_job_update(task.get('zumo_job_id'), render_method='loop-copy')
+                except Exception:
+                    pass
+                return final_video
+            try:
+                _activity_log(f"⚠️ Visual loop {yt_id} tidak valid "
+                              f"({_lw}x{_lh}, {_ldur:.1f} dtk) — lanjut render penuh.")
+            except Exception:
+                pass
+        except Exception as _le:
+            if stop_flags.get(task_id) or 'Dibatalkan' in str(_le):
+                raise
+            try:
+                _activity_log(f"⚠️ Loop-copy {task_id} gagal ({str(_le)[:80]}), lanjut render penuh.")
+            except Exception:
+                pass
     # Denyut partikel per segmen lagu (eq brightness, amplitudo 0.06 —
     # halus, bukan berkedip kasar).
     eq_chain = []

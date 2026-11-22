@@ -4159,7 +4159,7 @@ def generate_seo_titles(niche, count=10):
 # 🔥 PERLUASAN KONTEN — NICHE, HASHTAG, CTA, IDE SHORTS
 # Bank konten statis (bukan data live): judul/deskripsi/tag/CTA/ide Shorts
 # per niche. Niche yang dikenal: sleep, lofi, piano, hujan, meditasi, fokus,
-# anak, asmr.
+# anak, asmr, agama (v1.3.97 — "tema agama" 22 Nov 2026).
 # ==========================================
 _NICHES = {
     'sleep': 'Deep Sleep Music',
@@ -4170,6 +4170,7 @@ _NICHES = {
     'fokus': 'Fokus',
     'anak': 'Anak-Anak',
     'asmr': 'ASMR',
+    'agama': 'Agama Islam',
 }
 
 
@@ -4180,6 +4181,11 @@ def _parse_niche_arg(clean_cmd, parts, default='sleep'):
         return 'asmr', 'ASMR'
     if 'anak' in clean_cmd or 'kids' in clean_cmd or 'balita' in clean_cmd:
         return 'anak', 'Anak-Anak'
+    if ('agama' in clean_cmd or 'islam' in clean_cmd or 'dzikir' in clean_cmd
+            or 'zikir' in clean_cmd or 'sholawat' in clean_cmd
+            or 'shalawat' in clean_cmd or 'murottal' in clean_cmd
+            or 'murotal' in clean_cmd or 'lailahaillallah' in clean_cmd):
+        return 'agama', 'Agama Islam'
     if 'piano' in clean_cmd:
         return 'piano', 'Piano'
     if 'hujan' in clean_cmd or 'rain' in clean_cmd:
@@ -4228,6 +4234,9 @@ _HASHTAG_BANK = {
              '#asmrsleep', '#asmrrelax', '#asmrcommunity', '#asmrvideo',
              '#asmrtapping', '#whisperasmr', '#asmrforsleep', '#relaxingasmr',
              '#asmrindonesia', '#asmrtriggers', '#sleepasmr'],
+    'agama': ['#dzikir', '#lailahaillallah', '#islamicmusic', '#nasheed',
+              '#sholawat', '#islam', '#muslim', '#zikir', '#doa', '#tenang',
+              '#murottal', '#islami', '#dzikirpagi', '#allah', '#damai'],
 }
 
 
@@ -5673,7 +5682,7 @@ _ZUMO_DEFAULT_STYLE = ("smooth jazz saxophone, warm, relaxing, romantic, "
 _ZUMO_DEFAULT_MODEL = 'V5.5'
 _ZUMO_MODELS = ('V5.5', 'V6', 'V6_MINI', 'V6_WILD')
 _ZUMO_PARTICLE_LABEL = {'snow': 'salju', 'sakura': 'sakura'}
-_ZUMO_SPECTRUM_LABEL = {'white': 'putih', 'cyan': 'cyan', 'viridis': 'viridis'}
+_ZUMO_SPECTRUM_LABEL = {'white': 'putih', 'cyan': 'cyan', 'viridis': 'viridis', 'none': 'tanpa spectrum'}
 # Contoh BENTUK penulisan style (v1.3.0, koreksi user 21:00 WIB):
 # HANYA teks referensi di pesan langkah style — BUKAN preset, BUKAN
 # tombol pilihan, BUKAN daftar tetap. User mengetik style bebas apa
@@ -5979,6 +5988,7 @@ def _zumo_parse_particle(text):
     """Parse jawaban partikel Zumo → (particle, spectrum_color) atau
     (None, None). 'salju'/'snow' → snow; 'sakura' → sakura; warna spectrum
     'putih'/'white'/'cyan'/'viridis' boleh digabung (mis. 'sakura cyan').
+    'tanpa spectrum'/'tanpa spektrum' → ('snow', 'none') (v1.3.97).
     'lewati'/'default' → ('snow', 'white'). Tidak dikenali → (None, None)."""
     t = (text or '').strip().lower()
     if not t or t in ('lewati', '-', 'skip', 'default'):
@@ -5989,7 +5999,10 @@ def _zumo_parse_particle(text):
     elif 'salju' in t or 'snow' in t:
         particle = 'snow'
     color = None
-    if 'cyan' in t:
+    if ('tanpa spectrum' in t or 'tanpa spektrum' in t
+            or 'no spectrum' in t or 'spectrum mati' in t):
+        color = 'none'
+    elif 'cyan' in t:
         color = 'cyan'
     elif 'viridis' in t:
         color = 'viridis'
@@ -7093,6 +7106,9 @@ NLU_AUDIT_FILE = os.path.join(BASE_DIR, 'nlu_audit.jsonl')
 _NLU_PENDING_TTL = 600  # 10 menit — klarifikasi yang tidak dijawab hangus
 
 _NLU_NICHE_WORDS = {
+    'agama': ('agama', 'islam', 'islami', 'dzikir', 'zikir', 'dzikr',
+              'sholawat', 'shalawat', 'lailahaillallah', 'la ilaha illallah',
+              'murottal', 'murotal', 'adzan', 'azan', 'nasheed', 'nasyid'),
     'anak': ('anak', 'kids', 'balita', 'bocah', 'paud', 'lagu anak'),
     'asmr': ('asmr',),
     'sleep': ('tidur', 'sleep', 'insomnia', 'nyenyak', 'lullaby'),
@@ -7104,7 +7120,9 @@ _NLU_NICHE_WORDS = {
 }
 # 'asmr' di depan 'sleep': 'suara asmr buat tidur' harus jadi asmr,
 # bukan tidur (kata 'tidur' ada di kalimat itu juga).
-_NLU_NICHE_ORDER = ('asmr', 'anak', 'piano', 'hujan', 'meditasi', 'fokus', 'lofi', 'sleep')
+# 'agama' PALING DEPAN (v1.3.97): 'dzikir sebelum tidur' harus jadi
+# agama, bukan sleep (kata 'tidur' ada di kalimat itu juga).
+_NLU_NICHE_ORDER = ('agama', 'asmr', 'anak', 'piano', 'hujan', 'meditasi', 'fokus', 'lofi', 'sleep')
 
 # Bank konten pembuatan Short via NLU — kalimat polos (bukan beat bernomor
 # seperti _SHORTS_IDEAS). Isi hook/naskah/CTA niche lama sama dengan
@@ -8058,6 +8076,20 @@ def parse_natural_command(text, channels):
             and not re.search(r'\blong\b', clean):
         intent = 'buat_zumo'
         conf = 40
+    elif create_verb and ('dzikir' in clean or 'zikir' in clean or 'dzikr' in clean
+                          or 'sholawat' in clean or 'shalawat' in clean
+                          or 'lailahaillallah' in clean or 'la ilaha illallah' in clean
+                          or 'murottal' in clean or 'murotal' in clean
+                          or 'spectrum' in clean or 'partikel' in clean) \
+            and 'short' not in clean and 'video pendek' not in clean \
+            and 'playlist' not in clean:
+        # 🔥 v1.3.97: dzikir/sholawat/murottal adalah LAGU (Zumo), dan
+        # 'spectrum'/'partikel' adalah konsep render Zumo — Short tidak
+        # punya keduanya. 22 Nov 2026: "buatkan video dzikir Lailahaillalloh
+        # 100x ... tanpa spectrum hanya partikel" jatuh ke buat_short tema
+        # Deep Sleep Music (default) + "Tema 'agama' belum saya kenal".
+        intent = 'buat_zumo'
+        conf = 70
     # --- Buat Short / Long. ---
     elif create_verb and ('short' in clean or 'video pendek' in clean):
         intent = 'buat_short'
@@ -8324,6 +8356,14 @@ def parse_natural_command(text, channels):
             conf += 5
         elif 'vokal' in clean:
             slots['instrumental'] = False
+        # 🔥 v1.3.97: "tanpa spectrum hanya partikel saja" — isi KEDUA slot
+        # sekaligus (langkah partikel dilewati bila 'particle' sudah ada,
+        # jadi spectrum_color harus ikut terisi, bukan cuma particle).
+        if ('tanpa spectrum' in clean or 'tanpa spektrum' in clean
+                or 'no spectrum' in clean):
+            slots['spectrum_color'] = 'none'
+            slots['particle'] = 'snow'
+            conf += 5
         ndt, nnote = _parse_natural_datetime(text)
         if ndt:
             slots['publish_date'] = ndt
@@ -9404,6 +9444,10 @@ def _execute_nlu_create_zumo(token, chat_id, pending):
         data['vocal_gender'] = slots['vocal_gender']
     if slots.get('song_count'):
         data['song_count'] = slots['song_count']
+    if slots.get('spectrum_color'):
+        data['spectrum_color'] = slots['spectrum_color']
+    if slots.get('particle'):
+        data['particle'] = slots['particle']
     if slots.get('publish_date'):
         data['publish_date'] = slots['publish_date']
         if slots.get('publish_note'):

@@ -13136,7 +13136,7 @@ def _zumo_render(task_id, task, yt_id):
     if audio_dur <= 0:
         raise Exception('Durasi audio tidak terbaca.')
     color = (task.get('zumo_spectrum_color') or 'white').strip().lower()
-    if color not in ('white', 'cyan', 'viridis'):
+    if color not in ('white', 'cyan', 'viridis', 'none'):
         color = 'white'
     # Spectrum = EQ BARS vertikal (showfreqs mode=bar) — batang naik-turun
     # mengikuti musik, BUKAN spectrogram yang menggeser kiri-kanan
@@ -13182,12 +13182,23 @@ def _zumo_render(task_id, task, yt_id):
     if not eq_chain:
         eq_chain.append("eq=brightness='0.05*sin(2*PI*t*60/60)':eval=frame")
     loop = (task.get('zumo_particle_loop') or '').strip()
-    filt = (
-        "[0:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,format=yuv420p[bg];"
-        "[1:a]asplit=2[aud][specin];"
-        f"[specin]{_SPEC_FILTERS[color]}[spec];"
-        "[bg][spec]overlay=0:940[bg2]"
-    )
+    if color == 'none':
+        # 🔥 v1.3.97: TANPA spectrum — audio langsung dipakai (anull),
+        # tidak ada layer showfreqs (permintaan user 22 Nov 2026:
+        # "tanpa spectrum hanya partikel saja"). [bg2] tetap dihasilkan
+        # supaya cabang partikel di bawah (blend screen) jalan sama.
+        filt = (
+            "[0:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,format=yuv420p[bg];"
+            "[1:a]anull[aud];"
+            "[bg]format=yuv420p[bg2]"
+        )
+    else:
+        filt = (
+            "[0:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,format=yuv420p[bg];"
+            "[1:a]asplit=2[aud][specin];"
+            f"[specin]{_SPEC_FILTERS[color]}[spec];"
+            "[bg][spec]overlay=0:940[bg2]"
+        )
     inputs = [ff, '-y']
     if bg_video:
         inputs += ['-stream_loop', '-1', '-i', bg_video]
@@ -13248,7 +13259,7 @@ def _zumo_render(task_id, task, yt_id):
             except Exception:
                 pass
             time.sleep(ZUMO_RENDER_RETRY_PAUSE)
-    base_method = 'video+spectrum' if bg_video else 'static+spectrum'
+    base_method = ('video' if bg_video else 'static') + ('+spectrum' if color != 'none' else '')
     task['zumo_render_method'] = base_method + '+particle' if loop else base_method
     try:
         _zumo_job_update(task.get('zumo_job_id'), render_method=task['zumo_render_method'])
@@ -13506,8 +13517,8 @@ def _zumo_do_create(data):
         return False, 'Model tidak dikenal (V5.5/V6/V6_MINI/V6_WILD).', 400, ''
     if prof_fields.get('particle') and prof_fields['particle'] not in ('snow', 'sakura'):
         return False, "Partikel tidak dikenal (snow/sakura).", 400, ''
-    if prof_fields.get('spectrum_color') and prof_fields['spectrum_color'] not in ('white', 'cyan', 'viridis'):
-        return False, 'Warna spectrum tidak dikenal (white/cyan/viridis).', 400, ''
+    if prof_fields.get('spectrum_color') and prof_fields['spectrum_color'] not in ('white', 'cyan', 'viridis', 'none'):
+        return False, 'Warna spectrum tidak dikenal (white/cyan/viridis/none).', 400, ''
     if prof_fields.get('vocal_gender') and prof_fields['vocal_gender'] not in ('m', 'f'):
         return False, 'Gender vokal tidak dikenal (m/f).', 400, ''
     if prof_fields:

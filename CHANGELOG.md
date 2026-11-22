@@ -1,3 +1,8 @@
+## 1.4.4
+- Bank Lagu kini menampilkan SIZE + MODEL per lagu (permintaan user 22 Nov 2026): kolom SIZE (ukuran file, "3,2 MB") + kolom MODEL (model generate Zumo, mis. "V5.5") — backend GET /api/zumo_bank kini mengembalikan `size_bytes` per trek (os.path.getsize, file hilang → 0) + `total_size` per channel + `model` dari indeks bank. Footer baru di bawah tabel: "Total: 30 lagu • 2:00:50 • 360 kredit • 245,3 MB (0,24 GB)".
+- Kolom VARIAN / DURASI / SIZE / MODEL / DIBUAT / KREDIT / PUTAR / AKSI di Bank Lagu kini rata tengah (permintaan user 22 Nov 2026 — isi kolom pendek lebih enak dibaca di tengah); JUDUL tetap rata kiri.
+- Tes lokal 24/24 lolos (format MB/GB, field size+model di endpoint, sintaks JS via node --check, struktur tabel + footer).
+
 ## 1.4.3
 - Perbaiki kolom STATUS di \"Riwayat Channel\": baris Shorts menampilkan teks HTML mentah (`Tayang! ✅ <a href=...> [Lihat]</a>`) karena status di history_tasks berisi anchor HTML (untuk Task Monitor). Backend kini membersihkan status lewat helper baru `_clean_history_status` (buang anchor + tag apa pun) — judul sudah jadi link sendiri di Riwayat.
 - Rapikan header \"Riwayat Channel\" + \"Bank Lagu\" (komplain user 22 Nov 2026 — \"penataan ini jelek banget gak profesional\", teks kepanjangan): subjudul dipersingkat jadi satu baris (\"Riwayat upload lewat pabrik per channel (90 hari terakhir).\" / \"Stok lagu mentah Zumo per channel — dipakai video harian (rakit acak, 0 kredit).\"), kontrol kanan (Channel + pill + Refresh) satu baris tanpa wrap, select 180px.

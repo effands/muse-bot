@@ -8367,6 +8367,7 @@ def get_zumo_bank():
         items = []
         total_dur = 0.0
         total_cred = 0
+        total_size = 0
         for t in tracks:
             try:
                 dur = float(t.get('duration') or 0)
@@ -8378,17 +8379,23 @@ def get_zumo_bank():
             except Exception:
                 pass
             fn = t.get('filename') or ''
+            try:
+                sz = os.path.getsize(os.path.join(ZUMO_BANK_DIR, folder, fn)) if fn else 0
+            except Exception:
+                sz = 0
+            total_size += sz
             items.append({
                 'id': t.get('id'), 'title': t.get('title') or 'Tanpa Judul',
                 'filename': fn, 'variant': _bank_variant(fn),
                 'duration': dur, 'created_at': t.get('created_at') or '',
                 'credits': t.get('credits'), 'job_id': t.get('job_id') or '',
+                'size_bytes': sz, 'model': t.get('model') or '',
                 'url': ('/uploads/zumo_bank/%s/%s' % (folder, fn)) if fn else '',
             })
         out.append({
             'yt_id': c.get('yt_id'), 'name': name,
             'count': len(items), 'total_duration': total_dur,
-            'total_credits': total_cred, 'tracks': items,
+            'total_credits': total_cred, 'total_size': total_size, 'tracks': items,
         })
     out.sort(key=lambda x: (x['name'] or '').lower())
     return jsonify({'status': 'success', 'channels': out})

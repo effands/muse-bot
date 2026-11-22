@@ -1627,11 +1627,12 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap">
           <thead><tr style="text-align:left;color:var(--muted);font-family:var(--font-m);font-size:10px;border-bottom:1px solid var(--border)">
-            <th style="padding:6px 8px">JUDUL</th><th style="padding:6px 8px">VARIAN</th><th style="padding:6px 8px">DURASI</th><th style="padding:6px 8px">DIBUAT</th><th style="padding:6px 8px">KREDIT</th><th style="padding:6px 8px">PUTAR</th><th style="padding:6px 8px">AKSI</th>
+            <th style="padding:6px 8px">JUDUL</th><th style="padding:6px 8px;text-align:center">VARIAN</th><th style="padding:6px 8px;text-align:center">DURASI</th><th style="padding:6px 8px;text-align:center">SIZE</th><th style="padding:6px 8px;text-align:center">MODEL</th><th style="padding:6px 8px;text-align:center">DIBUAT</th><th style="padding:6px 8px;text-align:center">KREDIT</th><th style="padding:6px 8px;text-align:center">PUTAR</th><th style="padding:6px 8px;text-align:center">AKSI</th>
           </tr></thead>
-          <tbody id="bank-tbody"><tr><td colspan="7" style="padding:10px 8px;color:var(--muted)">Memuat bank…</td></tr></tbody>
+          <tbody id="bank-tbody"><tr><td colspan="9" style="padding:10px 8px;color:var(--muted)">Memuat bank…</td></tr></tbody>
         </table>
       </div>
+      <div id="bank-total" style="font-size:12px;font-weight:700;margin-top:10px"></div>
       <div style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5">Lagu dirakit acak tiap video harian — hapus lagu di sini bila tidak mau dipakai lagi. Menghapus tidak bisa dibatalkan.</div>
     </div>
 
@@ -3905,12 +3906,25 @@ function _fmtDurSec(sec) {
   const mm = String(m).padStart(2, '0'), ss = String(s).padStart(2, '0');
   return h ? h + ':' + mm + ':' + ss : m + ':' + ss;
 }
+// 🔥 v1.4.4: ukuran file — "3,2 MB" per lagu; total "245,3 MB (0,24 GB)".
+function _fmtSizeMB(bytes) {
+  const b = +bytes || 0;
+  if (b <= 0) return '—';
+  return (b / 1048576).toFixed(1).replace('.', ',') + ' MB';
+}
+function _fmtSizeTotal(bytes) {
+  const b = +bytes || 0;
+  if (b <= 0) return '—';
+  const mb = b / 1048576;
+  if (mb >= 1024) return mb.toFixed(1).replace('.', ',') + ' MB (' + (mb / 1024).toFixed(2).replace('.', ',') + ' GB)';
+  return mb.toFixed(1).replace('.', ',') + ' MB';
+}
 let _bankData = [];
 function fetchBank() {
   const tb = document.getElementById('bank-tbody'); if (!tb) return;
   const sel = document.getElementById('bank-ch-sel');
   fetch('/api/zumo_bank').then(r => r.json()).then(d => {
-    if (d.status !== 'success') { tb.innerHTML = '<tr><td colspan="7" style="padding:10px 8px;color:var(--muted)">Gagal memuat bank.</td></tr>'; return; }
+    if (d.status !== 'success') { tb.innerHTML = '<tr><td colspan="9" style="padding:10px 8px;color:var(--muted)">Gagal memuat bank.</td></tr>'; return; }
     _bankData = d.channels || [];
     if (sel) {
       const cur = sel.value;
@@ -3921,35 +3935,40 @@ function fetchBank() {
       }
     }
     renderBank();
-  }).catch(() => { tb.innerHTML = '<tr><td colspan="7" style="padding:10px 8px;color:var(--muted)">Gagal memuat bank.</td></tr>'; });
+  }).catch(() => { tb.innerHTML = '<tr><td colspan="9" style="padding:10px 8px;color:var(--muted)">Gagal memuat bank.</td></tr>'; });
 }
 function renderBank() {
   const tb = document.getElementById('bank-tbody'); if (!tb) return;
   const sel = document.getElementById('bank-ch-sel');
   const cnt = document.getElementById('bank-count');
   const dur = document.getElementById('bank-dur');
+  const tot = document.getElementById('bank-total');
   const yt = sel ? sel.value : '';
   const ch = _bankData.find(c => c.yt_id === yt);
   if (!ch) {
     if (cnt) cnt.textContent = '0 lagu';
     if (dur) dur.textContent = '—';
-    tb.innerHTML = '<tr><td colspan="7" style="padding:10px 8px;color:var(--muted)">Pilih channel dulu untuk melihat bank lagunya.</td></tr>';
+    if (tot) tot.textContent = '';
+    tb.innerHTML = '<tr><td colspan="9" style="padding:10px 8px;color:var(--muted)">Pilih channel dulu untuk melihat bank lagunya.</td></tr>';
     return;
   }
   if (cnt) cnt.textContent = ch.count + ' lagu';
   if (dur) dur.textContent = _fmtDurSec(ch.total_duration) + ' • ' + ch.total_credits + ' kredit';
+  if (tot) tot.textContent = 'Total: ' + ch.count + ' lagu • ' + _fmtDurSec(ch.total_duration) + ' • ' + ch.total_credits + ' kredit • ' + _fmtSizeTotal(ch.total_size);
   if (!ch.tracks.length) {
-    tb.innerHTML = '<tr><td colspan="7" style="padding:10px 8px;color:var(--muted)">Bank channel ini masih kosong.</td></tr>';
+    tb.innerHTML = '<tr><td colspan="9" style="padding:10px 8px;color:var(--muted)">Bank channel ini masih kosong.</td></tr>';
     return;
   }
   tb.innerHTML = ch.tracks.map(t => '<tr style="border-bottom:1px solid var(--border)">'
     + '<td style="padding:6px 8px"><b>' + escapeHtml(t.title) + '</b></td>'
-    + '<td style="padding:6px 8px">' + escapeHtml(t.variant) + '</td>'
-    + '<td style="padding:6px 8px;white-space:nowrap">' + _fmtDurSec(t.duration) + '</td>'
-    + '<td style="padding:6px 8px;white-space:nowrap">' + escapeHtml(t.created_at || '—') + '</td>'
-    + '<td style="padding:6px 8px">' + (t.credits == null ? '—' : t.credits) + '</td>'
-    + '<td style="padding:6px 8px;white-space:nowrap"><button class="btn btn-sm" title="Dengar lagu" onclick="playBank(\'' + t.id + '\')">▶️</button></td>'
-    + '<td style="padding:6px 8px;white-space:nowrap"><button class="btn btn-sm" title="Hapus dari bank" onclick="deleteBankTrack(\'' + t.id + '\')">🗑️</button></td>'
+    + '<td style="padding:6px 8px;text-align:center">' + escapeHtml(t.variant) + '</td>'
+    + '<td style="padding:6px 8px;white-space:nowrap;text-align:center">' + _fmtDurSec(t.duration) + '</td>'
+    + '<td style="padding:6px 8px;white-space:nowrap;text-align:center">' + _fmtSizeMB(t.size_bytes) + '</td>'
+    + '<td style="padding:6px 8px;white-space:nowrap;text-align:center">' + escapeHtml(t.model || '—') + '</td>'
+    + '<td style="padding:6px 8px;white-space:nowrap;text-align:center">' + escapeHtml(t.created_at || '—') + '</td>'
+    + '<td style="padding:6px 8px;text-align:center">' + (t.credits == null ? '—' : t.credits) + '</td>'
+    + '<td style="padding:6px 8px;white-space:nowrap;text-align:center"><button class="btn btn-sm" title="Dengar lagu" onclick="playBank(\'' + t.id + '\')">▶️</button></td>'
+    + '<td style="padding:6px 8px;white-space:nowrap;text-align:center"><button class="btn btn-sm" title="Hapus dari bank" onclick="deleteBankTrack(\'' + t.id + '\')">🗑️</button></td>'
     + '</tr>').join('');
 }
 function playBank(id) {

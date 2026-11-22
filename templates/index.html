@@ -1268,12 +1268,12 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
               <thead><tr style="text-align:left;color:var(--muted);font-family:var(--font-m);font-size:10px;border-bottom:1px solid var(--border)">
                 <th style="padding:6px 8px">CHANNEL</th><th style="padding:6px 8px">STATUS</th><th style="padding:6px 8px">GROUP</th><th style="padding:6px 8px">UPDATED</th>
                 <th style="padding:6px 8px;text-align:right">SUBSCRIBE</th><th style="padding:6px 8px;text-align:right">VIDEOS</th>
-                <th style="padding:6px 8px;text-align:right">VIEW 28D</th><th style="padding:6px 8px;text-align:right">VIEW 48H</th>
+                <th style="padding:6px 8px;text-align:right">VIEW 48H</th>
                 <th style="padding:6px 8px;text-align:right;width:64px" title="WATCH 30D (est.) — estimasi kasar, bukan data YouTube">WATCH 30D</th>
                 <th style="padding:6px 8px">AGE</th>
                 <th style="padding:6px 8px">MONETISASI</th><th style="padding:6px 8px">OPEN</th>
               </tr></thead>
-              <tbody id="ch-detail-tbody"><tr><td colspan="12" style="padding:10px 8px;color:var(--muted)">Memuat detail channel…</td></tr></tbody>
+              <tbody id="ch-detail-tbody"><tr><td colspan="11" style="padding:10px 8px;color:var(--muted)">Memuat detail channel…</td></tr></tbody>
             </table>
           </div>
           <div id="ch-detail-note" style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5"></div>
@@ -3236,6 +3236,37 @@ function groupSelectHtml(c, handler) {
     + `<option value=""${cur ? '' : ' selected'}>— Tanpa Group —</option>` + opts
     + `<option value="__new__">＋ Buat group baru…</option></select>`;
 }
+// 🔥 v1.3.102: sel GROUP di DETAIL CHANNEL jadi nama saja + tombol "…"
+// (dropdown di tiap baris boros tempat — permintaan user 22 Nov 2026).
+// Klik "…" -> select pemilih muncul di sel itu (groupSelectHtml yang
+// sudah ada); pilih -> simpan lewat onGroupSelect -> sel menutup jadi
+// teks lagi. Klik di luar tanpa memilih -> kembali ke teks.
+// Tabel Dashboard (channelTableHtml) dan popup Kelola Group tetap
+// pakai dropdown seperti biasa.
+function groupCellHtml(c) {
+  const g = (c.group || '').trim();
+  const label = g ? escapeHtml(g) : '—';
+  return `<span style="display:inline-flex;gap:6px;align-items:center;white-space:nowrap"><span title="${g ? escapeHtml(g) : 'Tanpa group'}">${label}</span><button type="button" class="btn btn-sm" title="Ganti group" style="padding:1px 6px;font-size:11px;line-height:1.4" onclick="showGroupPicker(this, '${c.yt_id}')">…</button></span>`;
+}
+function showGroupPicker(btn, ytId) {
+  const td = btn.closest('td'); if (!td) return;
+  const cur = ((channels || []).find(c => c.yt_id === ytId) || {}).group || '';
+  td.dataset.orig = td.innerHTML;
+  td.dataset.grp = (cur || '').trim();
+  td.innerHTML = groupSelectHtml({ yt_id: ytId, group: cur });
+  const sel = td.querySelector('select'); if (!sel) return;
+  sel.classList.add('grp-picker');
+  sel.focus();
+  // Kembali ke teks bila klik di luar tanpa memilih. Timeout 150 mdtk:
+  // 'change' (pilih group) jalan dulu secara sinkron, jadi nilai sudah
+  // berubah / select sudah hilang saat timeout ini dieksekusi.
+  sel.addEventListener('blur', () => {
+    setTimeout(() => {
+      const cur2 = td.querySelector('select');
+      if (cur2 && cur2.value === td.dataset.grp) td.innerHTML = td.dataset.orig || '';
+    }, 150);
+  });
+}
 function onGroupSelect(sel, ytId) {
   const td = sel.closest('td'); if (!td) return;
   if (sel.value === '__new__') {
@@ -3252,6 +3283,15 @@ function onGroupSelect(sel, ytId) {
 }
 function cancelEditGroup(el) {
   const td = el.closest('td'); if (!td) return;
+  // 🔥 v1.3.102: bila input group baru dibuka dari pemilih "..." di
+  // DETAIL CHANNEL (dataset.grp terisi), batal -> kembali ke teks nama
+  // group, bukan ke select.
+  if (td.dataset.grp !== undefined) {
+    const yt = td.dataset.yt || '';
+    const ch = (channels || []).find(c => c.yt_id === yt);
+    td.innerHTML = groupCellHtml(ch || { yt_id: yt, group: td.dataset.grp });
+    return;
+  }
   td.innerHTML = td.dataset.orig || '';
 }
 async function saveChannelGroupInput(el) {
@@ -3266,6 +3306,12 @@ async function saveChannelGroup(ytId, group, el) {
   const d = await res.json().catch(() => ({}));
   if (res.ok && d.status === 'success') {
     toast(group ? `Group tersimpan → ${group}.` : 'Channel keluar dari group.', 'ok');
+    // 🔥 v1.3.102: tutup pemilih "..." di DETAIL CHANNEL sesudah simpan
+    // (tanpa ini guard '.grp-picker' di renderChannelTable menahan
+    // render ulang berikutnya sehingga select tidak pernah kembali
+    // ke teks). No-op untuk tabel Dashboard / popup (tidak ada picker).
+    const _pk = document.querySelector('#ch-detail-tbody select.grp-picker');
+    if (_pk) { const _td = _pk.closest('td'); if (_td) _td.innerHTML = groupCellHtml({ yt_id: ytId, group: group }); }
     loadChannels();
     return true;  // 🔥 v1.3.72: popup Kelola Group butuh tahu sukses/gagal
   } else {
@@ -6987,7 +7033,8 @@ function renderChannelTable() {
   // 🔥 v1.3.69: jangan render ulang saat input group baru sedang dibuka
   // (poll 5 menit akan menghapus inputnya — pola sama seperti .em-input
   // di renderTaskChannels/renderDashboardChannels).
-  if (tb.querySelector('.grp-input')) return;
+  // 🔥 v1.3.102: sama untuk pemilih group ("...") yang sedang dibuka.
+  if (tb.querySelector('.grp-input') || tb.querySelector('.grp-picker')) return;
   let rows = analyticsData || [];
   // 🔥 v1.3.68: tabel ikut filter GROUP dari dropdown atas (sama seperti
   // kartu statistik di renderAnalytics).
@@ -7003,7 +7050,7 @@ function renderChannelTable() {
   const chById = {}; (channels || []).forEach(c => { chById[c.yt_id] = c; });
   if (!rows.length) {
     const loading = (channels || []).length > 0;
-    tb.innerHTML = '<tr><td colspan="12" style="padding:10px 8px;color:var(--muted)">'
+    tb.innerHTML = '<tr><td colspan="11" style="padding:10px 8px;color:var(--muted)">'
       + ((_fv.indexOf('group:') === 0 && (analyticsData || []).length)
           ? 'Tidak ada data untuk group ini.'
           : (loading ? 'Memuat detail channel…'
@@ -7027,7 +7074,6 @@ function renderChannelTable() {
       : mon.status === 'ready' ? '<span class="pill p-green">✅ Siap Monet (est.)</span>'
       : subsDone ? '<span class="pill mon-subs-done">✅ ' + _fmtNum(mon.subs) + '/' + _fmtNum(mon.subs_required) + ' subs</span>'
       : '<span class="pill p-muted">⏳ ' + _fmtNum(mon.subs) + '/' + _fmtNum(mon.subs_required) + ' subs</span>';
-    const v28title = d.snap_28d ? 'Periode ' + d.snap_28d + ' → ' + (d.snap_ref || '') : 'Butuh snapshot 28 hari';
     const v48title = d.snap_48h ? 'Periode ' + d.snap_48h + ' → ' + (d.snap_ref || '') : 'Butuh snapshot 2 hari';
     const w30title = d.snap_30d ? 'Views 30 hari (' + d.snap_30d + ' → ' + (d.snap_ref || '') + ') × durasi rata-rata blueprint video long — estimasi kasar' : 'Butuh riwayat snapshot / video long pabrik';
     const w30real = d.watch_30d_real != null;
@@ -7035,11 +7081,10 @@ function renderChannelTable() {
     return '<tr style="border-bottom:1px solid var(--border)">'
       + '<td style="padding:6px 8px">' + thumb + '<b>' + escapeHtml(d.name) + '</b></td>'
       + '<td style="padding:6px 8px">' + statusPillHTML(d.status) + (paused ? ' <span class="pill p-yellow">⏸️ Dijeda</span>' : '') + '</td>'
-      + '<td style="padding:6px 8px;white-space:nowrap">' + groupSelectHtml(c) + '</td>'
+      + '<td style="padding:6px 8px;white-space:nowrap">' + groupCellHtml(c) + '</td>'
       + '<td style="padding:6px 8px">' + escapeHtml(d.updated_label || '—') + '</td>'
       + '<td style="padding:6px 8px;text-align:right">' + _fmtNum(d.subs) + '</td>'
       + '<td style="padding:6px 8px;text-align:right">' + _fmtNum(d.videos) + '</td>'
-      + '<td style="padding:6px 8px;text-align:right" title="' + escapeHtml(v28title) + '">' + _fmtNum(d.views_28d) + '</td>'
       + '<td style="padding:6px 8px;text-align:right" title="' + escapeHtml(v48title) + '">' + _fmtNum(d.views_48h) + '</td>'
       + '<td style="padding:6px 8px;text-align:right" title="' + escapeHtml(w30real ? 'Jam tayang asli (Analytics API, 30 hari)' : w30title) + '">' + (w30v == null ? '—' : Number(w30v).toLocaleString() + ' jam' + (w30real ? ' ✓' : '')) + '</td>'
       + '<td style="padding:6px 8px">' + escapeHtml(d.age_label || '—') + '</td>'
@@ -7054,7 +7099,7 @@ function renderChannelTable() {
   const anySnap = rows.some(d => d.snap_ref);
   if (noteEl) noteEl.innerHTML = '<details class="data-note"><summary>ⓘ Tentang data ini</summary><div>'
     + 'Views, Subscribe, Videos, Umur channel: <b>YouTube Data API</b> (cache 1 jam). '
-    + 'VIEW 28D / 48H: selisih dari <b>snapshot harian channel</b> — kolom terisi bertahap; channel baru tampil "—" sampai riwayat snapshot cukup (butuh snapshot 28 / 2 hari). '
+    + 'VIEW 48H: selisih dari <b>snapshot harian channel</b> — kolom terisi bertahap; channel baru tampil "—" sampai riwayat snapshot cukup (butuh snapshot 2 hari). '
     + 'WATCH 30D (est.): views 30 hari × durasi rata-rata blueprint video long channel — <b>estimasi kasar</b>, bukan data YouTube. '
     + 'Jam tayang untuk kesiapan monetisasi adalah <b>estimasi</b> (90 hari terakhir); keputusan akhir monetisasi ada di YouTube Studio. '
     + 'REVENUE tidak ditampilkan — tidak ada data penghasilan dari API; estimasi RPM hanya di kartu Monetisasi di bawah.'

@@ -13577,26 +13577,38 @@ def _zumo_is_agama_theme(theme):
 def _zumo_seo_tail(theme):
     """Ekor kata kunci SEO (Inggris) untuk judul video musik, dari kata
     kunci riset tiap tema (riset-smooth-jazz-90s.md, konsep-jazz-coffee.md):
-    [mood] + [instrumen] + [for] + [kegunaan]."""
+    [mood] + [instrumen] + [for] + [kegunaan].
+    v1.4.15 (user 23 Nov 2026): 'sleep'/'tidur' dicek DULU sebelum 'jazz' —
+    jazz tidur BUKAN R&B, jadi suffix R&B tidak boleh menelan tema tidur.
+    Semua ekor Title Case (kapital setiap awal kata, permintaan user)."""
     th = (theme or '').lower()
-    if 'jazz' in th or 'sax' in th:
-        return 'Relaxing Saxophone & Soulful R&B for a Quiet Evening'
-    if 'piano' in th:
-        return 'Relaxing Piano Music for Sleep, Study & Focus'
-    if 'lofi' in th or 'lo-fi' in th:
-        return 'Relaxing Lofi Music for Study & Chill'
     if 'sleep' in th or 'tidur' in th:
-        return 'Relaxing Music for Deep Sleep'
+        if 'jazz' in th or 'sax' in th:
+            return 'Relaxing Saxophone For Deep Sleep'
+        return 'Relaxing Music For Deep Sleep'
+    if 'jazz' in th or 'sax' in th:
+        return 'Relaxing Saxophone & Soulful R&B For A Quiet Evening'
+    if 'piano' in th:
+        return 'Relaxing Piano Music For Sleep, Study & Focus'
+    if 'lofi' in th or 'lo-fi' in th:
+        return 'Relaxing Lofi Music For Study & Chill'
     if 'rain' in th or 'hujan' in th:
-        return 'Relaxing Music for a Rainy Evening'
-    return 'Relaxing Music for a Peaceful Evening'
+        return 'Relaxing Music For A Rainy Evening'
+    return 'Relaxing Music For A Peaceful Evening'
 
 
 def _zumo_hashtags(theme, channel_name):
     """12 hashtag Inggris untuk deskripsi video musik (dari kata kunci
-    riset tiap tema + nama channel). Tanpa '#' ganda, tanpa duplikat."""
+    riset tiap tema + nama channel). Tanpa '#' ganda, tanpa duplikat.
+    v1.4.15 (user 23 Nov 2026): jazz tidur dicek DULU — tanpa #SoulfulRnB,
+    karena jazz tidur bukan R&B."""
     th = (theme or '').lower()
-    if 'jazz' in th or 'sax' in th:
+    if ('sleep' in th or 'tidur' in th) and ('jazz' in th or 'sax' in th):
+        tags = ['#SmoothJazz', '#RelaxingJazz', '#SaxophoneMusic',
+                '#SleepMusic', '#DeepSleep', '#LateNightJazz', '#CozyJazz',
+                '#InstrumentalJazz', '#BackgroundMusic', '#RainyNightJazz',
+                '#JazzCafe']
+    elif 'jazz' in th or 'sax' in th:
         tags = ['#SmoothJazz', '#90sJazz', '#RelaxingJazz', '#SaxophoneMusic',
                 '#SoulfulRnB', '#LateNightJazz', '#CozyJazz', '#InstrumentalJazz',
                 '#BackgroundMusic', '#RainyNightJazz', '#JazzCafe']

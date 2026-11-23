@@ -101,6 +101,9 @@ if not isinstance(sys.stderr, _LogTee):
 CONFIG_FILE = os.path.join(BASE_DIR, 'config.json')
 CHANNELS_FILE = os.path.join(BASE_DIR, 'channels_db.json')
 TASKS_FILE = os.path.join(BASE_DIR, 'tasks_db.json')
+# 🔥 v1.4.21: Jadwal Rutin (schedules_db.json) — dibaca watchdog supaya
+# channel yang ditanggung baris rutin aktif tidak kena alert stok palsu.
+SCHEDULES_FILE = os.path.join(BASE_DIR, 'schedules_db.json')
 # 🔥 v1.2.25: registry multi-client OAuth (metadata saja — dibaca untuk
 # menampilkan project cadangan di /kuota; secret tidak pernah dibaca di sini).
 OAUTH_CLIENTS_FILE = os.path.join(BASE_DIR, 'oauth_clients.json')
@@ -697,6 +700,26 @@ def get_stock_days(ch):
         return (last_date - _wib_now()).total_seconds() / 86400.0
     except Exception:
         return None
+
+def _routine_covered_yt_ids():
+    """yt_id channel yang jadwalnya dijamin baris Jadwal Rutin aktif
+    (schedules_db.json: enabled dan end_date >= hari ini WIB).
+    Cerminan logika v1.4.14 di app.py (telegram_reminder_worker) — eksekutor
+    membuat videonya tiap pagi (besok ada jadwal jam 05:00), jadi stok
+    jadwal tidak pernah habis sebelum end_date barisnya. Gagal baca →
+    set() kosong (aman: alert jalan seperti biasa)."""
+    try:
+        if not os.path.exists(SCHEDULES_FILE):
+            return set()
+        with open(SCHEDULES_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        rows = data.get('schedules', []) if isinstance(data, dict) else data
+        today = _wib_today_str()
+        return {r.get('yt_id') for r in rows if isinstance(r, dict)
+                and r.get('yt_id') and r.get('enabled')
+                and (not r.get('end_date') or r.get('end_date') >= today)}
+    except Exception:
+        return set()
 
 def _count_history_for_date(history, date_str):
     """Hitung (sukses_tayang, gagal) di riwayat untuk satu tanggal WIB.
@@ -11304,12 +11327,20 @@ def watchdog_background_loop(token, chat_id):
             # Maksimal 1 pesan per channel per kondisi per hari (dedupe monitor_state).
             try:
                 state = load_monitor_state()
+                # 🔥 v1.4.21: channel yang ditanggung Jadwal Rutin aktif
+                # TIDAK diingatkan — eksekutor membuat videonya tiap pagi
+                # (besok ada jadwal jam 05:00), jadi peringatan HABIS /
+                # menipis dari last_scheduled_date batch adalah palsu dan
+                # berulang tiap pagi. Cerminan v1.4.14 di app.py.
+                routine_yt = _routine_covered_yt_ids()
                 for ch in load_channels():
                     stock = get_stock_days(ch)
                     if stock is None:
                         continue
                     name = _channel_display_name(ch)
                     yt_id = ch.get('yt_id', name)
+                    if yt_id in routine_yt:
+                        continue
                     last_sched = ch.get('last_scheduled_date', '-')
                     if stock < 0:
                         key = f"stock_empty:{yt_id}"

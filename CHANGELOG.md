@@ -1,3 +1,6 @@
+## 1.4.17
+- Parser tracklist kini kenal format POLOS (akar hilangnya tracklist, user 23 Nov 2026 07:56 WIB): `_playlist_parse_tracklist` + `_playlist_parse_plain_list` baru — header 'Daftar Lagu:'/'Tracklist:' lalu baris 'Judul – Artis' tanpa nomor/timestamp (format umum kompilasi Melayu/Indonesia) kini terbaca. Tes: referensi Malaysia 'LAGU SLOW ROCK...' → 12 lagu (dulu []); format bernomor/timestamp lama tetap jalan; tanpa daftar tetap []. Video Malaysia Cozy Sax hari ini (sznrhWr271g) thumbnail + deskripsinya sudah diperbaiki manual (tracklist 12 lagu, urutan sama persis).
+
 ## 1.4.16
 - Thumbnail playlist kini TAJAM (akar masalah blur, user 23 Nov 2026 07:34 WIB): `_playlist_make_thumbnail` tidak lagi me-blur foto latar (GaussianBlur 26 dicabut) dan tidak lagi menggelapkan berat (brightness 0.52 → 0.9). Tes: ketajaman 0.3 → 4.9, kecerahan 67 → 117. Keterbacaan teks dijaga scrim atas/bawah saja. Video Malaysia Cozy Sax hari ini (sznrhWr271g) thumbnail-nya sudah diganti manual ke versi tajam (frame video sendiri, ketajaman 8.67).
 

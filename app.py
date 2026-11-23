@@ -12330,9 +12330,50 @@ def _playlist_parse_tracklist(description):
     for run in runs:
         if _valid(run) and (best is None or len(run) > len(best)):
             best = run
-    if not best:
+    if best:
+        return [r[2] for r in best[:40]]
+    # Fallback v1.4.17 (user 23 Nov 2026): daftar POLOS tanpa nomor/
+    # timestamp — format umum kompilasi Melayu/Indonesia: header
+    # 'Daftar Lagu:' / 'Tracklist:' lalu baris 'Judul – Artis'.
+    # Referensi Malaysia 'LAGU SLOW ROCK...' memakai format ini;
+    # parser lama mengembalikan [] sehingga thumbnail kehilangan
+    # tracklist (brief user: list judul TIDAK BOLEH dihapus).
+    return _playlist_parse_plain_list(lines)
+
+
+def _playlist_parse_plain_list(lines):
+    """Daftar lagu polos: header 'Daftar Lagu'/'Tracklist' lalu baris
+    'Judul – Artis' (atau judul saja), tanpa nomor/timestamp.
+    Kembalikan judul SESUAI URUTAN, maks 40. [] bila tidak meyakinkan."""
+    hdr_re = re.compile(r'(daftar\s+lagu|track\s*list|daftar\s+isi|daftar\s+putar|song\s*list)\s*:?', re.I)
+    stop_re = re.compile(r'(jangan lupa|subscribe|lonceng|http|www\.|#|follow|instagram|tiktok|facebook|whatsapp|telegram)', re.I)
+    titles = []
+    in_list = False
+    for ln in lines:
+        s = (ln or '').strip()
+        if not in_list:
+            if hdr_re.search(s):
+                in_list = True
+            continue
+        if not s:
+            if len(titles) >= 4:
+                break
+            continue
+        if stop_re.search(s):
+            break
+        if not re.search(r'[A-Za-z]{2,}', s):
+            break
+        if len(s) > 80:
+            break
+        s2 = re.sub(r'^[^\w]+', '', s).strip()
+        if not s2:
+            break
+        titles.append(s2)
+    if len(titles) < 4:
         return []
-    return [r[2] for r in best[:40]]
+    if all(len(t.split()) == 1 and len(t) <= 12 for t in titles):
+        return []
+    return titles[:40]
 
 
 def _playlist_make_thumbnail(ref_thumb_url, new_title, channel_name, out_path,

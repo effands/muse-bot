@@ -13765,8 +13765,10 @@ def _zumo_build_description(theme, tracks, channel_name, title):
     v1.4.18 (user 23 Nov 2026): deskripsi 3-5 paragraf biar terlihat pro +
     DISCLAIMER hak cipta (KHUSUS lagu Zumo): semua lagu orisinal, dilindungi
     YouTube Content ID, re-upload dilarang — pelanggar langsung kena
-    copyright strike tanpa peringatan. Inggris untuk tema musik, Indonesia
-    untuk tema agama."""
+    copyright strike tanpa peringatan. v1.4.19 (user 23 Nov 2026, "tapi
+    dalam bahasa inggris ya"): disclaimer SELALU Bahasa Inggris, untuk
+    semua tema (musik maupun agama) — isi deskripsi lainnya tetap mengikuti
+    bahasa tema (musik Inggris, agama Indonesia)."""
     th = (theme or '').strip()
     if _zumo_is_agama_theme(th):
         lines = []
@@ -13785,7 +13787,7 @@ def _zumo_build_description(theme, tracks, channel_name, title):
         if channel_name:
             lines.append(f"Channel: {channel_name}")
         lines.append('')
-        lines.append('Pemberitahuan Hak Cipta: Semua lagu dalam video ini adalah karya orisinal dan dilindungi oleh YouTube Content ID. Dilarang mengunggah ulang, menyalin, atau memakai ulang audio ini di channel lain — pelanggar akan langsung terkena copyright strike tanpa peringatan.')
+        lines.append('Copyright Notice: All music in this video is original and protected by YouTube Content ID. Re-uploading, copying or reusing any part of this audio on another channel is strictly prohibited and will result in an immediate copyright strike without warning.')
         return _clean_upload_text('\n'.join(lines), max_len=5000, fallback=title)
     lines = []
     lines.append(f"{title}")

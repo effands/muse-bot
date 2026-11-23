@@ -3297,7 +3297,7 @@ function lastUpdateFor(yt_id) {
   const icon = kind === 'shorts_muse' ? '📱' : (isPl ? '🎵' : '🎬');
   return { type: type, icon: icon, time: best.time || '', title: best.title || 'Video' };
 }
-// 🔥 v1.3.55: param showEmail — false = sembunyikan kolom EMAIL (dipakai Dashboard); default tampil (Task Monitor).
+// 🔥 v1.3.55: param showEmail — false = sembunyikan kolom EMAIL (dipakai Dashboard; sejak v1.4.20 juga Task Monitor — aturan Bos: email tidak tampil di tabel channel).
 function channelTableHtml(list, withMode, showNext, fill, showEmail, showGroup) {
   // 🔥 v1.3.70: GROUP disembunyikan di Dashboard (showGroup=false) — tabel
   // jadi muat di kartu tanpa scroll menyamping; di Task Monitor + DETAIL
@@ -3578,7 +3578,7 @@ function renderTaskChannels() {
   const prev = el.querySelector('div');
   const sl = prev ? prev.scrollLeft : 0, st = prev ? prev.scrollTop : 0;
   el.innerHTML = channels.length
-    ? channelTableHtml(channels, false, true)
+    ? channelTableHtml(channels, false, true, undefined, false) // 🔥 v1.4.20: EMAIL disembunyikan di Task Monitor juga (aturan Bos: email tidak tampil di tabel channel) — GROUP tetap tampil, di sinilah group diatur
     : `<div style="padding:10px 0;color:var(--muted);font-family:var(--font-m);font-size:11px">Belum ada channel tertaut — tautkan dari Settings.</div>`;
   const cur = el.querySelector('div');
   if (cur) { cur.scrollLeft = sl; cur.scrollTop = st; }

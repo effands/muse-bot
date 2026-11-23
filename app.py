@@ -12061,12 +12061,40 @@ def _playlist_clean_owner_traces(text, ref_channel=''):
     return '\n'.join(kept)
 
 
-def _playlist_rewrite_description(ref_desc, channel_name, new_title, ref_channel=''):
+def _playlist_description_hashtags(keyword, theme):
+    """Hashtag deskripsi playlist dari kata kunci + tema (maks 10, tanpa
+    duplikat). Kata kunci/tema utuh jadi hashtag (mis. 'lagu malaysia'
+    -> #LaguMalaysia), lalu kata per kata, lalu hashtag umum."""
+    tags = []
+    for src in (keyword or '', theme or ''):
+        compact = ''.join(w.capitalize() for w in str(src).replace('-', ' ').split() if w.isalnum())
+        if compact:
+            t = '#' + compact
+            if t not in tags:
+                tags.append(t)
+    for src in (keyword or '', theme or ''):
+        for w in str(src).replace('-', ' ').split():
+            w = ''.join(c for c in w if c.isalnum())
+            if len(w) >= 3:
+                t = '#' + w.capitalize()
+                if t not in tags:
+                    tags.append(t)
+    for t in ['#Musik', '#Playlist', '#Relaksasi', '#Lagu', '#Music']:
+        if t not in tags:
+            tags.append(t)
+    return ' '.join(tags[:10])
+
+
+def _playlist_rewrite_description(ref_desc, channel_name, new_title, ref_channel='', theme=''):
     """Deskripsi baru: 2 baris awal referensi (topik) + intro channel +
-    ajakan subscribe. Selalu berbeda dari referensi, < 5000 karakter.
+    ajakan subscribe + hashtag. Selalu berbeda dari referensi, < 5000 karakter.
     v1.2.24: kepala referensi dibersihkan dari jejak pemilik asli
     (nama channel referensi, URL, handle, kontak/medsos) + 2 baris
-    pertama mengandung kata kunci utama (SEO)."""
+    pertama mengandung kata kunci utama (SEO).
+    v1.4.18 (user 23 Nov 2026): deskripsi 3-5 paragraf biar terlihat pro —
+    paragraf sambutan + ajakan subscribe yang hangat + hashtag dari kata kunci
+    dan tema. TANPA disclaimer hak cipta (disclaimer HANYA untuk video lagu
+    Zumo — playlist Malaysia jangan dikasih)."""
     clean_head = _playlist_clean_owner_traces(ref_desc, ref_channel=ref_channel)
     lines = [l.strip() for l in clean_head.splitlines() if l.strip()]
     head = ' '.join(lines[:2])[:600]
@@ -12077,11 +12105,11 @@ def _playlist_rewrite_description(ref_desc, channel_name, new_title, ref_channel
         head = (kw + '. ' + head) if head else kw
         head = head[:600]
     ch = (channel_name or '').strip() or 'channel ini'
+    tags = _playlist_description_hashtags(kw, theme)
     body = (f"{new_title}\n\n{head}\n\n"
-            f"Selamat datang di {ch} — musik pilihan untuk menemani harimu. "
-            f"Jangan lupa Subscribe dan nyalakan loncengnya supaya tidak "
-            f"ketinggalan kompilasi terbaru.\n\n"
-            f"#musik #playlist #relaksasi")
+            f"Selamat datang di {ch} — kompilasi musik pilihan yang disusun khusus untuk menemani harimu, dari santai di rumah sampai perjalanan jauh. Setiap lagu dipilih supaya alurnya mengalir dari awal sampai akhir, jadi pasang headphone, duduk santai, dan nikmati satu per satu.\n\n"
+            f"Kalau kamu suka kompilasi seperti ini, jangan lupa Subscribe dan nyalakan loncengnya supaya tidak ketinggalan kompilasi terbaru setiap hari. Bagikan juga playlist ini ke teman dan keluarga yang suka musik seperti ini — dukunganmu membuat channel ini terus berkembang.\n\n"
+            f"{tags}")
     return body[:4500]
 
 
@@ -13084,7 +13112,7 @@ def _playlist_build_thread(job_id):
         new_title = _clean_upload_text(_raw_title, max_len=100,
                                        fallback=f"Playlist {_date_s}",
                                        strip_channel=ch_name)
-        _raw_desc = _playlist_rewrite_description(job.get('ref_description', ''), ch_name, new_title, ref_channel=job.get('ref_channel', ''))
+        _raw_desc = _playlist_rewrite_description(job.get('ref_description', ''), ch_name, new_title, ref_channel=job.get('ref_channel', ''), theme=job.get('theme', ''))
         new_desc = _clean_upload_text(_raw_desc, max_len=5000, fallback=new_title)
         _raw_tags = _playlist_build_tags(job.get('ref_tags') or [], job.get('theme', ''), keyword=_kw)
         new_tags = ', '.join(_clean_upload_tags(_raw_tags)) or 'musik, playlist'
@@ -13733,7 +13761,12 @@ def _zumo_build_description(theme, tracks, channel_name, title):
     tracks = [{title, duration, offset}].
     🔥 v1.3.101: tema MUSIK -> deskripsi Inggris (pembuka + Tracklist +
     CTA subscribe + 12 hashtag Inggris — permintaan user 21-22 Nov 2026);
-    tema AGAMA -> template Indonesia lama (audiens Indonesia)."""
+    tema AGAMA -> template Indonesia lama (audiens Indonesia).
+    v1.4.18 (user 23 Nov 2026): deskripsi 3-5 paragraf biar terlihat pro +
+    DISCLAIMER hak cipta (KHUSUS lagu Zumo): semua lagu orisinal, dilindungi
+    YouTube Content ID, re-upload dilarang — pelanggar langsung kena
+    copyright strike tanpa peringatan. Inggris untuk tema musik, Indonesia
+    untuk tema agama."""
     th = (theme or '').strip()
     if _zumo_is_agama_theme(th):
         lines = []
@@ -13751,12 +13784,14 @@ def _zumo_build_description(theme, tracks, channel_name, title):
         lines.append('Jangan lupa subscribe dan nyalakan loncengnya supaya tidak ketinggalan lagu baru.')
         if channel_name:
             lines.append(f"Channel: {channel_name}")
+        lines.append('')
+        lines.append('Pemberitahuan Hak Cipta: Semua lagu dalam video ini adalah karya orisinal dan dilindungi oleh YouTube Content ID. Dilarang mengunggah ulang, menyalin, atau memakai ulang audio ini di channel lain — pelanggar akan langsung terkena copyright strike tanpa peringatan.')
         return _clean_upload_text('\n'.join(lines), max_len=5000, fallback=title)
     lines = []
     lines.append(f"{title}")
     lines.append('')
     if th:
-        lines.append(f"Settle in for {th} — original music made for relaxing evenings, focused work and quiet moments.")
+        lines.append(f"Settle in for {th} — original music made for relaxing evenings, focused work and quiet moments. Every track is composed exclusively for this channel, so you will not hear it anywhere else.")
     lines.append('')
     lines.append('Tracklist:')
     for tr in tracks:
@@ -13764,10 +13799,12 @@ def _zumo_build_description(theme, tracks, channel_name, title):
         mm, ss = int(off // 60), int(off % 60)
         lines.append(f"{mm:02d}:{ss:02d} {tr.get('title') or 'Song'}")
     lines.append('')
-    lines.append('If you enjoy this music, subscribe and tap the bell so you never miss a new session. Tell us in the comments which track is your favourite.')
+    lines.append('If you enjoy this music, subscribe and tap the bell so you never miss a new session. Tell us in the comments which track is your favourite — your support keeps this channel growing, and sharing this video with someone who needs a quiet moment means the world to us.')
     if channel_name:
         lines.append('')
         lines.append(f"Channel: {channel_name}")
+    lines.append('')
+    lines.append('Copyright Notice: All music in this video is original and protected by YouTube Content ID. Re-uploading, copying or reusing any part of this audio on another channel is strictly prohibited and will result in an immediate copyright strike without warning.')
     lines.append('')
     lines.append(' '.join(_zumo_hashtags(th, channel_name)))
     return _clean_upload_text('\n'.join(lines), max_len=5000, fallback=title)

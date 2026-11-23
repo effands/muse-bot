@@ -4525,10 +4525,13 @@ def _background_worker_loop():
                             # (langsung ketahuan channel mana), judul video
                             # lengkap, tanggal singkat; referensi dibuang
                             # (isinya sama dengan judul).
+                            # v1.4.22: kata "Tayang" di pesan Telegram diganti
+                            # "Publish" (user 24 Nov 2026) — status panel
+                            # "Tayang! ✅" tidak diubah.
                             _audio_note = (task.get('shorts_audio') or '').strip()
-                            _tayang_title = f"{ch_name} — Tayang"
+                            _tayang_title = f"{ch_name} — Publish"
                             if task.get('kind') == SHORTS_MUSE_KIND:
-                                _tayang_title = f"Shorts {ch_name} — Tayang"
+                                _tayang_title = f"Shorts {ch_name} — Publish"
                             _tayang_status = (f"🎵 {task['title']}\n"
                                               f"🕔 {_short_tayang_date(task.get('publish_date') or '')}")
                             if _audio_note:

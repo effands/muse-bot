@@ -1,3 +1,6 @@
+## 1.4.16
+- Thumbnail playlist kini TAJAM (akar masalah blur, user 23 Nov 2026 07:34 WIB): `_playlist_make_thumbnail` tidak lagi me-blur foto latar (GaussianBlur 26 dicabut) dan tidak lagi menggelapkan berat (brightness 0.52 → 0.9). Tes: ketajaman 0.3 → 4.9, kecerahan 67 → 117. Keterbacaan teks dijaga scrim atas/bawah saja. Video Malaysia Cozy Sax hari ini (sznrhWr271g) thumbnail-nya sudah diganti manual ke versi tajam (frame video sendiri, ketajaman 8.67).
+
 ## 1.4.15
 - Perbaiki suffix metadata Zumo (akar masalah R&B di video tidur, user 23 Nov 2026 07:26 WIB): `_zumo_seo_tail` kini cek 'sleep'/'tidur' DULU sebelum 'jazz' — jazz tidur dapat ekor 'Relaxing Saxophone For Deep Sleep' (tanpa R&B); jazz 90s tetap dapat suffix R&B. `_zumo_hashtags` ikut: jazz tidur tanpa #SoulfulRnB (diganti #SleepMusic/#DeepSleep). Semua ekor kini Title Case (kapital setiap awal kata, permintaan user 07:30 WIB).
 

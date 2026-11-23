@@ -12339,18 +12339,21 @@ def _playlist_make_thumbnail(ref_thumb_url, new_title, channel_name, out_path,
                              badge=None, ref_description=''):
     """Thumbnail playlist — v1.3.96: DIGENERATE BARU (keputusan user
     22 Nov 2026 — bukan lagi foto asli referensi seperti sejak v1.3.3).
-    Latar = foto referensi full-bleed yang di-BLUR KUAT + digelapkan,
-    supaya SEMUA teks bawaan foto — termasuk watermark/signature channel
-    lain di sudut mana pun — hancur jadi noda warna yang tidak terbaca
-    (PIL tidak punya pendeteksi watermark; blur adalah cara yang
-    posisinya tidak peduli). Di atasnya digambar ulang dengan bersih:
+    v1.4.16 (user 23 Nov 2026 07:34 WIB, "kok ini masih blur"): latar
+    foto referensi kini TAJAM tanpa blur + tidak digelapkan berat —
+    blur kuat (GaussianBlur 26) + brightness 0.52 di v1.3.96 membuat
+    latar jadi gumpalan gelap tak terbaca. Foto kini tajam + cerah
+    (brightness 0.9); keterbacaan teks dijaga scrim atas/bawah saja.
+    Watermark channel lain (bila ada di foto referensi) kini bisa
+    terlihat — diterima user demi foto tajam (pilihan varian B).
+    Di atasnya digambar ulang dengan bersih:
     judul video gaya Zumo (serif, tengah-atas, baris terakhir emas) +
     DAFTAR LAGU dari deskripsi referensi (via _playlist_parse_tracklist)
     dengan URUTAN YANG SAMA PERSIS seperti referensi (tidak diurutkan
     ulang, tidak dihapus duplikat; nomor ditulis ulang 01..N sesuai
     urutan tampil) + nama channel kita di kanan bawah (emas).
     Bila deskripsi referensi tidak berisi daftar lagu -> thumbnail
-    TANPA tracklist (hanya foto blur + judul gaya Zumo) — jangan
+    TANPA tracklist (hanya foto tajam + judul gaya Zumo) — jangan
     mengarang daftar lagu. Bila unduhan foto gagal -> gradien lokal
     (judul + tracklist tetap digambar). Hanya unduh dari *.ytimg.com.
     Gagal total (PIL rusak) -> raise. `badge` dipertahankan demi
@@ -12379,9 +12382,9 @@ def _playlist_make_thumbnail(ref_thumb_url, new_title, channel_name, out_path,
             nh = int(w / target)
             y = (h - nh) // 2
             photo = photo.crop((0, y, w, y + nh))
+        # TANPA blur, TIDAK digelapkan berat (v1.4.16 — foto HARUS tajam).
         img = photo.resize((1280, 720), Image.LANCZOS)
-        img = img.filter(ImageFilter.GaussianBlur(26))
-        img = ImageEnhance.Brightness(img).enhance(0.52)
+        img = ImageEnhance.Brightness(img).enhance(0.9)
     else:
         img = _playlist_thumb_gradient(1280, 720, (24, 24, 34), (8, 8, 14))
     # Scrim atas (judul terbaca) + bawah (nama channel terbaca).

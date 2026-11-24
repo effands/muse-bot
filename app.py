@@ -12760,43 +12760,62 @@ def _playlist_parse_plain_list(lines):
     return titles[:40]
 
 
-def _playlist_make_thumbnail(ref_thumb_url, new_title, channel_name, out_path,
-                             badge=None, ref_description=''):
-    """Thumbnail playlist — v1.3.96: DIGENERATE BARU (keputusan user
-    22 Nov 2026 — bukan lagi foto asli referensi seperti sejak v1.3.3).
-    v1.4.16 (user 23 Nov 2026 07:34 WIB, "kok ini masih blur"): latar
-    foto referensi kini TAJAM tanpa blur + tidak digelapkan berat —
-    blur kuat (GaussianBlur 26) + brightness 0.52 di v1.3.96 membuat
-    latar jadi gumpalan gelap tak terbaca. Foto kini tajam + cerah
-    (brightness 0.9); keterbacaan teks dijaga scrim atas/bawah saja.
-    Watermark channel lain (bila ada di foto referensi) kini bisa
-    terlihat — diterima user demi foto tajam (pilihan varian B).
-    Di atasnya digambar ulang dengan bersih:
-    judul video gaya Zumo (serif, tengah-atas, baris terakhir emas) +
-    DAFTAR LAGU dari deskripsi referensi (via _playlist_parse_tracklist)
-    dengan URUTAN YANG SAMA PERSIS seperti referensi (tidak diurutkan
-    ulang, tidak dihapus duplikat; nomor ditulis ulang 01..N sesuai
-    urutan tampil) + nama channel kita di kanan bawah (emas).
-    Bila deskripsi referensi tidak berisi daftar lagu -> thumbnail
-    TANPA tracklist (hanya foto tajam + judul gaya Zumo) — jangan
-    mengarang daftar lagu. Bila unduhan foto gagal -> gradien lokal
-    (judul + tracklist tetap digambar). Hanya unduh dari *.ytimg.com.
-    Gagal total (PIL rusak) -> raise. `badge` dipertahankan demi
+def _playlist_thumb_clip_frame(clip_path, out_path, at_sec=2.0):
+    """Ambil 1 frame bersih dari klip video Pixabay (latar thumbnail).
+    Frame diambil di detik `at_sec` (fallback 0.5 lalu 0). Kembalikan
+    out_path bila berhasil, None bila gagal. Frame ini BERSIH — foto
+    pemandangan tanpa teks baked-in, tidak seperti thumbnail referensi
+    YouTube yang sudah didesain penuh teks (judul + tracklist + wajah)."""
+    import subprocess
+    if not clip_path or not os.path.exists(clip_path):
+        return None
+    for ss in (at_sec, 0.5, 0):
+        try:
+            r = subprocess.run(
+                ['ffmpeg', '-y', '-v', 'error', '-ss', str(ss),
+                 '-i', clip_path, '-frames:v', '1', '-q:v', '3', out_path],
+                capture_output=True, timeout=60)
+            if (r.returncode == 0 and os.path.exists(out_path)
+                    and os.path.getsize(out_path) > 1000):
+                return out_path
+        except Exception:
+            continue
+    return None
+
+
+def _playlist_make_thumbnail(new_title, channel_name, out_path,
+                             bg_image_path=None, ref_description='',
+                             badge=None):
+    """Thumbnail playlist — v1.4.29: LATAR BERSIH (user 24 Nov 2026
+    16:16 WIB, thumbnail video 2u4MbwTMp3k 'ancur': thumbnail referensi
+    YouTube SUDAH didesain penuh teks — judul besar kuning + tracklist
+    kuning + wajah — lalu generator menggambar judul + tracklist KITA di
+    atasnya, teks menumpuk teks sampai tidak terbaca. Akar masalah:
+    `ref_thumb_url` dipakai sebagai latar. Mulai v1.4.29 thumbnail
+    referensi TIDAK LAGI dipakai sebagai latar. Latar kini dari FRAME
+    klip Pixabay (`bg_image_path`, foto bersih tanpa teks) atau gradien
+    lokal bila tidak ada frame. Layout: judul gaya Zumo (serif,
+    tengah-atas, baris terakhir emas) + DAFTAR LAGU dari deskripsi
+    referensi (via _playlist_parse_tracklist, URUTAN SAMA PERSIS, nomor
+    ditulis ulang 01..N) di PANEL GELAP kiri (1 kolom s.d. 15 lagu;
+    2 kolom di atas itu, panel penuh) supaya teks putih selalu terbaca
+    apapun foto latarnya + nama channel kita kanan bawah (emas). Bila
+    deskripsi referensi tidak berisi daftar lagu -> thumbnail TANPA
+    tracklist (hanya foto bersih + judul) — jangan mengarang daftar
+    lagu. Gagal total (PIL rusak) -> raise. `badge` dipertahankan demi
     kompatibilitas pemanggil lama, tidak lagi dipakai."""
-    if not ref_thumb_url or not re.match(r'^https://i\d*\.ytimg\.com/', ref_thumb_url):
-        raise ValueError('URL thumbnail referensi tidak valid.')
     tracks = _playlist_parse_tracklist(ref_description)
-    photo = None
-    try:
-        photo, _photo_bytes = _playlist_thumb_fetch(ref_thumb_url)
-    except Exception as e:
-        print(f"[playlist] thumbnail referensi tidak bisa diunduh ({e}) "
-              f"— pakai gradien lokal.", flush=True)
-        photo = None
-    from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
+    from PIL import Image, ImageDraw, ImageEnhance
     gold = (255, 216, 140)
+    photo = None
+    if bg_image_path and os.path.exists(bg_image_path):
+        try:
+            photo = Image.open(bg_image_path).convert('RGB')
+        except Exception as e:
+            print(f"[playlist] latar thumbnail tidak bisa dibaca ({e}) "
+                  f"— pakai gradien lokal.", flush=True)
+            photo = None
     if photo is not None:
-        # Crop tengah 16:9 -> 1280x720 -> blur kuat -> gelapkan.
         w, h = photo.size
         target = 1280 / 720
         if w / h > target:
@@ -12807,7 +12826,6 @@ def _playlist_make_thumbnail(ref_thumb_url, new_title, channel_name, out_path,
             nh = int(w / target)
             y = (h - nh) // 2
             photo = photo.crop((0, y, w, y + nh))
-        # TANPA blur, TIDAK digelapkan berat (v1.4.16 — foto HARUS tajam).
         img = photo.resize((1280, 720), Image.LANCZOS)
         img = ImageEnhance.Brightness(img).enhance(0.9)
     else:
@@ -12849,7 +12867,8 @@ def _playlist_make_thumbnail(ref_thumb_url, new_title, channel_name, out_path,
         draw.text((x, y), ln, font=font, fill=col + (255,))
         y += line_h
     # Daftar lagu (bila ada): nomor emas + judul putih, urutan tampil
-    # = urutan deskripsi. 1 kolom s.d. 15 lagu, 2 kolom di atas itu.
+    # = urutan deskripsi. 1 kolom s.d. 15 lagu (PANEL GELAP KIRI,
+    # foto kanan tetap terlihat), 2 kolom di atas itu (panel penuh).
     y_tracks = y + 18
     if tracks:
         n = len(tracks)
@@ -12861,8 +12880,20 @@ def _playlist_make_thumbnail(ref_thumb_url, new_title, channel_name, out_path,
         fsize = max(18, row_h - 9)
         fnum = _playlist_thumb_font(fsize)
         ftitle = _playlist_thumb_font(fsize)
-        col_w = (1152 - 48) // cols if two_col else 1152
-        x0s = [64, 672] if two_col else [64]
+        # Panel gelap di belakang tracklist (v1.4.29) — teks putih
+        # harus terbaca apapun kecerahan foto latarnya.
+        panel_y1 = max(0, y_tracks - 12)
+        panel_y2 = min(668, y_tracks + per_col * row_h + 10)
+        if two_col:
+            panel_x1, panel_x2 = 40, 1240
+            col_w = (1152 - 48) // cols
+            x0s = [64, 672]
+        else:
+            panel_x1, panel_x2 = 40, 740
+            col_w = 660
+            x0s = [64]
+        draw.rectangle([panel_x1, panel_y1, panel_x2, panel_y2],
+                       fill=(0, 0, 0, 120))
         shown = tracks[:30]
         for idx, t in enumerate(shown):
             ci = idx // per_col if two_col else 0
@@ -12890,81 +12921,6 @@ def _playlist_make_thumbnail(ref_thumb_url, new_title, channel_name, out_path,
     tw = draw.textlength(ch[:60], font=fsmall)
     draw.text((1224 - tw + 2, 676 + 3), ch[:60], font=fsmall, fill=(0, 0, 0, 170))
     draw.text((1224 - tw, 676), ch[:60], font=fsmall, fill=gold + (255,))
-    q = 88
-    while True:
-        img.save(out_path, 'JPEG', quality=q, optimize=True)
-        if os.path.getsize(out_path) <= 2_000_000 or q <= 50:
-            break
-        q -= 8
-    return out_path
-    if not ref_thumb_url or not re.match(r'^https://i\d*\.ytimg\.com/', ref_thumb_url):
-        raise ValueError('URL thumbnail referensi tidak valid.')
-    photo = None
-    photo_bytes = None
-    try:
-        photo, photo_bytes = _playlist_thumb_fetch(ref_thumb_url)
-    except Exception as e:
-        print(f"[playlist] thumbnail referensi tidak bisa diunduh ({e}) "
-              f"— pakai gradien lokal.", flush=True)
-        photo = None
-        photo_bytes = None
-    if photo is not None:
-        # 🔥 v1.3.3: foto apa adanya — teks asli thumbnail utuh.
-        if photo_bytes is not None and len(photo_bytes) <= 2_000_000:
-            with open(out_path, 'wb') as f:
-                f.write(photo_bytes)
-            return out_path
-        q = 88
-        while True:
-            photo.save(out_path, 'JPEG', quality=q, optimize=True)
-            if os.path.getsize(out_path) <= 2_000_000 or q <= 50:
-                break
-            q -= 8
-        return out_path
-    # --- Fallback: gradien lokal + judul (tanpa foto), seperti sebelumnya.
-    title = _clean_upload_text(new_title, max_len=100) or 'Musik Playlist'
-    ch = _clean_upload_text(channel_name or '') or 'ZIMUSE'
-    badge = (badge or ('FULL ALBUM' if 'full album' in title.lower()
-                       else 'PLAYLIST')).strip()[:20].upper()
-    c1, c2, accent = (24, 24, 34), (8, 8, 14), (255, 212, 0)
-    from PIL import Image, ImageDraw
-    img = _playlist_thumb_gradient(1280, 720, c1, c2)
-    draw = ImageDraw.Draw(img, 'RGBA')
-    max_w = 1280 - 56 - 40
-    # Badge (pil) kiri atas.
-    font_badge = _playlist_thumb_font(30)
-    tw = draw.textlength(badge, font=font_badge)
-    bx, by = 56, 52
-    draw.rounded_rectangle([bx, by, bx + tw + 40, by + 52], radius=26,
-                           fill=accent + (255,))
-    draw.text((bx + 20, by + 9), badge, font=font_badge, fill=(0, 0, 0))
-    # Judul: coba font besar dulu, turunkan bila butuh > 5 baris.
-    # Judul TIDAK BOLEH terpotong diam-diam (kasus Malaysia: 108 karakter
-    # butuh 5 baris) — bila bahkan font terkecil masih > 5 baris, baris
-    # terakhir dipotong + '…' supaya kelihatan terpotong.
-    font = _playlist_thumb_font(64)
-    lines = _playlist_wrap_text(title, font, max_w, draw)
-    for size in (64, 56, 48, 40, 36):
-        font = _playlist_thumb_font(size)
-        lines = _playlist_wrap_text(title, font, max_w, draw)
-        if len(lines) <= 5:
-            break
-    if len(lines) > 5:
-        lines = lines[:5]
-        # Potong baris terakhir + '…' supaya muat (wrap sudah sesuai lebar).
-        while draw.textlength(lines[4] + '…', font=font) > max_w and len(lines[4]) > 3:
-            lines[4] = lines[4][:-1]
-        lines[4] = lines[4].rstrip() + '…'
-    line_h = int(font.size * 1.18)
-    block_h = line_h * len(lines)
-    y = 170 + max(0, (430 - block_h) // 2)
-    for ln in lines:
-        draw.text((58, y + 3), ln, font=font, fill=(0, 0, 0, 200))
-        draw.text((56, y), ln, font=font, fill=(255, 255, 255))
-        y += line_h
-    # Nama channel kiri bawah (warna aksen).
-    font_small = _playlist_thumb_font(30)
-    draw.text((56, 648), ch[:60], font=font_small, fill=accent)
     q = 88
     while True:
         img.save(out_path, 'JPEG', quality=q, optimize=True)
@@ -13475,17 +13431,30 @@ def _playlist_build_thread(job_id):
         _title_cleaned = (new_title != _raw_title or new_desc != _raw_desc
                           or new_tags != _raw_tags)
         thumb_path = ''
-        if job.get('ref_thumbnail_url'):
+        # 🔥 v1.4.29: latar thumbnail dari FRAME klip Pixabay (foto
+        # bersih tanpa teks) — thumbnail referensi TIDAK LAGI dipakai
+        # sebagai latar (teks baked-in menumpuk dengan judul/tracklist
+        # kita, kasus video 2u4MbwTMp3k). Tanpa frame -> gradien lokal.
+        bg_frame = ''
+        if clip_paths:
             try:
-                thumb_path = _playlist_make_thumbnail(
-                    job['ref_thumbnail_url'], new_title, ch_name,
-                    os.path.join(job_dir, 'thumb.jpg'),
-                    ref_description=job.get('ref_description', ''))
+                bg_frame = _playlist_thumb_clip_frame(
+                    clip_paths[0], os.path.join(job_dir, 'thumb_bg.jpg')) or ''
             except Exception as e:
-                # 🔥 v1.2.22: thumbnail gagal = job GAGAL dengan pesan jelas.
-                # Jangan diam-diam lanjut tanpa thumbnail (dulu: saat upload
-                # fallback ke thumbnail galeri acak — bukan gambar playlist).
-                raise RuntimeError(f'Thumbnail playlist gagal dibuat: {e}')
+                print(f"[playlist] frame latar gagal ({e}) — pakai gradien.",
+                      flush=True)
+                bg_frame = ''
+        try:
+            thumb_path = _playlist_make_thumbnail(
+                new_title, ch_name,
+                os.path.join(job_dir, 'thumb.jpg'),
+                bg_image_path=bg_frame or None,
+                ref_description=job.get('ref_description', ''))
+        except Exception as e:
+            # 🔥 v1.2.22: thumbnail gagal = job GAGAL dengan pesan jelas.
+            # Jangan diam-diam lanjut tanpa thumbnail (dulu: saat upload
+            # fallback ke thumbnail galeri acak — bukan gambar playlist).
+            raise RuntimeError(f'Thumbnail playlist gagal dibuat: {e}')
         _playlist_job_update(job_id, status='preparing',
                              progress='Membuat task upload...',
                              new_title=new_title, new_description=new_desc,

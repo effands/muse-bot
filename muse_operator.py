@@ -4041,6 +4041,53 @@ def handle_callback_query(token, chat_id, callback_query):
             send_message(token, chat_id, "😌 *Sip Pak Effand, dibatalkan* — tidak ada yang diubah.")
             return
         return
+    # --- 📅 JADWAL BANK (v1.4.26): tombol alur /jadwalbank ---
+    # jb:ch:<idx> pilih channel → (teks) tema → (teks) jam perdana →
+    # jb:step:<n> jam maju/hari → jb:yes / jb:no konfirmasi simpan.
+    if data.startswith('jb:'):
+        draft = _load_jb_draft(chat_id)
+        if not draft or draft.get('expired'):
+            answer_callback(token, cq_id,
+                            "Jadwalnya sudah hangus / selesai — ketik /jadwalbank lagi ya Pak Effand 😌")
+            return
+        if data.startswith('jb:ch:'):
+            try:
+                idx = int(data[len('jb:ch:'):])
+                ch = load_channels()[idx]
+            except Exception:
+                answer_callback(token, cq_id, "Eh, channel-nya nggak valid nih 😅")
+                return
+            draft['yt_id'] = ch.get('yt_id')
+            draft['step'] = 'theme'
+            _save_jb_draft(chat_id, draft)
+            answer_callback(token, cq_id, "Sip!")
+            _jb_ask_theme(token, chat_id, draft)
+            return
+        if data.startswith('jb:step:'):
+            try:
+                n = int(data[len('jb:step:'):])
+            except Exception:
+                answer_callback(token, cq_id, "Eh, pilihannya nggak valid nih 😅")
+                return
+            if n not in (0, 1, 2):
+                answer_callback(token, cq_id, "Eh, pilihannya nggak valid nih 😅")
+                return
+            draft['step_hours'] = n
+            draft['step'] = 'confirm'
+            _save_jb_draft(chat_id, draft)
+            answer_callback(token, cq_id, "Sip!")
+            _jb_ask_confirm(token, chat_id, draft)
+            return
+        if data == 'jb:yes':
+            answer_callback(token, cq_id, "Siap, saya simpan!")
+            _jb_save(token, chat_id, draft)
+            return
+        if data == 'jb:no':
+            _clear_jb_draft(chat_id)
+            answer_callback(token, cq_id, "Dibatalkan.")
+            send_message(token, chat_id, "😌 *Sip Pak Effand, dibatalkan* — tidak ada jadwal yang dibuat.")
+            return
+        return
     # --- 🧠 NLU: jawaban tombol klarifikasi (channel / niche / mode /
     # Short-vs-Long / Ya-Bukan). ---
     # --- 🔍 SARAN RISET TRENDING (v1.3.66): tombol shortcut di pesan riset ---
@@ -10462,6 +10509,187 @@ def _aturjadwal_save(token, chat_id, draft):
                  f"✅ *Berhasil Pak Effand!* 😎\n{val_txt} untuk channel *{_tg_escape(name)}*.{extra}")
 
 
+# 🔥 v1.4.26 — /jadwalbank: buat jadwal rutin bank Zumo harian dari Telegram.
+# Q1 channel (tombol) → Q2 tema (teks) → Q3 jam perdana (teks HH:MM) →
+# Q4 jam maju/hari (tombol 0/1/2) → konfirmasi ✅/❌.
+# Default: 7 lagu/hari, 30 hari (1 bulan) dari hari ini, publish langsung.
+# Draft di monitor_state.json key 'jadwalbank_drafts' (TTL 30 menit).
+# Simpan via endpoint operator /api/operator/schedule_create (panel).
+_JB_DRAFT_TTL = 1800
+
+
+def _load_jb_draft(chat_id):
+    try:
+        state = load_monitor_state()
+        d = (state.get('jadwalbank_drafts') or {}).get(str(chat_id))
+        if not d:
+            return None
+        if time.time() - float(d.get('created_at', 0)) > _JB_DRAFT_TTL:
+            _clear_jb_draft(chat_id)
+            return {"expired": True}
+        return d
+    except Exception:
+        return None
+
+
+def _save_jb_draft(chat_id, draft):
+    try:
+        state = load_monitor_state()
+        state.setdefault('jadwalbank_drafts', {})[str(chat_id)] = draft
+        save_monitor_state(state)
+    except Exception as e:
+        print(f"Gagal simpan jadwalbank_draft: {e}", flush=True)
+
+
+def _clear_jb_draft(chat_id):
+    try:
+        state = load_monitor_state()
+        (state.get('jadwalbank_drafts') or {}).pop(str(chat_id), None)
+        save_monitor_state(state)
+    except Exception:
+        pass
+
+
+def _jb_start(token, chat_id):
+    """Mulai alur /jadwalbank."""
+    chans = load_channels()
+    if not chans:
+        send_message(token, chat_id, "📺 Belum ada channel terhubung nih Pak Effand 😌")
+        return
+    draft = {"step": "channel", "yt_id": None, "theme": None,
+             "start_time": None, "step_hours": 1, "bank_count": 7,
+             "created_at": time.time()}
+    _save_jb_draft(chat_id, draft)
+    rows = [[{"text": _channel_display_name(c), "callback_data": f"jb:ch:{i}"}]
+            for i, c in enumerate(chans)]
+    send_message(token, chat_id,
+                 "📅 *Jadwal Bank Harian* 😎\n\nBuat jadwal video bank lagu harian — tiap hari 1 video dari bank, tayang langsung.\n\nChannel yang mana Pak Effand?",
+                 reply_markup={"inline_keyboard": rows})
+
+
+def _jb_ask_theme(token, chat_id, draft):
+    ch = next((c for c in load_channels() if c.get('yt_id') == draft.get('yt_id')), None)
+    name = _channel_display_name(ch) if ch else '?'
+    send_message(token, chat_id,
+                 f"🎵 *Tema lagunya apa Pak Effand?*\n(channel: *{_tg_escape(name)}*)\n\nBalas teks saja, mis. `Jazz Lounge Coffee`.")
+
+
+def _jb_ask_time(token, chat_id, draft):
+    send_message(token, chat_id,
+                 "🕗 *Jam perdana tayang berapa Pak Effand?*\n\nVideo pertama tayang hari ini jam segitu — mis. `08:00`.\n(besok jamnya maju sesuai pilihan jam-maju di langkah berikut)")
+
+
+def _jb_ask_step(token, chat_id, draft):
+    rows = [
+        [{"text": "➕ 1 jam / hari", "callback_data": "jb:step:1"},
+         {"text": "➕ 2 jam / hari", "callback_data": "jb:step:2"}],
+        [{"text": "🕗 Jam tetap tiap hari", "callback_data": "jb:step:0"}],
+    ]
+    send_message(token, chat_id,
+                 "⏰ *Jam maju tiap hari berapa jam Pak Effand?*\n\n`1 jam` = besok +1 jam, lusa +2 jam, dst. (lewat 23:00 kembali ke jam awal).",
+                 reply_markup={"inline_keyboard": rows})
+
+
+def _jb_advance(t, n, start):
+    """Jam sesudah maju n kali (dipakai contoh konfirmasi)."""
+    try:
+        h, m = int(t[:2]), int(t[3:5])
+    except Exception:
+        return start or t or '-'
+    total = h * 60 + m + n * 60
+    if total > 23 * 60:
+        return start or t
+    return "%02d:%02d" % (total // 60, total % 60)
+
+
+def _jb_ask_confirm(token, chat_id, draft):
+    ch = next((c for c in load_channels() if c.get('yt_id') == draft.get('yt_id')), None)
+    name = _channel_display_name(ch) if ch else '?'
+    start = draft.get('start_time') or '-'
+    step = int(draft.get('step_hours') or 0)
+    step_txt = f"+{step} jam/hari" if step > 0 else "jam tetap"
+    end = (_wib_now() + timedelta(days=30)).strftime('%Y-%m-%d')
+    ex = [f"hari ini `{_jb_advance(start, 0, start)}`",
+          f"besok `{_jb_advance(start, 1, start)}`",
+          f"lusa `{_jb_advance(start, 2, start)}`"]
+    send_message(token, chat_id,
+                 f"📅 *Cek dulu ya Pak Effand* 😎\n\n"
+                 f"Channel: *{_tg_escape(name)}*\n"
+                 f"Tema: *{_tg_escape(draft.get('theme') or '-')}*\n"
+                 f"Lagu: *7 lagu/video* (dari bank)\n"
+                 f"Jam perdana: `{_tg_escape(start)}` WIB\n"
+                 f"Jam maju: *{step_txt}*\n"
+                 f"Sampai: *{end}* (30 hari)\n"
+                 f"Contoh: {', '.join(ex)}\n\n"
+                 f"Simpan jadwal ini?",
+                 reply_markup={"inline_keyboard": [
+                     [{"text": "✅ Simpan jadwal", "callback_data": "jb:yes"},
+                      {"text": "❌ Batal", "callback_data": "jb:no"}]]})
+
+
+def _jb_save(token, chat_id, draft):
+    """Simpan jadwal via endpoint operator /api/operator/schedule_create."""
+    end = (_wib_now() + timedelta(days=30)).strftime('%Y-%m-%d')
+    yt_id = draft.get('yt_id')
+    payload = {
+        'kind': 'zumo_bank', 'yt_id': yt_id,
+        'time': draft.get('start_time'), 'theme': draft.get('theme') or '',
+        'end_date': end, 'bank_count': int(draft.get('bank_count') or 7),
+        'time_step_hours': int(draft.get('step_hours') or 0),
+        'start_time': draft.get('start_time'), 'enabled': True,
+    }
+    ok, msg, _d = _operator_post('/api/operator/schedule_create', payload)
+    _clear_jb_draft(chat_id)
+    ch = next((c for c in load_channels() if c.get('yt_id') == yt_id), None)
+    name = _channel_display_name(ch) if ch else '?'
+    if not ok:
+        send_message(token, chat_id,
+                     f"😅 *Gagal menyimpan Pak Effand* — {_tg_escape(msg or 'panel tidak merespons')}")
+        return
+    step = int(draft.get('step_hours') or 0)
+    step_txt = f"+{step} jam/hari" if step > 0 else "jam tetap"
+    send_message(token, chat_id,
+                 f"✅ *Berhasil Pak Effand!* 😎\n\n"
+                 f"Jadwal bank harian *{_tg_escape(name)}* sudah aktif:\n"
+                 f"• Tema: *{_tg_escape(draft.get('theme') or '-')}*\n"
+                 f"• 7 lagu/video, tayang langsung\n"
+                 f"• Jam perdana `{_tg_escape(draft.get('start_time') or '-')}` WIB, {step_txt}\n"
+                 f"• Sampai *{end}* (30 hari)\n\n"
+                 f"Video pertama tayang hari ini jam `{_tg_escape(draft.get('start_time') or '-')}` WIB. "
+                 f"Lihat/ubah di panel menu *Jadwal Rutin* ya Pak Effand!")
+
+
+def _handle_jb_answer(token, chat_id, draft, raw_cmd):
+    """Jawaban teks untuk alur /jadwalbank (langkah tema / jam).
+    Kembalikan True bila jawaban dipakai (draft maju)."""
+    step = draft.get('step')
+    if step == 'theme':
+        theme = (raw_cmd or '').strip()
+        if not theme or len(theme) > 80:
+            send_message(token, chat_id, "😅 Temanya terlalu panjang / kosong — ketik tema lagunya ya Pak Effand (maks 80 karakter).")
+            return True
+        draft['theme'] = theme
+        draft['step'] = 'time'
+        _save_jb_draft(chat_id, draft)
+        _jb_ask_time(token, chat_id, draft)
+        return True
+    if step == 'time':
+        m = re.search(r'(\d{1,2})[:.](\d{2})', raw_cmd or '')
+        if not m:
+            send_message(token, chat_id, "😅 Jamnya pakai format `HH:MM` ya Pak Effand — mis. `08:00`.")
+            return True
+        hh, mm = int(m.group(1)), int(m.group(2))
+        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+            send_message(token, chat_id, "😅 Jam tidak valid Pak Effand — pakai 00:00 sampai 23:59 ya.")
+            return True
+        draft['start_time'] = f"{hh:02d}:{mm:02d}"
+        draft['step'] = 'step_hours'
+        _save_jb_draft(chat_id, draft)
+        _jb_ask_step(token, chat_id, draft)
+        return True
+    return False
+
+
 def _daily_playlist_keyboard(channels):
     """Keyboard toggle jadwal harian (v1.3.18): 2 channel per baris
     + baris Mulai Semua / Stop Semua."""
@@ -10523,6 +10751,7 @@ def handle_user_command(token, chat_id, text, message_id=None):
         if first_word in ("/batal",) or clean_cmd in ("batal", "cancel"):
             _d0 = _load_make_draft(chat_id)
             _aj0 = _load_aturjadwal_draft(chat_id)
+            _jb0 = _load_jb_draft(chat_id)
             if _d0:
                 _clear_make_draft(chat_id)
                 _retry = {'short': '/buatshort', 'long': '/buatlong',
@@ -10539,6 +10768,11 @@ def handle_user_command(token, chat_id, text, message_id=None):
                 _clear_aturjadwal_draft(chat_id)
                 send_message(token, chat_id,
                              "😌 *Sip Pak Effand, dibatalkan.* Tidak ada pengaturan jadwal yang diubah.\nKetik /aturjadwal kalau mau mulai lagi ya Pak Effand!")
+            elif _jb0:
+                # 🔥 v1.4.26: /batal juga membatalkan alur /jadwalbank.
+                _clear_jb_draft(chat_id)
+                send_message(token, chat_id,
+                             "😌 *Sip Pak Effand, dibatalkan.* Tidak ada jadwal yang dibuat.\nKetik /jadwalbank kalau mau mulai lagi ya Pak Effand!")
             else:
                 send_message(token, chat_id,
                              "😅 *Tidak ada yang sedang dibuat Pak Effand* — ketik /buatshort, /buatlong, atau /playlist untuk mulai.")
@@ -10634,6 +10868,31 @@ def handle_user_command(token, chat_id, text, message_id=None):
                 pass  # tombol keyboard tetap jalan, draft tersimpan
             else:
                 if _handle_aturjadwal_answer(token, chat_id, _aj, raw_cmd):
+                    return
+                # Bukan jawaban atas langkah ini → biarkan cabang lain
+                # (NLU / perintah baca) yang menangani pesannya.
+
+        # 🔥 v1.4.26 — DRAFT /jadwalbank: jawaban langkah ditangkap di sini
+        # (pola yang sama seperti draft /aturjadwal di atas).
+        _jb = _load_jb_draft(chat_id)
+        if isinstance(_jb, dict) and _jb.get("expired"):
+            if not first_word.startswith("/") and clean_cmd not in _MAIN_BUTTON_TEXTS:
+                send_message(token, chat_id,
+                             "⌛ *Eh Pak Effand, jadwal bank-nya sudah hangus (>30 menit tidak ada kabar)* 😅\n"
+                             "Ketik /jadwalbank untuk mulai lagi ya Pak Effand!")
+                return
+        if _jb:
+            if first_word in ("/start", "/help"):
+                _clear_jb_draft(chat_id)
+            elif first_word in ("/jadwalbank",):
+                _clear_jb_draft(chat_id)
+                # jatuh ke cabang /jadwalbank di bawah (mulai baru)
+            elif first_word.startswith("/"):
+                pass  # perintah lain tetap jalan, draft tersimpan
+            elif clean_cmd in _MAIN_BUTTON_TEXTS:
+                pass  # tombol keyboard tetap jalan, draft tersimpan
+            else:
+                if _handle_jb_answer(token, chat_id, _jb, raw_cmd):
                     return
                 # Bukan jawaban atas langkah ini → biarkan cabang lain
                 # (NLU / perintah baca) yang menangani pesannya.
@@ -11216,6 +11475,11 @@ def handle_user_command(token, chat_id, text, message_id=None):
 
         # 4a. JADWAL 30 HARI (v1.2.20): /jadwalbulan [channel] — dicek
         # SEBELUM /jadwal (4b) karena "jadwalbulan" mengandung kata "jadwal".
+        # 📅 JADWAL BANK (v1.4.26): buat jadwal rutin bank Zumo harian.
+        if first_word in ("/jadwalbank",):
+            _jb_start(token, chat_id)
+            return
+
         if first_word in ("/jadwalbulan",):
             rest = raw_cmd[len('/jadwalbulan'):].strip()
             for blk in build_month_schedule_blocks(channel_arg=rest or None):

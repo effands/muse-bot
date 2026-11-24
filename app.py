@@ -4395,6 +4395,15 @@ def _background_worker_loop():
                                 'snippet': {'title': _up_title, 'description': _up_desc, 'tags': tags_list, 'categoryId': _cat},
                                 'status': {'privacyStatus': task.get('privacy', 'public')}
                             }
+                            # 🔥 v1.4.27: konten AI (Zumo + Shorts Muse) wajib
+                            # dideklarasikan ke YouTube (Altered or Synthetic
+                            # content). Field status.containsSyntheticMedia
+                            # (API v3, sejak 30 Okt 2024). Playlist kompilasi
+                            # (lagu + footage asli) bukan konten AI — tidak di-set.
+                            # Catatan: videos().list TIDAK PERNAH mengembalikan
+                            # field ini — verifikasi lewat respons insert/update.
+                            if task.get('kind') in (ZUMO_KIND, SHORTS_MUSE_KIND):
+                                body['status']['containsSyntheticMedia'] = True
                             if sch_obj > datetime.now():
                                 wib = ZoneInfo("Asia/Jakarta")
                                 sch_aware = sch_obj.replace(tzinfo=wib)

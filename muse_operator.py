@@ -4809,6 +4809,9 @@ def _publish_step_keyboard():
 # berturut-turut sangat kecil). Contoh bisa dipencet: callback
 # ex:<teks>, diproses persis seperti jawaban ketikan via
 # _handle_make_answer (tidak ada logika ganda).
+# 🔥 v1.4.28: langkah Pixabay tampil 9 contoh dalam grid 3x3 (permintaan
+# Pak Effand 24 Nov 2026 — 3 contoh ditumpuk ke bawah terlalu sedikit,
+# 9 opsi 3 baris x 3 kolom pas). _example_buttons(..., cols=3).
 _PLAYLIST_THEME_EXAMPLES = (
     'lagu malaysia lawas', 'lagu malaysia terbaru', 'lofi', 'piano santai',
     'reggae', 'dangdut koplo', 'nostalgia 80-90an', 'jazz santai',
@@ -4838,10 +4841,15 @@ def _wizard_examples(pool, n=3):
     return random.sample(pool, n)
 
 
-def _example_buttons(examples):
-    """Satu tombol per contoh (callback ex:<teks>)."""
-    return {"inline_keyboard": [[{"text": f"💡 {e}", "callback_data": f"ex:{e}"}]
-                                for e in examples]}
+def _example_buttons(examples, cols=1):
+    """Tombol contoh (callback ex:<teks>). cols=1: satu tombol per baris
+    (perilaku lama, dipakai langkah tema musik + Short). cols=3: grid
+    3 kolom — mis. 9 contoh jadi 3 baris x 3 kolom (langkah Pixabay)."""
+    rows = []
+    for i in range(0, len(examples), cols):
+        rows.append([{"text": f"💡 {e}", "callback_data": f"ex:{e}"}
+                     for e in examples[i:i + cols]])
+    return {"inline_keyboard": rows}
 
 
 def _make_ask_step(token, chat_id, draft):
@@ -4950,7 +4958,7 @@ def _make_ask_step(token, chat_id, draft):
         elif step == 'pixabay':
             send_message(token, chat_id,
                          "🖼️ *Langkah 2: Tema footage Pixabay*\n\nTema footage-nya apa Pak Effand? Pencet salah satu contoh di bawah — langsung saya pakai — atau ketik sendiri.\nKetik `lewati` untuk auto (pakai tema musik).",
-                         reply_markup=_example_buttons(_wizard_examples(_PIXABAY_THEME_EXAMPLES)))
+                         reply_markup=_example_buttons(_wizard_examples(_PIXABAY_THEME_EXAMPLES, 9), cols=3))
         elif step == 'duration':
             # 🔥 v1.3.56: tombol durasi tinggal klik + Custom (ketik sendiri).
             # Nilai tombol dipakai ulang oleh parser yang sama

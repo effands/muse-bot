@@ -8761,6 +8761,7 @@ def auto_rename_zumo_bank():
     for t in tracks:
         k = str(t.get('title') or '').strip().lower()
         counts[k] = counts.get(k, 0) + 1
+    all_titles = {str(t.get('title') or '').strip().lower() for t in tracks}
     seen = set()
     pool_idx = 0
     renamed = []
@@ -8769,7 +8770,12 @@ def auto_rename_zumo_bank():
         low = title.lower()
         is_dup = counts.get(low, 0) > 1 and low in seen
         seen.add(low)
-        if not _bank_title_is_bad(title, set()) and not is_dup:
+        # varian bernomor hasil dedupe upload massal ("Midnight Lounge 2",
+        # "Midnight Lounge 3") — bukan judul asli, wajib di-rename juga
+        # (basenya "Midnight Lounge" ada di bank sebagai lagu lain).
+        m_num = re.match(r'^(.*?)\s+\d+$', title)
+        is_numbered = bool(m_num) and m_num.group(1).strip().lower() in all_titles and m_num.group(1).strip().lower() != low
+        if not _bank_title_is_bad(title, set()) and not is_dup and not is_numbered:
             continue
         # cari judul baru dari kolam yang belum dipakai di bank
         new_title = None

@@ -11728,9 +11728,18 @@ def _playlist_research_youtube(channel, query):
     return [], None, False, None, None
 
 
+# 🔥 v1.4.30: AUTO-RETRY unduh audio — unduhan referensi kadang rusak di
+# tengah jalan (kasus Diva 24 Nov 2026: ffmpeg berhenti di 56:35, unduh
+# ulang dari nol berhasil penuh 149 MB). Coba sampai 3x, bersihkan file
+# parsial tiap percobaan, jeda 15 detik antar percobaan.
+_PLAYLIST_AUDIO_MAX_ATTEMPTS = 3
+_PLAYLIST_AUDIO_RETRY_DELAY_SEC = 15
+
+
 def _playlist_download_audio(video_id, out_dir):
     """Unduh audio referensi (mp3 192k) via yt-dlp. URL dibangun dari
-    video_id (pola ketat 11 karakter — tidak ada host arbitrer)."""
+    video_id (pola ketat 11 karakter — tidak ada host arbitrer).
+    Otomatis coba ulang sampai 3x bila unduh/konversi gagal."""
     import yt_dlp
     if not re.fullmatch(r'[A-Za-z0-9_-]{11}', video_id or ''):
         raise ValueError('ID video tidak valid.')
@@ -11747,12 +11756,32 @@ def _playlist_download_audio(video_id, out_dir):
         'max_filesize': PLAYLIST_MAX_AUDIO_BYTES,
         'http_headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'},
     }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        ydl.download([url])
     audio_path = os.path.join(out_dir, 'audio.mp3')
-    if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
-        raise RuntimeError('Audio referensi gagal diunduh.')
-    return audio_path
+    last_err = None
+    for attempt in range(1, _PLAYLIST_AUDIO_MAX_ATTEMPTS + 1):
+        # Bersihkan file parsial dari percobaan sebelumnya.
+        for _name in ('audio.mp3', 'audio.mp3.part', 'audio.webm',
+                      'audio.webm.part', 'audio.m4a', 'audio.m4a.part',
+                      'audio.mp4', 'audio.mp4.part', 'audio.opus',
+                      'audio.opus.part'):
+            try:
+                _fp = os.path.join(out_dir, _name)
+                if os.path.exists(_fp):
+                    os.remove(_fp)
+            except Exception:
+                pass
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+            if os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
+                return audio_path
+            raise RuntimeError('Audio referensi gagal diunduh.')
+        except Exception as e:
+            last_err = e
+            print(f"[playlist] unduh audio gagal (percobaan {attempt}/{_PLAYLIST_AUDIO_MAX_ATTEMPTS}): {e}", flush=True)
+            if attempt < _PLAYLIST_AUDIO_MAX_ATTEMPTS:
+                time.sleep(_PLAYLIST_AUDIO_RETRY_DELAY_SEC)
+    raise RuntimeError(f'Audio referensi gagal diunduh setelah {_PLAYLIST_AUDIO_MAX_ATTEMPTS}x coba: {last_err}')
 
 
 # ============================================================
@@ -13351,11 +13380,11 @@ def _playlist_create_task(data):
             "title": title, "title_cleaned": title_cleaned}
 
 
-def _playlist_build_thread(job_id):
-    """Latar: unduh audio → Pixabay → metadata baru → thumbnail →
-    buat task. Berjalan di thread daemon supaya request HTTP tidak
-    timeout. Gagal di langkah mana pun → job 'failed' + file
-    dipertahankan untuk debug (lokasi ada di job)."""
+def _playlist_build_once(job_id):
+    """Satu kali percobaan membangun playlist (dipanggil
+    _playlist_build_thread yang mengatur auto-retry). Gagal di langkah
+    mana pun -> lempar exception (wrapper yang memutuskan retry /
+    'failed' + notif). File dipertahankan untuk debug (lokasi ada di job)."""
     job = _playlist_job_get(job_id)
     if not job:
         return
@@ -13484,10 +13513,42 @@ def _playlist_build_thread(job_id):
                              approval='approved' if res.get('auto_mode') else 'pending')
         notify_event("🎵", new_title,
                      f"Musik Playlist siap — task dibuat untuk {ch_name} (referensi: {job.get('ref_title', '')[:40]}).")
-    except Exception as e:
-        _playlist_job_update(job_id, status='failed', error=str(e)[:300])
-        notify_event("❌", job.get('ref_title') or 'Musik Playlist',
-                     f"Gagal membangun playlist: {str(e)[:150]}")
+    except Exception:
+        # Lempar ke wrapper (_playlist_build_thread) — dia yang mengatur
+        # auto-retry / status 'failed' + notif.
+        raise
+
+
+# 🔥 v1.4.30: AUTO-RETRY build playlist — bila membangun gagal (unduh
+# audio korup, Pixabay, dsb.), coba lagi otomatis sampai 3x dengan jeda
+# 30 detik. Kasus Diva 24 Nov 2026 gagal di percobaan pertama lalu
+# berhasil di percobaan kedua (unduh ulang bersih).
+_PLAYLIST_BUILD_MAX_ATTEMPTS = 3
+_PLAYLIST_BUILD_RETRY_DELAY_SEC = 30
+
+
+def _playlist_build_thread(job_id):
+    """Latar: unduh audio → Pixabay → metadata baru → thumbnail → buat
+    task. Berjalan di thread daemon supaya request HTTP tidak timeout.
+    Otomatis coba ulang sampai 3x bila gagal; gagal di semua percobaan
+    -> job 'failed' + notif."""
+    job = _playlist_job_get(job_id)
+    if not job:
+        return
+    for attempt in range(1, _PLAYLIST_BUILD_MAX_ATTEMPTS + 1):
+        try:
+            _playlist_build_once(job_id)
+            return
+        except Exception as e:
+            if attempt < _PLAYLIST_BUILD_MAX_ATTEMPTS:
+                _playlist_job_update(
+                    job_id, status='downloading',
+                    progress=f"Gagal ({str(e)[:80]}), mencoba lagi {attempt + 1}/{_PLAYLIST_BUILD_MAX_ATTEMPTS}...")
+                time.sleep(_PLAYLIST_BUILD_RETRY_DELAY_SEC)
+                continue
+            _playlist_job_update(job_id, status='failed', error=str(e)[:300])
+            notify_event("❌", job.get('ref_title') or 'Musik Playlist',
+                         f"Gagal membangun playlist: {str(e)[:150]}")
 
 
 # ============================================================
@@ -14026,6 +14087,73 @@ def _zumo_hashtags(theme, channel_name):
         if ch:
             tags.append('#' + ch)
     return tags[:12]
+
+
+# 🔥 v1.4.30: JUDUL COCOK WAKTU VISUAL — judul video diambil dari lagu
+# pertama; bila lagu itu bertema "Morning" sementara loop visualnya
+# suasana malam, judul jadi tidak nyambung (kasus Cozy Sax 24 Nov 2026:
+# "Cozy European Morning Coffee Jazz" di video malam). Perbaiki dengan
+# mengurutkan ulang lagu supaya lagu pertama cocok dengan waktu visual
+# loop (diukur dari kecerahan frame loop: gelap = malam, terang = siang).
+# Loop Cozy Sax terukur 36-55/255 (malam); ambang 90 memisahkan suasana
+# malam dari siang yang terang.
+_ZUMO_DAY_WORDS = frozenset(
+    'morning day sunrise dawn sunshine daylight afternoon noon sun brunch'.split())
+_ZUMO_NIGHT_WORDS = frozenset(
+    'night evening midnight moon moonlight dark stars starlight twilight dusk'.split())
+_ZUMO_LOOP_NIGHT_BRIGHTNESS = 90.0
+
+
+def _zumo_track_timeofday(title):
+    """Waktu yang diklaim judul lagu: 'day' / 'night' / None (netral)."""
+    words = set(re.sub(r'[^a-z ]', ' ', (title or '').lower()).split())
+    if words & _ZUMO_NIGHT_WORDS:
+        return 'night'
+    if words & _ZUMO_DAY_WORDS:
+        return 'day'
+    return None
+
+
+def _zumo_loop_timeofday(yt_id, job_dir=None):
+    """Klasifikasi waktu visual loop channel: 'night' (gelap) atau 'day'
+    (terang), dari kecerahan rata-rata satu frame zumo_loop.mp4.
+    Gagal baca -> None (tidak ada preferensi)."""
+    try:
+        loop = _zumo_visual_loop_path(yt_id)
+        if not loop or not os.path.isfile(loop):
+            return None
+        out = os.path.join(job_dir, 'loop_tod.jpg') if job_dir else '/tmp/zumo_tod.jpg'
+        subprocess.run([get_ffmpeg_path(), '-y', '-v', 'error',
+                        '-ss', '2', '-i', loop, '-frames:v', '1', '-q:v', '3', out],
+                       check=True, timeout=60)
+        if not os.path.isfile(out) or os.path.getsize(out) == 0:
+            return None
+        from PIL import Image
+        with Image.open(out) as im:
+            gray = im.convert('L')
+            px = list(gray.getdata())
+            avg = sum(px) / max(1, len(px))
+        return 'night' if avg < _ZUMO_LOOP_NIGHT_BRIGHTNESS else 'day'
+    except Exception:
+        return None
+
+
+def _zumo_order_tracks_for_loop(kept, yt_id, job_dir=None):
+    """Susun ulang urutan lagu supaya lagu PERTAMA (yang jadi judul video)
+    cocok dengan waktu visual loop channel. Loop gelap -> judul malam /
+    netral; loop terang -> judul pagi-siang / netral. Bila tidak ada lagu
+    yang cocok, urutan asli dipertahankan (tidak merusak apa pun)."""
+    if not kept or len(kept) < 2:
+        return kept
+    tod = _zumo_loop_timeofday(yt_id, job_dir)
+    if not tod:
+        return kept
+    if _zumo_track_timeofday(kept[0].get('title')) in (None, tod):
+        return kept
+    for i in range(1, len(kept)):
+        if _zumo_track_timeofday(kept[i].get('title')) in (None, tod):
+            return [kept[i]] + kept[:i] + kept[i + 1:]
+    return kept
 
 
 def _zumo_rewrite_title(track_titles, theme, channel_name):
@@ -14729,6 +14857,10 @@ def _zumo_finish_video(job_id, job, job_dir, kept, profile, total_credits,
     yt_id = job.get('yt_id')
     theme = job.get('theme') or ''
     style = profile.get('style') or ''
+    # 🔥 v1.4.30: judul cocok waktu visual — susun ulang lagu SEBELUM
+    # audio digabung, supaya lagu pertama (judul video) cocok dengan
+    # waktu loop (malam/siang). Urutan audio + timestamp ikut urutan baru.
+    kept = _zumo_order_tracks_for_loop(kept, yt_id, job_dir)
     audio_final = os.path.join(job_dir, 'audio_final.mp3')
     _zumo_core.zumo_build_audio(
         [k['path'] for k in kept], audio_final,

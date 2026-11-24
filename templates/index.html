@@ -3915,10 +3915,12 @@ function renderSchedules() {
     const themeTxt = s.kind === 'shorts'
       ? ((AUTO_SHORTS_THEMES.find(t => t[0] === s.theme) || [s.theme, s.theme])[1])
       : escapeHtml(s.theme || '—');
+    const step = parseInt(s.time_step_hours || 0, 10) || 0;
+    const timeTxt = escapeHtml(s.time || '—') + (step > 0 ? ' (+' + step + '/jam)' : '');
     return '<tr style="border-bottom:1px solid var(--border)">'
       + '<td style="padding:6px 8px"><b>' + escapeHtml(s.channel_name || '—') + '</b></td>'
       + '<td style="padding:6px 8px">' + schedKindLabel(s.kind) + '</td>'
-      + '<td style="padding:6px 8px;white-space:nowrap">' + escapeHtml(s.time || '—') + '</td>'
+      + '<td style="padding:6px 8px;white-space:nowrap">' + timeTxt + '</td>'
       + '<td style="padding:6px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px" title="' + escapeHtml(s.theme || '') + '">' + themeTxt + '</td>'
       + '<td style="padding:6px 8px">' + escapeHtml(s.end_date || '—') + '</td>'
       + '<td style="padding:6px 8px"><span class="pill ' + pill(s.status) + '">' + s.status + '</span></td>'
@@ -4226,11 +4228,13 @@ function schedKindChanged() {
   show('sc-row-theme-sel', kind === 'shorts');
   show('sc-row-end', kind !== 'shorts');
   show('sc-row-bank', kind === 'zumo_bank');
+  show('sc-row-step', kind === 'zumo_bank' || kind === 'playlist');
   show('sc-row-shorts', kind === 'shorts');
 }
 function openSchedModal(id) {
   const m = document.getElementById('sched-modal'); if (!m) return;
   const row = id ? _schedRows.find(s => s.id === id) : null;
+  window._schedOrigTime = row ? (row.time || '') : '';
   document.getElementById('sched-modal-title').textContent = row ? 'Ubah Jadwal' : 'Tambah Jadwal';
   const chOpts = (channels || []).map(c => `<option value="${escapeHtml(c.yt_id)}">${escapeHtml(c.name)}</option>`).join('');
   const themeOpts = AUTO_SHORTS_THEMES.map(t => `<option value="${t[0]}">${t[1]}</option>`).join('');
@@ -4245,6 +4249,8 @@ function openSchedModal(id) {
     + `<div id="sc-row-theme-sel" style="display:none"><label style="${lbl}">Tema</label><select id="sc-theme-sel" style="${inp};margin-bottom:10px">${themeOpts}</select></div>`
     + `<div id="sc-row-end"><label style="${lbl}">Sampai tanggal (kosong = tanpa batas)</label><input type="date" id="sc-end" style="${inp};margin-bottom:10px"></div>`
     + `<div id="sc-row-bank" style="display:none"><label style="${lbl}">Lagu per hari (dari bank)</label><input type="number" id="sc-bank" min="1" max="30" value="7" style="${inp};margin-bottom:10px"></div>`
+    + `<div id="sc-row-step" style="display:none"><label style="${lbl}">Jam maju tiap hari (jam, 0 = jam tetap)</label><input type="number" id="sc-step" min="0" max="23" value="0" style="${inp};margin-bottom:10px"><div style="font-size:11px;color:var(--muted);margin:-6px 0 10px">Isi 1 = besok jamnya +1 jam, lusa +2 jam, dst. (lewat 23:00 kembali ke jam awal).</div></div>`
+    + `<input type="hidden" id="sc-start" value="">`
     + `<div id="sc-row-shorts" style="display:none"><label style="${lbl}">Jam tayang Shorts</label><input type="time" id="sc-publish" value="19:00" style="${inp};margin-bottom:10px"><label style="${lbl}">Durasi Shorts (detik)</label><select id="sc-dur" style="${inp};margin-bottom:10px"><option value="15">15</option><option value="30" selected>30</option><option value="60">60</option></select></div>`
     + `<label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="sc-enabled" checked> Aktif</label>`;
   if (row) {
@@ -4257,6 +4263,8 @@ function openSchedModal(id) {
     document.getElementById('sc-theme-sel').value = row.theme || 'sleep';
     document.getElementById('sc-end').value = row.end_date || '';
     document.getElementById('sc-bank').value = row.bank_count || 7;
+    document.getElementById('sc-step').value = row.time_step_hours || 0;
+    document.getElementById('sc-start').value = row.start_time || row.time || '';
     document.getElementById('sc-publish').value = row.publish_time || '19:00';
     document.getElementById('sc-dur').value = String(row.duration_sec || 30);
     document.getElementById('sc-enabled').checked = !!row.enabled;
@@ -4278,6 +4286,12 @@ async function saveSchedModal() {
     end_date: (document.getElementById('sc-end') || {}).value || '',
     enabled: !!((document.getElementById('sc-enabled') || {}).checked),
     bank_count: parseInt(((document.getElementById('sc-bank') || {}).value || '7'), 10),
+    time_step_hours: parseInt(((document.getElementById('sc-step') || {}).value || '0'), 10) || 0,
+    // start_time: bila jam diubah di modal, jam baru jadi patokan putaran;
+    // bila tidak diubah, patokan lama dipertahankan.
+    start_time: ((document.getElementById('sc-time') || {}).value || '') !== (window._schedOrigTime || '')
+      ? ((document.getElementById('sc-time') || {}).value || '')
+      : ((document.getElementById('sc-start') || {}).value || ((document.getElementById('sc-time') || {}).value || '')),
     publish_time: (document.getElementById('sc-publish') || {}).value || '',
     duration_sec: parseInt(((document.getElementById('sc-dur') || {}).value || '30'), 10),
   };

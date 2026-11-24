@@ -436,7 +436,7 @@ _OPERATOR_ENDPOINTS = {'operator_retry_task', 'operator_approve_task',
                       'operator_pixabay_key_del', 'operator_backup_create',
                       'operator_backup_status', 'operator_playlist_research',
                       'operator_playlist_create', 'operator_playlist_from_url', 'operator_update_panel', 'operator_publish_now',
-                      'operator_restart_services', 'operator_set_channel_auto_shorts',
+                      'operator_restart_services', 'operator_set_channel_auto_shorts', 'operator_schedule_create',
                       'operator_set_channel_publish_time', 'operator_kie_key_add',
                       'operator_kie_key_list', 'operator_kie_key_del',
                       'operator_zumo_create', 'operator_zumo_status',
@@ -8313,10 +8313,24 @@ def _validate_store_row(data):
         return None, "Jumlah lagu harus angka."
     if kind == 'zumo_bank' and not (1 <= bank_count <= 30):
         return None, "Jumlah lagu bank harus 1–30."
+    # Jam maju (v1.4.26): 0 = jam tetap tiap hari; >0 = jam baris maju
+    # N jam setiap kali baris berhasil diproses (mis. 1 = besok +1 jam).
+    # Bila jam baru melewati 23:00, kembali ke start_time (jam awal).
+    try:
+        step = int(data.get('time_step_hours') or 0)
+    except Exception:
+        return None, "Jam maju harus angka."
+    if not (0 <= step <= 23):
+        return None, "Jam maju harus 0–23."
+    start = str(data.get('start_time') or t).strip()
+    if step > 0 and not _SCHEDULE_TIME_RE.match(start):
+        return None, "Jam awal tidak valid — pakai format HH:MM."
     return {
         'kind': kind, 'yt_id': yt_id, 'time': t, 'theme': theme,
         'end_date': end, 'enabled': bool(data.get('enabled', True)),
         'bank_count': bank_count if kind == 'zumo_bank' else 7,
+        'time_step_hours': step,
+        'start_time': start if step > 0 else '',
     }, None
 
 @app.route('/api/schedules', methods=['GET'])
@@ -8336,6 +8350,8 @@ def get_schedules():
             'time': r.get('time'), 'theme': r.get('theme'),
             'end_date': r.get('end_date') or '',
             'bank_count': r.get('bank_count', 7),
+            'time_step_hours': int(r.get('time_step_hours') or 0),
+            'start_time': r.get('start_time') or '',
             'enabled': bool(r.get('enabled')),
             'status': _schedule_status(r, today), 'source': 'store',
         })
@@ -8953,6 +8969,45 @@ def toggle_schedule():
         _schedules_save(rows)
         _sync_daily_playlist(row.get('yt_id'))
     return jsonify({'status': 'success', 'message': 'Jadwal ' + ('diaktifkan.' if enabled else 'dinonaktifkan.')})
+
+@app.route('/api/schedules/advance_time', methods=['POST'])
+def advance_schedule_time():
+    """Maju jam baris jadwal yang pakai time_step_hours (v1.4.26).
+    Dipanggil eksekutor SESUDAH baris berhasil diproses: jam baris maju
+    time_step_hours; bila jam baru melewati 23:00, kembali ke start_time
+    (supaya tetap di dalam jam kerja eksekutor 04:00–23:00 WIB).
+    finished_date juga dicatat hari ini (dipakai guard 1 video/hari).
+    Body: {id}. Kembalikan jam baru."""
+    data = request.get_json(silent=True) or {}
+    sid = str(data.get('id') or '').strip()
+    if not sid:
+        return jsonify({'status': 'error', 'message': 'id wajib diisi.'}), 400
+    with db_lock:
+        rows = _schedules_load()
+        row = next((r for r in rows if r.get('id') == sid), None)
+        if row is None:
+            return jsonify({'status': 'error', 'message': 'Jadwal tidak ditemukan.'}), 404
+        try:
+            step = int(row.get('time_step_hours') or 0)
+        except Exception:
+            step = 0
+        if step <= 0:
+            return jsonify({'status': 'error', 'message': 'Jadwal ini tidak pakai jam maju.'}), 400
+        cur = str(row.get('time') or '08:00').strip()
+        start = str(row.get('start_time') or cur).strip()
+        try:
+            h, m = int(cur[:2]), int(cur[3:5])
+        except Exception:
+            return jsonify({'status': 'error', 'message': 'Jam baris tidak valid.'}), 400
+        total = h * 60 + m + step * 60
+        if total > 23 * 60:
+            new_time = start
+        else:
+            new_time = '%02d:%02d' % (total // 60, total % 60)
+        row['time'] = new_time
+        row['finished_date'] = datetime.now(ZoneInfo('Asia/Jakarta')).strftime('%Y-%m-%d')
+        _schedules_save(rows)
+    return jsonify({'status': 'success', 'message': 'Jam jadwal maju ke ' + new_time + '.', 'time': new_time})
 
 @app.route('/api/set_channel_auto_shorts', methods=['POST'])
 def set_channel_auto_shorts():
@@ -16458,6 +16513,32 @@ def operator_extend_schedule():
                     "first_date": res.get("first_date"), "last_date": res.get("last_date"),
                     "channel_name": res.get("channel_name"),
                     "tasks": res.get("tasks", [])})
+
+
+@app.route('/api/operator/schedule_create', methods=['POST'])
+def operator_schedule_create():
+    """Buat jadwal rutin (playlist/zumo_bank) dari Telegram (/jadwalbank).
+    Keamanan: wajib `key` == operator_key (HMAC, pola operator lain).
+    Route ini masuk _OPERATOR_ENDPOINTS di check_security.
+    Body: {key, kind, yt_id, time, theme, end_date, bank_count,
+    time_step_hours, start_time}. Validasi sama seperti panel
+    (_validate_store_row). Kembalikan id baris baru."""
+    data = request.get_json(silent=True) or {}
+    ok_key, msg_key, _st = _validate_operator_key(data)
+    if not ok_key:
+        return jsonify({"status": "error", "message": msg_key}), _st
+    clean, err = _validate_store_row(data)
+    if err:
+        return jsonify({"status": "error", "message": err}), 400
+    with db_lock:
+        rows = _schedules_load()
+        rid = 'sch_' + str(int(time.time() * 1000))
+        now_wib = datetime.now(ZoneInfo('Asia/Jakarta')).strftime('%Y-%m-%d %H:%M')
+        rows.append(dict({'id': rid, 'created_at': now_wib}, **clean))
+        _schedules_save(rows)
+        _sync_daily_playlist(clean.get('yt_id'))
+    return jsonify({"status": "success", "message": "Jadwal disimpan.",
+                    "id": rid, "row": dict({'id': rid}, **clean)})
 
 
 @app.route('/api/operator/set_autopilot', methods=['POST'])

@@ -1620,20 +1620,21 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
           <span class="pill p-cyan" id="bank-count">0 lagu</span>
           <span class="pill" id="bank-dur">—</span>
           <button class="btn btn-p btn-sm" style="white-space:nowrap" onclick="toggleBankUpload()">➕ Upload Audio</button>
+          <button class="btn btn-g btn-sm" style="white-space:nowrap" onclick="autoRenameBank()" title="Rename otomatis judul lagu yang jelek/kembar sesuai tema — supaya timestamp di deskripsi video rapi">✨ Rename Otomatis</button>
           <button class="btn btn-g btn-sm" onclick="fetchBank()">🔄 Refresh</button>
         </div>
       </div>
       <div id="bank-upload-form" style="display:none;margin-bottom:12px;padding:10px 12px;border:1px solid var(--border);border-radius:10px">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <input type="file" id="bank-up-file" accept=".mp3,.wav" style="max-width:230px">
-          <input type="text" id="bank-up-title" placeholder="Judul lagu (wajib)" style="width:220px">
+          <input type="file" id="bank-up-file" accept=".mp3,.wav" multiple style="max-width:230px">
+          <input type="text" id="bank-up-title" placeholder="Judul dasar (opsional — kosong = dari nama file)" style="width:260px">
           <input type="text" id="bank-up-style" placeholder="Style (opsional)" style="width:180px">
           <label style="font-size:12px;display:flex;gap:4px;align-items:center"><input type="checkbox" id="bank-up-inst" checked> Instrumental</label>
           <button class="btn btn-sm" id="bank-up-btn" onclick="uploadBankAudio()">Upload ke Bank</button>
           <button class="btn btn-g btn-sm" onclick="toggleBankUpload(false)">Batal</button>
           <span id="bank-up-status" style="font-size:12px;color:var(--muted)"></span>
         </div>
-        <div style="font-size:11px;color:var(--muted);margin-top:6px">MP3/WAV maks 100 MB — lagu masuk bank channel yang dipilih, 0 kredit, langsung dipakai rakit video harian (acak). Model tercatat "Manual".</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:6px">MP3/WAV maks 100 MB/file — bisa pilih BANYAK file sekaligus (30 file langsung masuk bank, 0 kredit, langsung dipakai rakit video harian acak). Judul diambil dari nama file (dibersihkan otomatis); kalau judul kembar/jelek, klik ✨ Rename Otomatis supaya timestamp di deskripsi video rapi. Model tercatat "Manual".</div>
       </div>
       <div id="bank-player" style="display:none;margin-bottom:12px;padding:10px 12px;border:1px solid var(--border);border-radius:10px">
         <div style="font-size:12px;font-weight:700;margin-bottom:6px">▶️ <span id="bank-now">—</span></div>
@@ -4047,22 +4048,54 @@ async function uploadBankAudio() {
   const st = document.getElementById('bank-up-status');
   const btn = document.getElementById('bank-up-btn');
   if (!yt) { alert('Pilih channel dulu.'); return; }
-  if (!fileEl || !fileEl.files || !fileEl.files.length) { alert('Pilih file MP3/WAV dulu.'); return; }
-  const title = titleEl ? titleEl.value.trim() : '';
-  if (!title) { alert('Isi judul lagu dulu.'); return; }
-  const fd = new FormData();
-  fd.append('yt_id', yt);
-  fd.append('file', fileEl.files[0]);
-  fd.append('title', title);
-  fd.append('style', styleEl ? styleEl.value.trim() : '');
-  fd.append('instrumental', (instEl && instEl.checked) ? '1' : '0');
-  if (st) st.textContent = 'Mengunggah…';
+  if (!fileEl || !fileEl.files || !fileEl.files.length) { alert('Pilih file MP3/WAV dulu (boleh banyak sekaligus).'); return; }
+  const files = Array.from(fileEl.files);
+  const titleBase = titleEl ? titleEl.value.trim() : '';
+  const style = styleEl ? styleEl.value.trim() : '';
+  const inst = (instEl && instEl.checked) ? '1' : '0';
+  if (st) st.textContent = 'Mengunggah ' + files.length + ' file…';
   if (btn) btn.disabled = true;
   try {
-    const r = await fetch('/api/zumo_bank/upload', { method: 'POST', body: fd });
-    const d = await r.json();
+    // 1 file + judul diisi = jalur satuan lama; sisanya (banyak file / judul
+    // kosong) = upload massal — judul diambil dari nama file (dibersihkan).
+    let d;
+    if (files.length === 1 && titleBase) {
+      const fd = new FormData();
+      fd.append('yt_id', yt);
+      fd.append('file', files[0]);
+      fd.append('title', titleBase);
+      fd.append('style', style);
+      fd.append('instrumental', inst);
+      const r = await fetch('/api/zumo_bank/upload', { method: 'POST', body: fd });
+      d = await r.json();
+      if (d.status === 'success') {
+        if (st) st.textContent = '✅ "' + (d.track ? d.track.title : titleBase) + '" masuk bank.';
+        if (fileEl) fileEl.value = '';
+        if (titleEl) titleEl.value = '';
+        fetchBank();
+        return;
+      }
+      if (st) st.textContent = '❌ ' + (d.message || 'Gagal mengunggah.');
+      return;
+    }
+    const fd = new FormData();
+    fd.append('yt_id', yt);
+    files.forEach(f => fd.append('files', f));
+    fd.append('title_base', titleBase);
+    fd.append('style', style);
+    fd.append('instrumental', inst);
+    const r = await fetch('/api/zumo_bank/upload_bulk', { method: 'POST', body: fd });
+    d = await r.json();
     if (d.status === 'success') {
-      if (st) st.textContent = '✅ "' + (d.track ? d.track.title : title) + '" masuk bank.';
+      let msg = '✅ ' + (d.uploaded || 0) + ' lagu masuk bank.';
+      if (d.failed) {
+        msg += ' ❌ ' + d.failed + ' gagal.';
+        if (d.failures && d.failures.length) {
+          msg += ' (' + d.failures.slice(0, 3).map(f => f.filename + ': ' + f.reason).join('; ') + (d.failures.length > 3 ? '; …' : '') + ')';
+        }
+      }
+      msg += ' Klik ✨ Rename Otomatis bila judul masih kembar/jelek.';
+      if (st) st.textContent = msg;
       if (fileEl) fileEl.value = '';
       if (titleEl) titleEl.value = '';
       fetchBank();
@@ -4071,6 +4104,35 @@ async function uploadBankAudio() {
     }
   } catch (e) {
     if (st) st.textContent = '❌ Gagal mengunggah.';
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+async function autoRenameBank() {
+  const sel = document.getElementById('bank-ch-sel');
+  const yt = sel ? sel.value : '';
+  const st = document.getElementById('bank-up-status');
+  if (!yt) { alert('Pilih channel dulu.'); return; }
+  const btn = document.querySelector('button[onclick="autoRenameBank()"]');
+  if (st) st.textContent = 'Muse me-rename judul…';
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/zumo_bank/auto_rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ yt_id: yt }) });
+    const d = await r.json();
+    if (d.status === 'success') {
+      const n = (d.renamed || []).length;
+      if (n === 0) {
+        if (st) st.textContent = '✅ Semua judul sudah rapi, tidak ada yang di-rename.';
+      } else {
+        const sample = (d.renamed || []).slice(0, 3).map(x => '"' + x.old + '" → "' + x.new + '"').join('; ');
+        if (st) st.textContent = '✅ ' + n + ' judul di-rename otomatis (tema: ' + (d.theme || '-') + '). ' + sample + (n > 3 ? '; …' : '');
+      }
+      fetchBank();
+    } else {
+      if (st) st.textContent = '❌ ' + (d.message || 'Gagal me-rename.');
+    }
+  } catch (e) {
+    if (st) st.textContent = '❌ Gagal me-rename.';
   } finally {
     if (btn) btn.disabled = false;
   }

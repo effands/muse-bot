@@ -8515,6 +8515,289 @@ def rename_zumo_bank_track():
     return jsonify({'status': 'success', 'message': 'Judul diubah.'})
 
 
+def _clean_bank_filename_title(filename):
+    """Judul bersih dari nama file (v1.4.23): buang ekstensi, domain
+    ('usesuno.com'), artefak ('_mixed', '_mix', '(1)', '[2]'), lalu
+    Title Case (huruf awal tiap kata kapital, singkatan seperti DJ tetap).
+    'Midnight Lounge - usesuno.com (1)_mixed.mp3' -> 'Midnight Lounge'."""
+    name = os.path.splitext(os.path.basename(filename or ''))[0]
+    name = re.sub(r'\s*-\s*usesuno\.com\s*', ' ', name, flags=re.I)
+    name = re.sub(r'usesuno\.com', ' ', name, flags=re.I)
+    name = re.sub(r'[_]+mixed[_]*', ' ', name, flags=re.I)
+    name = re.sub(r'[_]+mix[_]*', ' ', name, flags=re.I)
+    name = re.sub(r'\(\s*\d+\s*\)', ' ', name)
+    name = re.sub(r'\[\s*\d+\s*\]', ' ', name)
+    name = name.replace('_', ' ').replace('-', ' ')
+    name = re.sub(r'\s+', ' ', name).strip()
+    return ' '.join(w[:1].upper() + w[1:] for w in name.split(' ') if w)
+
+
+# Kolam judul lagu per tema untuk Rename Otomatis (v1.4.23, permintaan user
+# 24 Nov 2026 — "tombol renam auto by muse ya sesuai tema, agar di
+# timestamp nya tetep rapi dan bagus"). Judul disusun Muse dari tema itu
+# sendiri (bukan riset YouTube — user minta file lokalnya yang dipakai,
+# tanpa yt-dlp). Dipakai berurutan, yang sudah ada di bank dilewati supaya
+# tidak ada judul kembar di tracklist/deskripsi.
+_BANK_TITLE_POOLS = {
+    'midnight_lounge': [
+        'Midnight Lounge', 'Midnight Coffee', 'Quiet Midnight',
+        'Midnight Saxophone', 'Soft Midnight Rain', 'Velvet Midnight',
+        'Late Night Lounge', 'Midnight Golden Glow', 'Peaceful Midnight',
+        'Midnight Rain', 'Moonlit Lounge', 'Midnight Amber',
+        'Gentle Midnight', 'Midnight Slow Dance', 'After Midnight',
+        'Midnight And Coffee', 'Quiet Night Jazz', 'Midnight Dreams',
+        'Soft Night Breeze', 'Midnight Blue Hour', 'Warm Midnight',
+        'Serene Midnight', 'Midnight Mellow', 'Midnight Breeze',
+        'Midnight Piano Lounge', 'Midnight Rainy Night',
+        'Midnight Coffee Jazz', 'Midnight Saxophone Nights',
+        'Midnight Moonlight', 'Midnight Lounge Chill',
+        'Midnight Coffee House', 'Midnight Lounge Bar',
+        'Midnight Soft Jazz', 'Midnight Lounge Piano',
+        'Midnight Night Drive', 'Midnight Lounge Rain',
+        'Midnight Calm Waters', 'Midnight Lounge Serenade',
+        'Midnight Lounge Groove', 'Midnight Lounge Lights',
+    ],
+    'smooth_jazz': [
+        'Amber Hour Glow', 'Velvet Window Light', 'Slow Coffee Evening',
+        'Midnight City Rain', 'Golden Lamplight', 'Quiet Moonlight Room',
+        'Blue Hour Glow', 'Rainy Window Blues', 'Soft City Lights',
+        'Warm Evening Rain', 'Low Light Serenade', 'Night Breeze Avenue',
+        'Slow Moonlight Drive', 'Cozy Corner Jazz', 'Unhurried Evening',
+        'Velvet Afterglow', 'Quiet Still Night', 'Golden Window Rain',
+        'Mellow Saxophone Hour', 'Easy Midnight Glow',
+        'Slow Sunday Coffee', 'Golden Hour Saxophone',
+        'Rainy Evening Jazz', 'Soft Lamplight Jazz',
+        'Quiet City Evening', 'Mellow Morning Jazz',
+        'Velvet Evening Rain', 'Slow Golden Hour', 'Cozy Rainy Jazz',
+        'Warm Saxophone Night',
+    ],
+    'sleep_jazz': [
+        'Slow Dreamy Sleep', 'Soft Breathy Sax', 'Gentle Piano Sleep',
+        'Deep Sleep Jazz', 'Quiet Sleep Hours', 'Soft Night Sleep',
+        'Dreamy Sleep Jazz', 'Slow Sleep Piano', 'Peaceful Sleep Jazz',
+        'Midnight Sleep Jazz', 'Soft Sleep Breeze', 'Gentle Sleep Rain',
+        'Deep Night Sleep', 'Sleepy Saxophone', 'Soft Sleep Glow',
+        'Quiet Dream Sleep', 'Slow Sleep Night', 'Peaceful Dream Jazz',
+        'Gentle Sleep Hours', 'Deep Sleep Piano',
+    ],
+    'relaxing': [
+        'Relaxing Lounge', 'Soft Evening Jazz', 'Quiet Relaxing Hours',
+        'Gentle Relaxing Jazz', 'Peaceful Evening', 'Soft Relaxing Piano',
+        'Calm Evening Jazz', 'Relaxing Night Jazz',
+        'Soft Relaxing Breeze', 'Gentle Evening Calm',
+        'Quiet Relaxing Night', 'Peaceful Relaxing Jazz',
+        'Soft Evening Glow', 'Relaxing Coffee Jazz',
+        'Gentle Relaxing Rain', 'Calm Relaxing Night',
+        'Soft Relaxing Hours', 'Peaceful Coffee Jazz',
+        'Relaxing Evening Glow', 'Gentle Night Jazz',
+    ],
+}
+
+
+def _bank_detect_theme(channel_name, tracks):
+    """Tebak tema bank dari nama channel + judul/style lagu yang sudah ada
+    (v1.4.23). Dipakai Rename Otomatis bila tema tidak disebut eksplisit."""
+    hay = ((channel_name or '') + ' ' + ' '.join(
+        (str(t.get('title') or '') + ' ' + str(t.get('style') or ''))
+        for t in (tracks or []))).lower()
+    if any(k in hay for k in ('lounge', 'midnight', 'noir', 'bourbon', 'chillout', 'rannezh')):
+        return 'midnight_lounge'
+    if any(k in hay for k in ('sleep', 'rain better', 'dreamy', 'breathy')):
+        return 'sleep_jazz'
+    if any(k in hay for k in ('sax', 'cozy', 'smooth', 'coffee', 'jazz')):
+        return 'smooth_jazz'
+    return 'relaxing'
+
+
+def _bank_title_is_bad(title, seen_lower):
+    """Judul perlu di-rename bila: kosong/'Tanpa Judul', berisi artefak
+    nama file (usesuno, _mixed, .mp3/.wav, (angka), garis bawah), atau
+    kembar dengan judul lain di bank (seen_lower = judul yang sudah ada)."""
+    t = (title or '').strip()
+    if not t or t.lower() == 'tanpa judul':
+        return True
+    low = t.lower()
+    if any(k in low for k in ('usesuno', '_mixed', '_mix', '.mp3', '.wav', '_')):
+        return True
+    if re.search(r'\(\s*\d+\s*\)', t):
+        return True
+    if low in seen_lower:
+        return True
+    return False
+
+
+def _bank_save_uploaded_file(yt_id, channel_name, f, title, style, instrumental):
+    """Validasi + simpan SATU file audio upload ke bank (v1.4.23, dipakai
+    upload massal). Kembalikan (entry, None) bila sukses, (None, pesan)
+    bila gagal. Aturan sama seperti upload satuan v1.4.9."""
+    safe_name = os.path.basename(f.filename or '')
+    ext = os.path.splitext(safe_name)[1].lower()
+    if ext not in ('.mp3', '.wav'):
+        return None, 'Hanya MP3 atau WAV yang diterima.'
+    if f.content_length and f.content_length > BANK_AUDIO_MAX_BYTES:
+        return None, 'File lebih dari 100 MB.'
+    head = f.stream.read(12)
+    try:
+        f.stream.seek(0)
+    except Exception:
+        pass
+    if not _magic_ok(head, ext):
+        return None, 'Isi file tidak cocok dengan ekstensi ' + ext
+    tmp = os.path.join('/tmp', 'bank_up_%d_%04d%s' % (int(time.time() * 1000), random.randint(0, 9999), ext))
+    try:
+        f.save(tmp)
+        if os.path.getsize(tmp) > BANK_AUDIO_MAX_BYTES:
+            return None, 'File lebih dari 100 MB.'
+        try:
+            probe = subprocess.run([get_ffprobe_path(), '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', tmp], capture_output=True, text=True, timeout=120)
+            dur = float((probe.stdout or '').strip())
+        except Exception:
+            dur = 0.0
+        if not dur or dur <= 0:
+            return None, 'File audio tidak bisa dibaca (durasi tidak terbaca).'
+        meta = {'title': title, 'style': style, 'bpm': None, 'duration': dur,
+                'credits': 0, 'job_id': 'manual', 'instrumental': instrumental,
+                'model': 'Manual'}
+        with db_lock:
+            entry = _zumo_bank_save_track(yt_id, channel_name, tmp, meta)
+        if not entry:
+            return None, 'Gagal menyimpan lagu ke bank.'
+        return entry, None
+    finally:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+
+
+@app.route('/api/zumo_bank/upload_bulk', methods=['POST'])
+def upload_zumo_bank_bulk():
+    """Upload MASSAL lagu (MP3/WAV) ke bank (v1.4.23, permintaan user
+    24 Nov 2026 — upload 30 file lokal sekaligus, bukan satu-satu).
+    Form: yt_id, files (banyak), title_base (opsional), style (opsional),
+    instrumental (1/0). Judul tiap file: dari title_base + nomor, atau
+    dari nama file yang dibersihkan (_clean_bank_filename_title); judul
+    kembar diberi nomor (2, 3, ...) supaya tetap unik. Kembalikan
+    ringkasan: masuk berapa, gagal apa saja + alasannya."""
+    yt_id = str(request.form.get('yt_id') or '').strip()
+    title_base = str(request.form.get('title_base') or '').strip()
+    style = str(request.form.get('style') or '').strip()
+    instr = str(request.form.get('instrumental') or '1').strip().lower()
+    instrumental = instr in ('1', 'true', 'yes', 'on')
+    if not yt_id or not _valid_yt_id(yt_id):
+        return jsonify({'status': 'error', 'message': 'Channel tidak valid.'}), 400
+    target = next((c for c in (database_channel or []) if c.get('yt_id') == yt_id), None)
+    if target is None:
+        return jsonify({'status': 'error', 'message': 'Channel tidak ditemukan.'}), 404
+    files = request.files.getlist('files') or request.files.getlist('file')
+    files = [f for f in files if f and f.filename]
+    if not files:
+        return jsonify({'status': 'error', 'message': 'Pilih file MP3/WAV dulu.'}), 400
+    if len(files) > 100:
+        return jsonify({'status': 'error', 'message': 'Maksimal 100 file sekali upload.'}), 400
+    ch_name = target.get('name') or ''
+    try:
+        existing = _zumo_core.zumo_bank_list(ZUMO_BANK_DIR, ch_name) if _ZUMO_CORE_OK else []
+    except Exception:
+        existing = []
+    used = {str(t.get('title') or '').strip().lower() for t in existing}
+    ok_list, fail_list = [], []
+    for i, f in enumerate(files, start=1):
+        if title_base:
+            title = title_base if len(files) == 1 else '%s %d' % (title_base, i)
+        else:
+            title = _clean_bank_filename_title(f.filename) or 'Tanpa Judul'
+        base_title = title
+        n = 2
+        while title.strip().lower() in used:
+            title = '%s %d' % (base_title, n)
+            n += 1
+        entry, err = _bank_save_uploaded_file(yt_id, ch_name, f, title, style, instrumental)
+        if entry:
+            used.add(title.strip().lower())
+            ok_list.append({'id': entry.get('id'), 'title': entry.get('title'),
+                            'duration': entry.get('duration'),
+                            'filename': os.path.basename(f.filename or '')})
+        else:
+            fail_list.append({'filename': os.path.basename(f.filename or ''),
+                              'reason': err or 'Gagal menyimpan.'})
+    return jsonify({'status': 'success',
+                    'message': '%d lagu masuk bank.' % len(ok_list),
+                    'uploaded': len(ok_list), 'failed': len(fail_list),
+                    'tracks': ok_list, 'failures': fail_list})
+
+
+@app.route('/api/zumo_bank/auto_rename', methods=['POST'])
+def auto_rename_zumo_bank():
+    """Rename OTOMATIS judul lagu bank sesuai tema (v1.4.23, permintaan
+    user 24 Nov 2026 — "tombol renam auto by muse ya sesuai tema, agar di
+    timestamp nya tetep rapi dan bagus"). Body: {yt_id, theme?}.
+    Hanya judul yang JELEK yang diganti: berisi artefak nama file
+    (usesuno, _mixed, .mp3, (angka), garis bawah) atau kembar dengan
+    judul lain. Judul baru diambil berurutan dari kolam tema
+    (_BANK_TITLE_POOLS), yang sudah ada di bank dilewati — dijamin unik,
+    Title Case, tanpa artefak. Kembalikan daftar lama -> baru."""
+    data = request.get_json(silent=True) or {}
+    yt_id = str(data.get('yt_id') or '').strip()
+    theme = str(data.get('theme') or '').strip().lower()
+    if not yt_id or not _valid_yt_id(yt_id):
+        return jsonify({'status': 'error', 'message': 'Channel tidak valid.'}), 400
+    target = next((c for c in (database_channel or []) if c.get('yt_id') == yt_id), None)
+    if target is None:
+        return jsonify({'status': 'error', 'message': 'Channel tidak ditemukan.'}), 404
+    ch_name = target.get('name') or ''
+    try:
+        tracks = _zumo_core.zumo_bank_list(ZUMO_BANK_DIR, ch_name) if _ZUMO_CORE_OK else []
+    except Exception:
+        tracks = []
+    if not tracks:
+        return jsonify({'status': 'success', 'message': 'Bank masih kosong.',
+                        'renamed': [], 'theme': theme or ''})
+    if theme not in _BANK_TITLE_POOLS:
+        theme = _bank_detect_theme(ch_name, tracks)
+    pool = _BANK_TITLE_POOLS.get(theme) or _BANK_TITLE_POOLS['relaxing']
+    # hitung kemunculan tiap judul (untuk deteksi kembar: kemunculan ke-2+ jelek)
+    counts = {}
+    for t in tracks:
+        k = str(t.get('title') or '').strip().lower()
+        counts[k] = counts.get(k, 0) + 1
+    seen = set()
+    pool_idx = 0
+    renamed = []
+    for t in tracks:
+        title = str(t.get('title') or '').strip()
+        low = title.lower()
+        is_dup = counts.get(low, 0) > 1 and low in seen
+        seen.add(low)
+        if not _bank_title_is_bad(title, set()) and not is_dup:
+            continue
+        # cari judul baru dari kolam yang belum dipakai di bank
+        new_title = None
+        while pool_idx < len(pool):
+            cand = pool[pool_idx]
+            pool_idx += 1
+            if cand.lower() not in {str(x.get('title') or '').strip().lower() for x in tracks} and cand.lower() not in {r['new'] for r in renamed}:
+                new_title = cand
+                break
+        if not new_title:
+            # kolam habis: pakai judul bersih + nomor
+            base = _clean_bank_filename_title(title) or pool[0]
+            n = 2
+            new_title = base
+            used_now = {str(x.get('title') or '').strip().lower() for x in tracks} | {r['new'] for r in renamed}
+            while new_title.lower() in used_now:
+                new_title = '%s %d' % (base, n)
+                n += 1
+        with db_lock:
+            ok, err = _zumo_core.zumo_bank_rename(ZUMO_BANK_DIR, ch_name, str(t.get('id')), new_title)
+        if ok:
+            renamed.append({'id': str(t.get('id')), 'old': title, 'new': new_title})
+    return jsonify({'status': 'success',
+                    'message': '%d judul di-rename otomatis.' % len(renamed),
+                    'renamed': renamed, 'theme': theme,
+                    'count': len(renamed)})
+
+
 def _clean_history_status(status):
     """Status history kadang berisi HTML (Shorts: 'Tayang! ✅ <a ...>[Lihat]</a>').
     Buang anchor + tag apa pun — judul sudah jadi link sendiri di Riwayat."""

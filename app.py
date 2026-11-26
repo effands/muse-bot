@@ -229,12 +229,10 @@ def _pin_is_hashed(stored):
     return isinstance(stored, str) and (stored.startswith('pbkdf2:') or stored.startswith('scrypt:'))
 
 def _pin_strength_ok(pin):
-    """PIN minimal 8 karakter, campur huruf + angka."""
-    if not isinstance(pin, str) or len(pin) < 8:
-        return False
-    has_letter = any(c.isalpha() for c in pin)
-    has_digit = any(c.isdigit() for c in pin)
-    return has_letter and has_digit
+    """PIN 6 angka (user 27 Nov 2026: PIN harusnya 6 angka, bukan
+    minimal 8 + kombinasi huruf). Berlaku untuk PIN BARU (setup +
+    ganti PIN); login PIN lama tetap dicek hash-nya saja."""
+    return isinstance(pin, str) and len(pin) == 6 and pin.isdigit()
 
 def _check_pin(pin):
     """Cek PIN terhadap config. PIN plaintext LAMA tetap diterima sekali —
@@ -514,7 +512,7 @@ def setup():
     if request.method == 'POST':
         pin = request.form.get('new_pin'); pin2 = request.form.get('confirm_pin')
         if not pin or not _pin_strength_ok(pin):
-            error = "PIN minimal 8 karakter, campur huruf dan angka."
+            error = "PIN harus 6 angka."
         elif pin != pin2: error = "PIN tidak cocok!"
         else:
             new_secret = secrets.token_hex(24)
@@ -565,7 +563,7 @@ def change_pin():
         return jsonify({"status": "error", "message": "PIN lama salah."}), 400
     if not _pin_strength_ok(new_pin):
         return jsonify({"status": "error",
-                        "message": "PIN baru minimal 8 karakter, campur huruf dan angka."}), 400
+                        "message": "PIN baru harus 6 angka."}), 400
     if new_pin != new_pin2:
         return jsonify({"status": "error", "message": "PIN baru tidak cocok."}), 400
     cfg = load_bot_config()

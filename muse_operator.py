@@ -5749,6 +5749,7 @@ def _start_make_playlist(token, chat_id, raw_cmd):
                      "lalu ketik /playlist lagi ya Pak Effand!")
         return
     pre = {}
+    parts = []
     rest = raw_cmd[len('/buatplaylist'):].strip() if raw_cmd.strip().lower().startswith('/buatplaylist') else ''
     if rest:
         parts = [p.strip() for p in rest.split('|')]

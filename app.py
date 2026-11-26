@@ -11756,6 +11756,12 @@ def _playlist_download_audio(video_id, out_dir):
         'max_filesize': PLAYLIST_MAX_AUDIO_BYTES,
         'http_headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'},
     }
+    # Hotfix mandor 2026-11-26: pakai cookies.txt (sama seperti Clipper)
+    # bila ada, supaya YouTube tidak menolak unduhan dengan
+    # "Sign in to confirm you're not a bot" dari IP VPS.
+    _cookie_file = os.path.join(BASE_DIR, 'cookies.txt')
+    if os.path.exists(_cookie_file):
+        opts['cookiefile'] = _cookie_file
     audio_path = os.path.join(out_dir, 'audio.mp3')
     last_err = None
     for attempt in range(1, _PLAYLIST_AUDIO_MAX_ATTEMPTS + 1):

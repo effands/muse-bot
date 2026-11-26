@@ -11762,6 +11762,11 @@ def _playlist_download_audio(video_id, out_dir):
     _cookie_file = os.path.join(BASE_DIR, 'cookies.txt')
     if os.path.exists(_cookie_file):
         opts['cookiefile'] = _cookie_file
+    # Pendekatan Mister Download Manager (GPL-3.0, anefzaoui/misterdownloadmanager,
+    # crates/tools/src/youtube.rs): YouTube lebih sering menolak sesi yang sudah
+    # login (bot-check / 403 / PO token) daripada pengunjung tanpa login - jadi
+    # bila unduhan dengan cookies ditolak seperti itu, coba lagi TANPA cookies.
+    # Kecuali videonya memang butuh login (privat / batas usia / khusus member).
     audio_path = os.path.join(out_dir, 'audio.mp3')
     last_err = None
     for attempt in range(1, _PLAYLIST_AUDIO_MAX_ATTEMPTS + 1):
@@ -11786,6 +11791,21 @@ def _playlist_download_audio(video_id, out_dir):
             last_err = e
             print(f"[playlist] unduh audio gagal (percobaan {attempt}/{_PLAYLIST_AUDIO_MAX_ATTEMPTS}): {e}", flush=True)
             if attempt < _PLAYLIST_AUDIO_MAX_ATTEMPTS:
+                # Pendekatan MDM: bila penolakan ini ciri sesi login yang ditolak
+                # (bot-check / 403 / PO token / link kedaluwarsa) dan videonya
+                # tidak butuh login, lepas cookies dan coba lagi tanpa login.
+                _msg = str(e).lower()
+                _needs_login = any(k in _msg for k in (
+                    'private video', 'confirm your age', 'members-only',
+                    "channel's members", 'join this channel',
+                    'premium members', 'requires payment'))
+                _refused_signed_in = any(k in _msg for k in (
+                    'not a bot', 'http error 403', 'answered 403',
+                    'link has expired', 'po token'))
+                if (not _needs_login and _refused_signed_in
+                        and 'cookiefile' in opts):
+                    del opts['cookiefile']
+                    print('[playlist] YouTube menolak sesi login; coba lagi tanpa cookies', flush=True)
                 time.sleep(_PLAYLIST_AUDIO_RETRY_DELAY_SEC)
     raise RuntimeError(f'Audio referensi gagal diunduh setelah {_PLAYLIST_AUDIO_MAX_ATTEMPTS}x coba: {last_err}')
 

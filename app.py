@@ -11728,6 +11728,101 @@ def _playlist_research_youtube(channel, query):
     return [], None, False, None, None
 
 
+# 🔥 v1.4.31: RELAY unduh audio via VPS lain — bila IP server ini diblokir
+# YouTube ("Sign in to confirm you're not a bot", kasus VPS 2 RackNerd
+# 27 Nov 2026), unduhan dialihkan ke relay host yang IP-nya bisa unduh
+# (VPS 1). Jalur: ssh ke relay → yt-dlp di sana → scp mp3 balik.
+# Melengkapi pendekatan mandor (file lokal/inbox + cookies + MDM):
+# relay dipakai bila semua cara lokal gagal karena bot-check.
+# Config di config.json: download_relay_host (mis. "141.11.190.90"),
+# download_relay_user (default "root"). Kunci SSH relay ada di
+# ~/.ssh/id_ed25519 server ini. Tanpa config relay, perilaku lama.
+_PLAYLIST_RELAY_SSH_TIMEOUT_SEC = 900
+
+
+def _playlist_is_botcheck_error(err):
+    """True bila error yt-dlp menandakan IP diblokir YouTube (minta login)."""
+    msg = str(err or '').lower()
+    return ('sign in to confirm' in msg
+            or "confirm you're not a bot" in msg
+            or 'confirm you are not a bot' in msg)
+
+
+def _playlist_download_audio_via_relay(video_id, out_dir):
+    """Unduh audio referensi lewat relay host via SSH + scp.
+    Mengembalikan path mp3 lokal bila sukses, None bila gagal/tidak
+    ada config relay. Dipanggil hanya bila unduh lokal gagal karena
+    bot-check (IP diblokir)."""
+    try:
+        relay_host = (bot_config.get('download_relay_host') or '').strip()
+        relay_user = (bot_config.get('download_relay_user') or 'root').strip() or 'root'
+    except Exception:
+        return None
+    if not relay_host:
+        return None
+    if not re.fullmatch(r'[A-Za-z0-9._-]{1,253}', relay_host):
+        print(f"[playlist] relay host tidak valid: {relay_host}", flush=True)
+        return None
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,32}', relay_user):
+        print(f"[playlist] relay user tidak valid: {relay_user}", flush=True)
+        return None
+    target = f'{relay_user}@{relay_host}'
+    remote_tmp = f'/tmp/relay_{video_id}.mp3'
+    url = f'https://www.youtube.com/watch?v={video_id}'
+    # Perintah di relay: pakai yt-dlp dari venv bot bila ada, kalau tidak
+    # yt-dlp sistem. Hasil akhir mp3 192k (sama seperti unduh lokal).
+    remote_cmd = (
+        'PY=/root/muse-bot/venv/bin/python; '
+        'if [ -x "$PY" ]; then DL="$PY -m yt_dlp"; else DL="yt-dlp"; fi; '
+        '$DL -x --audio-format mp3 --audio-quality 192K --no-warnings '
+        '--no-cache-dir --socket-timeout 30 --retries 3 '
+        f'--max-filesize {PLAYLIST_MAX_AUDIO_BYTES} '
+        f'-o "/tmp/relay_{video_id}.%(ext)s" "{url}"'
+    )
+    ssh_base = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=30',
+                '-o', 'StrictHostKeyChecking=accept-new', target]
+    try:
+        r = subprocess.run(ssh_base + [remote_cmd], capture_output=True,
+                           text=True, timeout=_PLAYLIST_RELAY_SSH_TIMEOUT_SEC)
+    except Exception as e:
+        print(f"[playlist] ssh ke relay {relay_host} gagal: {e}", flush=True)
+        return None
+    if r.returncode != 0:
+        _err = (r.stderr or '').strip()
+        print(f"[playlist] unduh di relay {relay_host} gagal: {_err[-300:]}", flush=True)
+        return None
+    local_path = os.path.join(out_dir, 'audio.mp3')
+    try:
+        r2 = subprocess.run(
+            ['scp', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=30',
+             '-o', 'StrictHostKeyChecking=accept-new',
+             f'{target}:{remote_tmp}', local_path],
+            capture_output=True, text=True,
+            timeout=_PLAYLIST_RELAY_SSH_TIMEOUT_SEC)
+    except Exception as e:
+        print(f"[playlist] scp dari relay {relay_host} gagal: {e}", flush=True)
+        return None
+    # Bersihkan file sementara di relay (best-effort).
+    try:
+        subprocess.run(ssh_base + [f'rm -f "{remote_tmp}"'],
+                       capture_output=True, timeout=60)
+    except Exception:
+        pass
+    if r2.returncode != 0 or not (os.path.exists(local_path)
+                                  and os.path.getsize(local_path) > 0):
+        _err = (r2.stderr or '').strip()
+        print(f"[playlist] ambil file dari relay {relay_host} gagal: {_err[-300:]}", flush=True)
+        try:
+            if os.path.exists(local_path):
+                os.remove(local_path)
+        except Exception:
+            pass
+        return None
+    print(f"[playlist] audio referensi diunduh via relay {relay_host} "
+          f"({os.path.getsize(local_path)} byte)", flush=True)
+    return local_path
+
+
 # 🔥 v1.4.30: AUTO-RETRY unduh audio — unduhan referensi kadang rusak di
 # tengah jalan (kasus Diva 24 Nov 2026: ffmpeg berhenti di 56:35, unduh
 # ulang dari nol berhasil penuh 149 MB). Coba sampai 3x, bersihkan file
@@ -11805,6 +11900,7 @@ def _playlist_download_audio(video_id, out_dir):
     # bila unduhan dengan cookies ditolak seperti itu, coba lagi TANPA cookies.
     # Kecuali videonya memang butuh login (privat / batas usia / khusus member).
     last_err = None
+    bot_blocked = False
     for attempt in range(1, _PLAYLIST_AUDIO_MAX_ATTEMPTS + 1):
         # Bersihkan file parsial dari percobaan sebelumnya.
         for _name in ('audio.mp3', 'audio.mp3.part', 'audio.webm',
@@ -11826,6 +11922,12 @@ def _playlist_download_audio(video_id, out_dir):
         except Exception as e:
             last_err = e
             print(f"[playlist] unduh audio gagal (percobaan {attempt}/{_PLAYLIST_AUDIO_MAX_ATTEMPTS}): {e}", flush=True)
+            if _playlist_is_botcheck_error(e):
+                # IP server ini diblokir YouTube — percobaan lokal lain
+                # akan gagal sama (tanpa cookies pun gagal, sudah dites);
+                # langsung coba relay (v1.4.31), lewati putaran MDM.
+                bot_blocked = True
+                break
             if attempt < _PLAYLIST_AUDIO_MAX_ATTEMPTS:
                 # Pendekatan MDM: bila penolakan ini ciri sesi login yang ditolak
                 # (bot-check / 403 / PO token / link kedaluwarsa) dan videonya
@@ -11843,6 +11945,11 @@ def _playlist_download_audio(video_id, out_dir):
                     del opts['cookiefile']
                     print('[playlist] YouTube menolak sesi login; coba lagi tanpa cookies', flush=True)
                 time.sleep(_PLAYLIST_AUDIO_RETRY_DELAY_SEC)
+    if bot_blocked:
+        relay_path = _playlist_download_audio_via_relay(video_id, out_dir)
+        if relay_path:
+            return relay_path
+        raise RuntimeError(f'Audio referensi gagal diunduh: IP diblokir YouTube dan relay gagal: {last_err}')
     raise RuntimeError(f'Audio referensi gagal diunduh setelah {_PLAYLIST_AUDIO_MAX_ATTEMPTS}x coba: {last_err}')
 
 

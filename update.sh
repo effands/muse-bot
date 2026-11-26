@@ -92,8 +92,17 @@ fi
 # test di bawah selalu error "unary operator expected" — pull gagal pun
 # tidak pernah terdeteksi.
 HEAD_BEFORE=$(git rev-parse HEAD 2>/dev/null)
-PULL_OUT=$(git pull 2>&1)
+# 🔑 PAT GitHub (repo private, v1.4.34): bila config.json punya github_pat,
+# pakai Authorization header untuk git pull. PAT TIDAK masuk URL (tidak
+# bocor ke log/status). Bila tidak ada PAT, pull seperti biasa (repo publik).
+PAT=$(python3 -c "import json; print(json.load(open('config.json')).get('github_pat') or '')" 2>/dev/null)
+if [ -n "$PAT" ]; then
+  PULL_OUT=$(git -c "http.extraHeader=Authorization: Bearer $PAT" pull 2>&1)
+else
+  PULL_OUT=$(git pull 2>&1)
+fi
 PULL_RC=$?
+PAT=""
 if [ "$PULL_RC" -ne 0 ]; then
   write_status "failed" "$PULL_OUT"
   notify_tg "❌ *Update panel gagal, Bos* 😅

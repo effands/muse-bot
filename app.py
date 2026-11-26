@@ -9085,10 +9085,37 @@ def _git_short_hash():
     except Exception:
         return None
 
+def _github_pat():
+    """PAT GitHub dari config (untuk akses repo private). None bila belum diisi.
+    PAT TIDAK PERNAH dikembalikan utuh ke panel / log."""
+    cfg = load_bot_config()
+    pat = (cfg.get('github_pat') or '').strip()
+    return pat or None
+
+
+def _github_pat_masked():
+    """PAT tersamar untuk tampilan (mis. 'ghp_****ab12'); '' bila belum diisi."""
+    pat = _github_pat()
+    if not pat:
+        return ''
+    return (pat[:4] + '****' + pat[-4:]) if len(pat) > 8 else '****'
+
+
+def _git_auth_args():
+    """Argumen git -c untuk otentikasi repo private (bila PAT ada).
+    PAT masuk header Authorization, TIDAK masuk URL — jadi tidak bocor
+    ke log/status update. Bila tidak ada PAT, kembalikan [] (repo publik)."""
+    pat = _github_pat()
+    if not pat:
+        return []
+    return ['-c', 'http.extraHeader=Authorization: Bearer ' + pat]
+
+
 def _git_remote_head():
-    """Short hash HEAD remote (origin); None bila GitHub tak terjangkau."""
+    """Short hash HEAD remote (origin); None bila GitHub tak terjangkau.
+    Bila repo private, pakai PAT dari config (bila ada)."""
     try:
-        p = subprocess.run(['git', 'ls-remote', 'origin', 'HEAD'],
+        p = subprocess.run(['git'] + _git_auth_args() + ['ls-remote', 'origin', 'HEAD'],
                            cwd=BASE_DIR, capture_output=True, text=True, timeout=20)
         out = (p.stdout or '').strip()
         return out.split()[0][:7] if out else None
@@ -9239,7 +9266,33 @@ def check_update_api():
 def update_status_api():
     """Status update terakhir (butuh login panel; GET saja)."""
     st = _read_update_status()
-    return jsonify({"status": "success", "update": (st or None)})
+    return jsonify({"status": "success", "update": (st or None),
+                    "pat_set": bool(_github_pat()),
+                    "pat_masked": _github_pat_masked()})
+
+
+@app.route('/api/github_pat', methods=['POST'])
+def github_pat_api():
+    """Simpan/hapus PAT GitHub (untuk repo private). Butuh login + CSRF.
+    PAT disimpan di config.json (chmod 600), tidak pernah dikembalikan
+    utuh — hanya status tersimpan + 4 karakter terakhir. PAT klasik
+    'ghp_...' atau fine-grained 'github_pat_...' (scope repo)."""
+    data = request.get_json(silent=True) or {}
+    pat = (data.get('pat') or '').strip()
+    cfg = load_bot_config()
+    if pat:
+        if len(pat) < 20:
+            return jsonify({"status": "error",
+                            "message": "PAT terlalu pendek — pastikan token disalin lengkap."}), 400
+        cfg['github_pat'] = pat
+        msg = "PAT GitHub disimpan. Update dari repo private sudah bisa jalan."
+    else:
+        cfg.pop('github_pat', None)
+        msg = "PAT GitHub dihapus. Update hanya bisa dari repo publik."
+    _save_bot_config(cfg)
+    return jsonify({"status": "success", "message": msg,
+                    "pat_set": bool(cfg.get('github_pat')),
+                    "pat_masked": _github_pat_masked()})
 
 @app.route('/api/update_panel', methods=['POST'])
 def update_panel_api():

@@ -2477,7 +2477,14 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
             <button class="btn" id="upd-check-btn" onclick="checkUpdate()">🔄 Periksa Update</button>
             <button class="btn btn-p" id="upd-run-btn" onclick="startUpdate()">⬆️ Update &amp; Restart</button>
           </div>
-          <details class="data-note" style="margin:10px 0 0"><summary>Penjelasan</summary><div>Update menarik kode terbaru dari GitHub lalu restart kedua service (panel + operator). Proses berjalan di latar — panel akan mati sebentar saat restart, lalu hidup lagi sendiri. Bila ada video sedang dirender/di-upload, update ditolak (coba lagi setelah selesai). Bila git pull gagal (ada perubahan lokal/konflik), update dibatalkan tanpa restart dan alasannya ditampilkan di sini. Hasil update juga dikirim ke Telegram.</div></details>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:12px">
+            <label style="font-size:13px">PAT GitHub (repo private)</label>
+            <input type="password" id="upd-pat" placeholder="ghp_... / github_pat_..." autocomplete="off" style="width:280px">
+            <button class="btn" onclick="saveGithubPat()">💾 Simpan PAT</button>
+            <button class="btn btn-g" onclick="clearGithubPat()">🗑️ Hapus PAT</button>
+            <span id="upd-pat-status" style="font-size:12px;color:var(--muted)">PAT belum diisi.</span>
+          </div>
+          <details class="data-note" style="margin:10px 0 0"><summary>Penjelasan</summary><div>Update menarik kode terbaru dari GitHub lalu restart kedua service (panel + operator). Proses berjalan di latar — panel akan mati sebentar saat restart, lalu hidup lagi sendiri. Bila ada video sedang dirender/di-upload, update ditolak (coba lagi setelah selesai). Bila git pull gagal (ada perubahan lokal/konflik), update dibatalkan tanpa restart dan alasannya ditampilkan di sini. Hasil update juga dikirim ke Telegram. Bila repo GitHub dijadikan <b>private</b>, isi PAT GitHub di atas (scope <code>repo</code>) supaya Update &amp; Periksa Update tetap bisa jalan; tanpa PAT, repo private tidak bisa ditarik. Urutan aman: isi PAT dulu, baru jadikan repo private, lalu tes Update.</div></details>
         </div>
       </div>
 
@@ -2947,7 +2954,7 @@ function go(id, el) {
     document.getElementById('tb-title').textContent = meta.t;
     document.getElementById('tb-sub').textContent = meta.s;
   }
-  if (id === 'settings') { loadTgConfig(); checkApiStatus(); loadAppVersion(); loadPixabayKeys(); loadKieKeys(); loadVidiqSettings(); loadBackupStatus(); loadOperatorStatus(); }
+  if (id === 'settings') { loadTgConfig(); checkApiStatus(); loadAppVersion(); loadPixabayKeys(); loadKieKeys(); loadVidiqSettings(); loadBackupStatus(); loadOperatorStatus(); loadUpdatePatStatus(); }
   if (id === 'dashboard') fetchAnalytics();
   if (id === 'calendar') loadCalendar();
   if (id === 'schedules') fetchSchedules();
@@ -4416,6 +4423,28 @@ function checkUpdate() {
     } else _updSetStatus('❌ ' + (d.message || 'Gagal memeriksa update.'), 'var(--red)');
   }).catch(() => _updSetStatus('❌ Tidak bisa menghubungi panel.', 'var(--red)'))
     .finally(() => { if (btn) btn.disabled = false; });
+}
+function saveGithubPat() {
+  const pat = (document.getElementById('upd-pat') || {}).value || '';
+  if (!pat) { toast('Isi PAT dulu.', 'warn'); return; }
+  fetch('/api/github_pat', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ pat }) }).then(r => r.json()).then(d => {
+    toast(d.message || '', d.status === 'success' ? 'success' : 'error');
+    if (d.status === 'success') { document.getElementById('upd-pat').value = ''; loadUpdatePatStatus(); }
+  }).catch(() => toast('Tidak bisa menghubungi panel.', 'error'));
+}
+function clearGithubPat() {
+  fetch('/api/github_pat', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ pat: '' }) }).then(r => r.json()).then(d => {
+    toast(d.message || '', d.status === 'success' ? 'success' : 'error');
+    if (d.status === 'success') loadUpdatePatStatus();
+  }).catch(() => toast('Tidak bisa menghubungi panel.', 'error'));
+}
+function loadUpdatePatStatus() {
+  fetch('/api/update_status').then(r => r.json()).then(d => {
+    const el = document.getElementById('upd-pat-status');
+    if (!el) return;
+    if (d.pat_set) el.textContent = 'PAT tersimpan: ' + (d.pat_masked || '****');
+    else el.textContent = 'PAT belum diisi — Update hanya bisa dari repo publik.';
+  }).catch(() => {});
 }
 function pollUpdateStatus() {
   fetch('/api/update_status').then(r => r.json()).then(d => {

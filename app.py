@@ -11743,8 +11743,45 @@ def _playlist_download_audio(video_id, out_dir):
     import yt_dlp
     if not re.fullmatch(r'[A-Za-z0-9_-]{11}', video_id or ''):
         raise ValueError('ID video tidak valid.')
-    url = f"https://www.youtube.com/watch?v={video_id}"
     os.makedirs(out_dir, exist_ok=True)
+    audio_path = os.path.join(out_dir, 'audio.mp3')
+    # File audio lokal (mandor 2026-11-27): bila audio referensi sudah
+    # tersedia sebagai file lokal, pakai itu dan lewati unduhan YouTube.
+    # Berguna bila IP VPS ditolak YouTube. Dua tempat dicari:
+    #  (1) audio.mp3 yang sudah ada di job_dir ini (retry job yang sama),
+    #  (2) folder inbox BASE_DIR/playlist_audio_inbox/<video_id>.mp3/.m4a/
+    #      .webm/.opus — file ditaruh di sana dari VPS 1 / PC (nama file
+    #      harus sama dengan ID video YouTube-nya). File .m4a/.webm/.opus
+    #      dikonversi ke mp3 192k seperti hasil yt-dlp. File inbox TIDAK
+    #      dihapus, supaya bisa dipakai lagi bila job di-retry.
+    if os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
+        print(f'[playlist] audio lokal sudah ada di job_dir: {audio_path}', flush=True)
+        return audio_path
+    _inbox = os.path.join(BASE_DIR, 'playlist_audio_inbox')
+    os.makedirs(_inbox, exist_ok=True)
+    for _ext in ('mp3', 'm4a', 'webm', 'opus'):
+        _src = os.path.join(_inbox, f'{video_id}.{_ext}')
+        if not (os.path.exists(_src) and os.path.getsize(_src) > 0):
+            continue
+        print(f'[playlist] audio lokal ditemukan di inbox: {_src}', flush=True)
+        if _ext == 'mp3':
+            import shutil
+            shutil.copyfile(_src, audio_path)
+        else:
+            import subprocess
+            _r = subprocess.run(
+                [get_ffmpeg_path(), '-y', '-i', _src, '-vn',
+                 '-codec:a', 'libmp3lame', '-b:a', '192k', audio_path],
+                capture_output=True, text=True, timeout=600)
+            if _r.returncode != 0:
+                raise RuntimeError(
+                    f'Konversi audio lokal gagal ({_ext} -> mp3): '
+                    f'{(_r.stderr or "").strip()[-300:]}')
+        if os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
+            print(f'[playlist] audio lokal siap dipakai: {audio_path}', flush=True)
+            return audio_path
+        raise RuntimeError('Audio lokal ditemukan tapi hasilnya kosong.')
+    url = f"https://www.youtube.com/watch?v={video_id}"
     opts = {
         'format': 'bestaudio/best',
         'outtmpl': os.path.join(out_dir, 'audio.%(ext)s'),
@@ -11767,7 +11804,6 @@ def _playlist_download_audio(video_id, out_dir):
     # login (bot-check / 403 / PO token) daripada pengunjung tanpa login - jadi
     # bila unduhan dengan cookies ditolak seperti itu, coba lagi TANPA cookies.
     # Kecuali videonya memang butuh login (privat / batas usia / khusus member).
-    audio_path = os.path.join(out_dir, 'audio.mp3')
     last_err = None
     for attempt in range(1, _PLAYLIST_AUDIO_MAX_ATTEMPTS + 1):
         # Bersihkan file parsial dari percobaan sebelumnya.

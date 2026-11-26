@@ -2491,7 +2491,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
           <div style="font-family:var(--font-m);font-size:11px;color:var(--muted);margin-bottom:14px">Backup berisi <b style="color:var(--text)">channels_db + tasks_db + config (PIN, token Telegram, kredensial channel) + file state + galeri</b>, diarsipkan terenkripsi (AES-256) di folder <code>backups/</code> di VPS. Backup <b style="color:var(--text)">tidak pernah dikirim ke Telegram</b> — hanya status. Unduh hanya dari sini (login).</div>
           <div id="bak-last" style="font-size:13px;margin-bottom:10px;color:var(--muted)">Memuat status backup…</div>
           <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:12px">
-            <label style="font-size:13px"><input type="checkbox" id="bak-enabled"> Jadwal harian aktif</label>
+            <button class="btn" id="bak-toggle" onclick="backupToggle()">⚪ Harian NONAKTIF — klik nyalakan</button>
             <label style="font-size:13px">Jam (WIB) <input type="number" id="bak-hour" min="0" max="23" value="3" style="width:64px"></label>
             <button class="btn" onclick="backupSaveSettings()">💾 Simpan Jadwal</button>
             <button class="btn btn-p" onclick="backupNow()">⬇️ Backup Sekarang</button>
@@ -2503,7 +2503,7 @@ input[type=file] { font-family: var(--font-d); font-size: 13px; }
             <input type="password" id="bak-key-full" readonly style="display:none;width:100%;margin-top:6px" onclick="this.select()">
             <div style="font-size:11px;color:var(--muted);margin-top:4px">Simpan kunci ini di tempat aman (mis. password manager). Tanpa kunci ini, backup terenkripsi TIDAK bisa dibuka bila VPS hilang. Restore memakai kunci yang tersimpan di VPS — kolom kunci di form restore hanya bila kunci VPS hilang.</div>
           </div>
-          <details class="data-note" style="margin:10px 0 0"><summary>Penjelasan</summary><div>Backup harian jalan otomatis tiap hari jam yang kamu atur (default 03:00 WIB, saat sepi) + snapshot otomatis sebelum setiap Update panel + manual dari sini atau Telegram (<code>/backup</code>). Retensi: 3 backup terbaru — yang lebih lama dihapus otomatis. Bila total galeri di atas 2 GB, file video di-skip (gambar + audio + manifest tetap ikut) dan dicatat di daftar. <b>Catatan jujur:</b> backup tersimpan di disk VPS yang sama — melindungi dari data rusak/terhapus &amp; update gagal, BUKAN dari VPS hilang total. Unduh salinannya berkala ke komputermu untuk perlindungan penuh. Restore menimpa config (PIN + token ikut kembali), lalu restart panel + operator — ketik YA di form konfirmasi karena tidak bisa dibatalkan.</div></details>
+          <details class="data-note" style="margin:10px 0 0"><summary>Penjelasan</summary><div>Backup harian <b>default NONAKTIF</b> — nyalakan lewat tombol toggle di atas bila mau jalan otomatis tiap hari jam yang kamu atur (default 03:00 WIB, saat sepi). Snapshot otomatis sebelum setiap Update panel + manual dari sini atau Telegram (<code>/backup</code>) tetap jalan walau harian nonaktif. Retensi: 3 backup terbaru — yang lebih lama dihapus otomatis. Bila total galeri di atas 2 GB, file video di-skip (gambar + audio + manifest tetap ikut) dan dicatat di daftar. <b>Catatan jujur:</b> backup tersimpan di disk VPS yang sama — melindungi dari data rusak/terhapus &amp; update gagal, BUKAN dari VPS hilang total. Unduh salinannya berkala ke komputermu untuk perlindungan penuh. Restore menimpa config (PIN + token ikut kembali), lalu restart panel + operator — ketik YA di form konfirmasi karena tidak bisa dibatalkan.</div></details>
         </div>
       </div>
 
@@ -4595,8 +4595,8 @@ function loadBackupStatus() {
       if (!last) lastEl.innerHTML = 'Belum pernah backup. Klik <b>Backup Sekarang</b> untuk membuat yang pertama.';
       else lastEl.innerHTML = 'Terakhir: <b>' + escapeHtml(last.filename || '?') + '</b> • ' + escapeHtml(last.created_at || '?') + ' • ' + escapeHtml(last.size_human || '?') + ' • ' + (last.files_count || '?') + ' file • ' + (last.encrypted ? 'terenkripsi ✅' : '⚠️ TANPA enkripsi') + (last.media_skipped ? ' • video galeri di-skip (&gt;2 GB)' : '') + (last.note ? ' • ' + escapeHtml(last.note) : '');
     }
-    const en = document.getElementById('bak-enabled');
-    if (en) en.checked = !!d.enabled;
+    const tg = document.getElementById('bak-toggle');
+    if (tg) tg.textContent = d.enabled ? '🟢 Harian AKTIF — klik matikan' : '⚪ Harian NONAKTIF — klik nyalakan';
     const hr = document.getElementById('bak-hour');
     if (hr) hr.value = (d.hour == null ? 3 : d.hour);
     const km = document.getElementById('bak-key-masked');
@@ -4623,10 +4623,15 @@ function backupNow() {
     if (d.status === 'success') { loadBackupStatus(); if (!_bakPollTimer) _bakPollTimer = setInterval(loadBackupStatus, 3000); }
   }).catch(() => toast('Tidak bisa menghubungi panel.', 'error'));
 }
+function backupToggle() {
+  fetch('/api/backup_toggle', { method: 'POST' }).then(r => r.json()).then(d => {
+    toast(d.message || '', d.status === 'success' ? 'success' : 'error');
+    if (d.status === 'success') loadBackupStatus();
+  }).catch(() => toast('Tidak bisa menghubungi panel.', 'error'));
+}
 function backupSaveSettings() {
-  const en = document.getElementById('bak-enabled');
   const hr = document.getElementById('bak-hour');
-  fetch('/api/backup_settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: en ? en.checked : true, hour: hr ? parseInt(hr.value, 10) : 3 }) }).then(r => r.json()).then(d => {
+  fetch('/api/backup_settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hour: hr ? parseInt(hr.value, 10) : 3 }) }).then(r => r.json()).then(d => {
     toast(d.message || '', d.status === 'success' ? 'success' : 'error');
     if (d.status === 'success') loadBackupStatus();
   }).catch(() => toast('Tidak bisa menghubungi panel.', 'error'));

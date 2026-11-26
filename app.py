@@ -9496,12 +9496,16 @@ _BACKUP_RUNNING = {'active': False}   # guard: satu backup dalam satu waktu
 
 
 def _backup_settings():
+    # v1.4.32: backup harian default NONAKTIF (user 27 Nov 2026: "backup
+    # ini tidak usah diaktifkan, kasih tombol toggle aja"). Sebelumnya
+    # default True sehingga 03:00 jalan sendiri walau tidak pernah
+    # diatur. Toggle di panel (/api/backup_toggle) yang mengaktifkan.
     cfg = load_bot_config()
     try:
         hour = int(cfg.get('backup_hour', 3) or 3)
     except Exception:
         hour = 3
-    return {'enabled': cfg.get('backup_enabled', True) is not False,
+    return {'enabled': bool(cfg.get('backup_enabled', False)),
             'hour': hour if 0 <= hour <= 23 else 3}
 
 
@@ -9673,11 +9677,29 @@ def backup_settings_api():
     if not 0 <= hour <= 23:
         return jsonify({"status": "error", "message": "Jam harus 0-23."}), 400
     cfg = load_bot_config()
-    cfg['backup_enabled'] = bool(data.get('enabled', True))
+    # v1.4.32: 'enabled' hanya diubah bila dikirim eksplisit — simpan jam
+    # saja tidak boleh mengaktifkan ulang backup harian yang dimatikan
+    # lewat toggle.
+    if 'enabled' in data:
+        cfg['backup_enabled'] = bool(data.get('enabled'))
     cfg['backup_hour'] = hour
     _save_bot_config(cfg)
     return jsonify({"status": "success",
-                    "message": f"Jadwal backup disimpan ({'aktif' if cfg['backup_enabled'] else 'nonaktif'}, jam {hour:02d}:00 WIB)."})
+                    "message": f"Jadwal backup disimpan ({'aktif' if cfg.get('backup_enabled', False) else 'nonaktif'}, jam {hour:02d}:00 WIB)."})
+
+
+@app.route('/api/backup_toggle', methods=['POST'])
+def backup_toggle_api():
+    """Toggle satu klik untuk backup harian (v1.4.32): balikkan
+    backup_enabled di config dan kembalikan state barunya. Backup
+    manual + snapshot pra-update tetap jalan (bukan harian)."""
+    cfg = load_bot_config()
+    new_state = not bool(cfg.get('backup_enabled', False))
+    cfg['backup_enabled'] = new_state
+    _save_bot_config(cfg)
+    return jsonify({"status": "success",
+                    "enabled": new_state,
+                    "message": f"Backup harian {'DIAKTIFKAN' if new_state else 'DINONAKTIFKAN'} (jam {int(cfg.get('backup_hour', 3) or 3):02d}:00 WIB)."})
 
 
 @app.route('/api/backup_key', methods=['POST'])
